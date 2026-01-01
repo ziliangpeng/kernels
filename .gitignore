@@ -1,0 +1,12 @@
+# Ignore compiled binaries
+vector
+mem_benchmark
+
+# Ignore object files
+*.o
+
+# Ignore profiling reports
+*.nsys-rep
+*.sqlite
+*.qdrep
+*.qdstrm
