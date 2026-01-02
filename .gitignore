@@ -1,9 +1,4 @@
-# Ignore compiled binaries
-vector
-mem_benchmark
-reduce
-
-# Ignore object files
+# Ignore object files (if any legacy builds happen)
 *.o
 
 # Ignore profiling reports
@@ -11,3 +6,10 @@ reduce
 *.sqlite
 *.qdrep
 *.qdstrm
+
+# Bazel build outputs
+/bazel-bin/
+/bazel-out/
+/bazel-testlogs/
+
+# Note: bazel-* symlinks at repo root are ignored by root .gitignore

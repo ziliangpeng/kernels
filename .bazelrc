@@ -1,0 +1,29 @@
+# ============================================================================
+# CUDA-Specific Build Configuration
+# ============================================================================
+# This file only applies to targets under //cuda/...
+# See: https://bazel.build/run/bazelrc#bazelrc-file-locations
+
+# CUDA architecture for H100 (sm_90)
+build --cuda_archs=sm_90
+
+# NVCC optimization flags
+build:opt --copt=-O2
+build:opt --cuda_nvcc_flag=-O2
+
+# Debug configuration
+build:debug --copt=-g
+build:debug --cuda_nvcc_flag=-g
+build:debug --strip=never
+
+# Default to optimized builds
+build --config=opt
+
+# C++17 standard (CUDA 12.x compatible)
+build --cxxopt=-std=c++17
+
+# ============================================================================
+# IMPORTANT: All CUDA targets MUST be tagged appropriately
+# ============================================================================
+# - cuda_binary and cuda_test targets should have tags = ["cuda", "gpu"]
+# - This allows CI to skip these targets using --build_tag_filters=-gpu,-cuda
