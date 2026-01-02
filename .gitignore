@@ -1,6 +1,7 @@
 # Ignore compiled binaries
 vector
 mem_benchmark
+reduce
 
 # Ignore object files
 *.o

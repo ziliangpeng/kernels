@@ -7,7 +7,7 @@ NVCC = nvcc
 NVCC_FLAGS ?= -O2 -arch=sm_90
 
 # Targets
-TARGETS = vector mem_benchmark
+TARGETS = vector mem_benchmark reduce softmax
 
 # Default target - build all
 all: $(TARGETS)
@@ -19,6 +19,14 @@ vector: vector.cu vector_kernels.cu vector_init.cu cuda_utils.cu cuda_utils.h ve
 # Build mem_benchmark
 mem_benchmark: mem_benchmark.cu cuda_utils.h
 	$(NVCC) $(NVCC_FLAGS) mem_benchmark.cu -o mem_benchmark
+
+# Build reduce
+reduce: reduce.cu reduce_kernels.cu vector_init.cu cuda_utils.cu cuda_utils.h reduce_kernels.h vector_init.h
+	$(NVCC) $(NVCC_FLAGS) reduce.cu reduce_kernels.cu vector_init.cu cuda_utils.cu -o reduce
+
+# Build softmax
+softmax: softmax.cu softmax_kernels.cu reduce_kernels.cu vector_init.cu cuda_utils.cu cuda_utils.h softmax_kernels.h reduce_kernels.h vector_init.h
+	$(NVCC) $(NVCC_FLAGS) softmax.cu softmax_kernels.cu reduce_kernels.cu vector_init.cu cuda_utils.cu -o softmax
 
 # Run vector
 run: vector
@@ -47,6 +55,26 @@ test: all
 	@echo "Testing mem_benchmark..."
 	@./mem_benchmark -n 10 -i 1 > /dev/null && echo "  ✓ Pageable (10MB)"
 	@./mem_benchmark -n 10 -p -i 1 > /dev/null && echo "  ✓ Pinned (10MB)"
+	@echo ""
+	@echo "Testing reduce..."
+	@./reduce -n 10000 --method gpu --warp-opt -v > /dev/null && echo "  ✓ GPU warp-opt: 10K elements"
+	@./reduce -n 100000 --method threshold -t 1000 -v > /dev/null && echo "  ✓ Threshold: 100K elements"
+	@./reduce -n 10000 --method atomic -v > /dev/null && echo "  ✓ Atomic: 10K elements"
+	@echo ""
+	@echo "Testing softmax - Naive method..."
+	@./softmax -n 1000 --method naive -v > /dev/null && echo "  ✓ Naive: 1K elements"
+	@./softmax -n 10000 --method naive -v > /dev/null && echo "  ✓ Naive: 10K elements"
+	@echo ""
+	@echo "Testing softmax - Multi-pass method..."
+	@./softmax -n 1000 --method multi -v > /dev/null && echo "  ✓ Multi-pass: 1K elements"
+	@./softmax -n 100000 --method multi -v > /dev/null && echo "  ✓ Multi-pass: 100K elements"
+	@./softmax -n 1000000 --method multi -v > /dev/null && echo "  ✓ Multi-pass: 1M elements"
+	@echo ""
+	@echo "Testing softmax - Fused method..."
+	@./softmax -n 1000 --method fused -v > /dev/null && echo "  ✓ Fused: 1K elements"
+	@./softmax -n 100000 --method fused -v > /dev/null && echo "  ✓ Fused: 100K elements"
+	@./softmax -n 1000000 --method fused -v > /dev/null && echo "  ✓ Fused: 1M elements"
+	@./softmax -n 10000000 --method fused -v > /dev/null && echo "  ✓ Fused: 10M elements"
 	@echo ""
 	@echo "=========================================="
 	@echo "All tests passed!"
