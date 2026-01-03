@@ -14,9 +14,11 @@ void allocateAndInitVector(float **h_vec, int n) {
         exit(EXIT_FAILURE);
     }
 
-    // Initialize with random values
+    // Initialize with random values in range [0, 100]
+    // This range will cause overflow in naive softmax (exp(x) overflows for x > 88)
+    // but stable methods (multi, fused) should handle it correctly
     for (int i = 0; i < n; i++) {
-        (*h_vec)[i] = (float)rand() / RAND_MAX;
+        (*h_vec)[i] = 100.0f * (float)rand() / RAND_MAX;
     }
 }
 

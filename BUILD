@@ -34,11 +34,12 @@ cuda_library(
 # Root-level CUDA Projects (not yet restructured)
 # ============================================================================
 
-# Vector kernels (only used by vector.cu)
+# Element-wise kernels (shared across multiple modules)
 cuda_library(
-    name = "vector_kernels",
-    srcs = ["vector_kernels.cu"],
-    hdrs = ["vector_kernels.h"],
+    name = "elementwise_kernels",
+    srcs = ["elementwise_kernels.cu"],
+    hdrs = ["elementwise_kernels.h"],
+    visibility = ["//visibility:public"],
 )
 
 # Vector addition binary
@@ -48,7 +49,7 @@ cuda_binary(
     deps = [
         ":cuda_utils",
         ":vector_init",
-        ":vector_kernels",
+        ":elementwise_kernels",
     ],
     tags = ["cuda", "gpu"],
 )

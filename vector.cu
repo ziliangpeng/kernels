@@ -6,7 +6,7 @@
 #include <getopt.h>
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
-#include "vector_kernels.h"
+#include "elementwise_kernels.h"
 #include "vector_init.h"
 
 void print_usage(const char *program_name) {
