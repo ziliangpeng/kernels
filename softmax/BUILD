@@ -17,6 +17,7 @@ cuda_library(
         "//cuda:reduce_kernels",
         "//cuda:elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -30,6 +31,7 @@ cuda_library(
         "//cuda:reduce_kernels",
         "//cuda:elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -46,6 +48,7 @@ cuda_library(
         "//cuda:reduce_kernels",
         "//cuda:elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -61,6 +64,7 @@ cuda_library(
         ":softmax_fused3",  # Reuse softmaxFused3_BlockStats from 3-kernel version
         "//cuda:cuda_utils",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -73,6 +77,7 @@ cuda_library(
         "//cuda:cuda_utils",
         "//cuda:reduce_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -85,6 +90,7 @@ cuda_library(
         "//cuda:cuda_utils",
         "//cuda:reduce_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -100,6 +106,7 @@ cuda_library(
         "//cuda:cuda_utils",
         "//cuda:elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -114,6 +121,7 @@ cuda_library(
     deps = [
         "//cuda:cuda_utils",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -129,6 +137,7 @@ cuda_library(
         "//cuda:cuda_utils",
         "//cuda:elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -144,6 +153,7 @@ cuda_library(
         "//cuda:cuda_utils",
         "//cuda:elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -162,6 +172,7 @@ cuda_library(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -191,6 +202,7 @@ cuda_binary(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -209,6 +221,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -221,6 +234,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -234,6 +248,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -246,6 +261,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -258,6 +274,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -271,6 +288,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -283,6 +301,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -295,6 +314,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -307,6 +327,7 @@ cuda_test(
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
     timeout = "moderate",  # Larger test needs more time
 )

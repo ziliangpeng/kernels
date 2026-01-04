@@ -9,6 +9,7 @@ cuda_library(
     name = "cuda_utils",
     srcs = ["cuda_utils.cu"],
     hdrs = ["cuda_utils.h"],
+    target_compatible_with = ["//constraints:cuda"],
     visibility = ["//cuda:__subpackages__"],  # Visible to cuda/* subdirs
 )
 
@@ -18,6 +19,7 @@ cuda_library(
     srcs = ["vector_init.cu"],
     hdrs = ["vector_init.h"],
     deps = [":cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
     visibility = ["//cuda:__subpackages__"],
 )
 
@@ -27,6 +29,7 @@ cuda_library(
     srcs = ["reduce_kernels.cu"],
     hdrs = ["reduce_kernels.h"],
     deps = [":cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
     visibility = ["//cuda:__subpackages__"],
 )
 
@@ -39,6 +42,7 @@ cuda_library(
     name = "elementwise_kernels",
     srcs = ["elementwise_kernels.cu"],
     hdrs = ["elementwise_kernels.h"],
+    target_compatible_with = ["//constraints:cuda"],
     visibility = ["//visibility:public"],
 )
 
@@ -51,6 +55,7 @@ cuda_binary(
         ":vector_init",
         ":elementwise_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -63,6 +68,7 @@ cuda_binary(
         ":vector_init",
         ":reduce_kernels",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
@@ -71,6 +77,7 @@ cuda_binary(
     name = "mem_benchmark",
     srcs = ["mem_benchmark.cu"],
     deps = [":cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
 )
 
