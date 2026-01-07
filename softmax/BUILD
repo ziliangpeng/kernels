@@ -176,6 +176,34 @@ cuda_library(
     includes = [".."],
 )
 
+# Tiny softmax implementation (single-warp, minimal overhead, optimal for ≤1K)
+cuda_library(
+    name = "softmax_tiny",
+    srcs = ["softmax_tiny.cu"],
+    hdrs = [
+        "softmax_tiny.h",
+        "softmax_kernel.h",  # Base interface
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    includes = [".."],
+)
+
+# Small softmax implementation (single-block, hybrid reduction, optimal for 1K-8K)
+cuda_library(
+    name = "softmax_small",
+    srcs = ["softmax_small.cu"],
+    hdrs = [
+        "softmax_small.h",
+        "softmax_kernel.h",  # Base interface
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    includes = [".."],
+)
+
 # ============================================================================
 # Softmax Main Binary
 # ============================================================================
@@ -195,6 +223,8 @@ cuda_binary(
         ":softmax_cub_block",
         ":softmax_cub_device",
         ":softmax_cudnn",
+        ":softmax_tiny",
+        ":softmax_small",
         "//cuda:cuda_utils",
         "//cuda:vector_init",
     ],

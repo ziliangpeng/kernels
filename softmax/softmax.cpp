@@ -18,6 +18,8 @@
 #include "softmax_cub_block.h"
 #include "softmax_cub_device.h"
 #include "softmax_cudnn.h"
+#include "softmax_tiny.h"
+#include "softmax_small.h"
 #include "vector_init.h"
 
 // ============================================================================
@@ -34,13 +36,15 @@ const char* BENCHMARK_METHODS[] = {
     "online_warp",
     "cub_block",
     "cub_device",
-    "cudnn"
+    "cudnn",
+    "tiny",
+    "small"
 };
-const int NUM_METHODS = 9;
+const int NUM_METHODS = 11;
 
-const int BENCHMARK_SIZES[] = {1<<17, 1<<20, 1<<23, 1<<26};  // 131K, 1M, 8M, 67M
+const int BENCHMARK_SIZES[] = {16, 32, 64, 256, 512, 1<<10, 1<<13, 1<<16, 1<<18, 1<<20, 1<<23};  // 16, 32, 64, 256, 512, 1K, 8K, 64K, 256K, 1M, 8M
 const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
-const char* SIZE_LABELS[] = {"131K", "1M", "8M", "67M"};
+const char* SIZE_LABELS[] = {"16", "32", "64", "256", "512", "1K", "8K", "64K", "256K", "1M", "8M"};
 
 // Result structures
 struct BenchmarkResult {
@@ -62,7 +66,7 @@ void print_usage(const char *program_name) {
     printf("Options:\n");
     printf("  -n, --size N              Set array size (default: 1048576)\n");
     printf("  -b, --block-size N        Set threads per block (default: 256)\n");
-    printf("  -m, --method METHOD       Softmax method: 'naive', 'multi', 'fused3', 'fused2', 'fused1', 'online', 'online_simple', 'online_warp', 'cub_block', 'cub_device', or 'cudnn' (default: multi)\n");
+    printf("  -m, --method METHOD       Softmax method: 'naive', 'multi', 'fused3', 'fused2', 'fused1', 'online', 'online_simple', 'online_warp', 'cub_block', 'cub_device', 'cudnn', 'tiny', or 'small' (default: online_warp)\n");
     printf("  -v, --verify              Enable result verification\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nMethods:\n");
@@ -77,9 +81,11 @@ void print_usage(const char *program_name) {
     printf("  cub_block:     3-kernel with CUB block-level primitives [IMPLEMENTED]\n");
     printf("  cub_device:    CUB device-level primitives (single-call reductions) [IMPLEMENTED]\n");
     printf("  cudnn:         NVIDIA cuDNN library (industry-standard) [IMPLEMENTED]\n");
+    printf("  tiny:          Single-warp kernel (32 threads, warp shuffles only, optimal for ≤1K) [IMPLEMENTED]\n");
+    printf("  small:         Single-block kernel (256 threads, hybrid reduction, optimal for 1K-8K) [IMPLEMENTED]\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
-    printf("                 Tests sizes: 131K, 1M, 8M, 67M (powers of 2)\n");
+    printf("                 Tests sizes: 16, 32, 64, 256, 512, 1K, 8K, 64K, 256K, 1M, 8M\n");
     printf("                 Iterations: 100 per test\n");
     printf("                 Output: Formatted performance table\n");
     printf("\n                 When combined with --verify:\n");
@@ -117,36 +123,39 @@ void softmax_cpu_reference(const float *input, float *output, int n) {
 // BENCHMARK MODE: Helper Functions
 // ============================================================================
 
-// Helper: Get median time for a method (returns -1.0 on failure)
+// Helper: Get batched time for a method (returns -1.0 on failure)
+// This measures throughput by queuing all kernels and timing the batch,
+// which removes per-iteration event overhead and shows pure kernel performance
 float get_median_time(SoftmaxKernel *kernel, const float *d_input, float *d_output,
                       int n, int num_iterations) {
-    float *timings = (float*)malloc(num_iterations * sizeof(float));
-    if (!timings) return -1.0f;
-
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
-    // Run kernel num_iterations times
-    for (int i = 0; i < num_iterations; i++) {
-        cudaEventRecord(start);
+    // Warmup: run a few iterations to ensure kernel is compiled and caches are warm
+    for (int i = 0; i < 10; i++) {
         kernel->execute(d_input, d_output);
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&timings[i], start, stop);
     }
+    cudaDeviceSynchronize();
 
-    // Sort for median using std::sort (C++ standard, more efficient than qsort)
-    std::sort(timings, timings + num_iterations);
+    // Batched timing: queue all iterations, then sync once at the end
+    // This removes per-iteration event recording overhead
+    cudaEventRecord(start);
+    for (int i = 0; i < num_iterations; i++) {
+        kernel->execute(d_input, d_output);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
 
-    int median_idx = num_iterations / 2;
-    float median = timings[median_idx];
+    float total_time_ms;
+    cudaEventElapsedTime(&total_time_ms, start, stop);
 
-    free(timings);
+    float avg_time_ms = total_time_ms / num_iterations;
+
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
-    return median;
+    return avg_time_ms;
 }
 
 // Helper: Run verification for a method
@@ -217,7 +226,8 @@ void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
     printf("                    SOFTMAX PERFORMANCE BENCHMARK\n");
     printf("=============================================================================\n");
     printf("Iterations per test: 100\n");
-    printf("Metric: Median execution time (ms)\n\n");
+    printf("Metric: Average execution time per iteration (ms)\n");
+    printf("Method: Batched timing (100 kernels queued, single sync)\n\n");
 
     // Print header
     printf("%-15s", "Method");
@@ -361,7 +371,7 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
     printf("                    RUNNING COMPREHENSIVE BENCHMARK\n");
     printf("=============================================================================\n");
     printf("Methods to test: %d\n", NUM_METHODS);
-    printf("Sizes to test: %d (131K, 1M, 8M, 67M)\n", NUM_SIZES);
+    printf("Sizes to test: %d (16, 32, 64, 256, 512, 1K, 8K, 64K, 256K, 1M, 8M)\n", NUM_SIZES);
     printf("Iterations per test: 100\n");
     printf("Threads per block: %d\n", threadsPerBlock);
     if (verify) {
@@ -464,6 +474,10 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
                     kernel = new CubDeviceSoftmax(n, threadsPerBlock);
                 } else if (strcmp(method, "cudnn") == 0) {
                     kernel = new CudnnSoftmax(n, threadsPerBlock);
+                } else if (strcmp(method, "tiny") == 0) {
+                    kernel = new TinySoftmax(n, threadsPerBlock);
+                } else if (strcmp(method, "small") == 0) {
+                    kernel = new SmallSoftmax(n, threadsPerBlock);
                 }
 
                 if (!kernel) {
@@ -561,7 +575,7 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
     transferToDevice(d_input, h_input, n);
 
     // Configure timing
-    const int num_iterations = 1000;
+    const int num_iterations = 100;
     float *timings = (float*)malloc(num_iterations * sizeof(float));
     if (!timings) {
         fprintf(stderr, "Failed to allocate memory for timings\n");
@@ -587,6 +601,10 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
         kernel = new CubBlockSoftmax(n, threadsPerBlock);
     } else if (strcmp(method, "cub_device") == 0) {
         kernel = new CubDeviceSoftmax(n, threadsPerBlock);
+    } else if (strcmp(method, "tiny") == 0) {
+        kernel = new TinySoftmax(n, threadsPerBlock);
+    } else if (strcmp(method, "small") == 0) {
+        kernel = new SmallSoftmax(n, threadsPerBlock);
     } else if (strcmp(method, "fused3") == 0) {
         kernel = new Fused3Softmax(n, threadsPerBlock);
     } else if (strcmp(method, "fused2") == 0) {
@@ -651,6 +669,10 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
             softmax_Fused1(d_input, d_output, n, threadsPerBlock);
         } else if (strcmp(method, "online") == 0) {
             softmax_Online(d_input, d_output, n, threadsPerBlock);
+        } else if (strcmp(method, "tiny") == 0) {
+            softmax_Tiny(d_input, d_output, n, threadsPerBlock);
+        } else if (strcmp(method, "small") == 0) {
+            softmax_Small(d_input, d_output, n, threadsPerBlock);
         } else if (strcmp(method, "online_simple") == 0) {
             softmax_OnlineSimple(d_input, d_output, n, threadsPerBlock);
         } else if (strcmp(method, "online_warp") == 0) {
@@ -735,7 +757,7 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
 int main(int argc, char *argv[]) {
     // Parse command line arguments
     bool verify = false;
-    const char *method = "multi";  // Default method
+    const char *method = "online_warp";  // Default method
     int n = 1 << 20;  // Default: 1 million elements
     int threadsPerBlock = 256;  // Default: 256 threads per block (optimal)
 
@@ -772,8 +794,9 @@ int main(int argc, char *argv[]) {
                     strcmp(method, "fused1") != 0 && strcmp(method, "online") != 0 &&
                     strcmp(method, "online_simple") != 0 && strcmp(method, "online_warp") != 0 &&
                     strcmp(method, "cub_block") != 0 && strcmp(method, "cub_device") != 0 &&
-                    strcmp(method, "cudnn") != 0 && strcmp(method, "all") != 0) {
-                    fprintf(stderr, "Error: method must be 'naive', 'multi', 'fused3', 'fused2', 'fused1', 'online', 'online_simple', 'online_warp', 'cub_block', 'cub_device', 'cudnn', or 'all'\n");
+                    strcmp(method, "cudnn") != 0 && strcmp(method, "tiny") != 0 &&
+                    strcmp(method, "small") != 0 && strcmp(method, "all") != 0) {
+                    fprintf(stderr, "Error: method must be 'naive', 'multi', 'fused3', 'fused2', 'fused1', 'online', 'online_simple', 'online_warp', 'cub_block', 'cub_device', 'cudnn', 'tiny', 'small', or 'all'\n");
                     return 1;
                 }
                 break;
