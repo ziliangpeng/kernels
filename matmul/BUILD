@@ -57,6 +57,22 @@ cuda_library(
     tags = ["cuda", "gpu"],
 )
 
+# WMMA Tensor Core kernel (FP16)
+cuda_library(
+    name = "matmul_wmma",
+    srcs = ["matmul_wmma.cu"],
+    hdrs = [
+        "matmul_wmma.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+    tags = ["cuda", "gpu"],
+)
+
 # ============================================================================
 # Matrix Multiplication Main Binary
 # ============================================================================
@@ -67,6 +83,7 @@ cuda_binary(
     deps = [
         ":matmul_naive",
         ":matmul_cublas",
+        ":matmul_wmma",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -187,6 +204,55 @@ cuda_test(
     tags = ["cuda", "gpu"],
 )
 
+# WMMA tests for various sizes
+cuda_test(
+    name = "matmul_wmma_256_test",
+    srcs = ["matmul.cpp"],
+    deps = [
+        ":matmul_kernel_h",
+        ":matmul_naive",
+        ":matmul_cublas",
+        ":matmul_wmma",
+        ":matrix_init",
+        "//cuda:cuda_utils",
+    ],
+    args = ["--size", "256", "--method", "wmma", "--verify"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
+cuda_test(
+    name = "matmul_wmma_1024_test",
+    srcs = ["matmul.cpp"],
+    deps = [
+        ":matmul_kernel_h",
+        ":matmul_naive",
+        ":matmul_cublas",
+        ":matmul_wmma",
+        ":matrix_init",
+        "//cuda:cuda_utils",
+    ],
+    args = ["--size", "1024", "--method", "wmma", "--verify"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
+cuda_test(
+    name = "matmul_wmma_2048_test",
+    srcs = ["matmul.cpp"],
+    deps = [
+        ":matmul_kernel_h",
+        ":matmul_naive",
+        ":matmul_cublas",
+        ":matmul_wmma",
+        ":matrix_init",
+        "//cuda:cuda_utils",
+    ],
+    args = ["--size", "2048", "--method", "wmma", "--verify"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
 # ============================================================================
 # Test Suite (run all matmul tests)
 # ============================================================================
@@ -201,5 +267,8 @@ test_suite(
         ":matmul_cublas_256_test",
         ":matmul_cublas_1024_test",
         ":matmul_cublas_2048_test",
+        ":matmul_wmma_256_test",
+        ":matmul_wmma_1024_test",
+        ":matmul_wmma_2048_test",
     ],
 )

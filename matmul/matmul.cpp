@@ -10,6 +10,7 @@
 #include "cuda_utils.h"
 #include "matmul_naive.h"
 #include "matmul_cublas.h"
+#include "matmul_wmma.h"
 #include "matrix_init.h"
 
 // ============================================================================
@@ -19,13 +20,14 @@
 // Benchmark configuration
 const char* BENCHMARK_METHODS[] = {
     "naive",
-    "cublas"
+    "cublas",
+    "wmma"
 };
-const int NUM_METHODS = 2;
+const int NUM_METHODS = 3;
 
-const int BENCHMARK_SIZES[] = {64, 128, 256, 512, 1024};
+const int BENCHMARK_SIZES[] = {64, 128, 256, 512, 1024, 2048};
 const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
-const char* SIZE_LABELS[] = {"64", "128", "256", "512", "1K"};
+const char* SIZE_LABELS[] = {"64", "128", "256", "512", "1K", "2K"};
 
 // Result structures
 struct BenchmarkResult {
@@ -142,9 +144,11 @@ void print_usage(const char *program_name) {
     printf("  -h, --help                Show this help message\n");
     printf("\nMethods:\n");
     printf("  naive:         Naive triple-nested loop (simple, unoptimized)\n");
+    printf("  cublas:        NVIDIA cuBLAS library (highly optimized)\n");
+    printf("  wmma:          WMMA Tensor Core FP16 (Volta+ GPUs)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
-    printf("                 Tests sizes: 64, 128, 256, 512, 1K\n");
+    printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
     printf("                 Iterations: 100 per test\n");
     printf("                 Output: Formatted performance table\n");
     printf("\n                 When combined with --verify:\n");
@@ -414,6 +418,20 @@ void benchmark_all_methods(int blockDim, bool verify) {
 
         for (int s = 0; s < NUM_SIZES; s++) {
             int N = BENCHMARK_SIZES[s];
+
+            // Skip large sizes for naive kernel (too slow)
+            if (strcmp(method, "naive") == 0 && N >= 1024) {
+                printf("  Size: %s (%d×%d)... SKIPPED (too slow for naive)\n",
+                       SIZE_LABELS[s], N, N);
+                perf_results[m][s].skipped = true;
+                perf_results[m][s].median_time_ms = -1.0f;
+                perf_results[m][s].gflops = 0.0;
+                perf_results[m][s].mfu_percent = 0.0;
+                perf_results[m][s].skip_reason = "Size too large for naive kernel";
+                verify_results[m][s].skipped = true;
+                continue;
+            }
+
             printf("  Size: %s (%d×%d)... ", SIZE_LABELS[s], N, N);
             fflush(stdout);
 
@@ -486,6 +504,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulNaive(N, blockDim);
                 } else if (strcmp(method, "cublas") == 0) {
                     kernel = new MatmulCublas(N, blockDim);
+                } else if (strcmp(method, "wmma") == 0) {
+                    kernel = new MatmulWMMA(N, blockDim);
                 }
 
                 if (!kernel) {
@@ -612,6 +632,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulNaive(N, blockDim);
     } else if (strcmp(method, "cublas") == 0) {
         kernel = new MatmulCublas(N, blockDim);
+    } else if (strcmp(method, "wmma") == 0) {
+        kernel = new MatmulWMMA(N, blockDim);
     }
 
     if (kernel) {
