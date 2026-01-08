@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <string>
 #include <math.h>
 #include <time.h>
 #include <getopt.h>
@@ -50,7 +51,7 @@ const char* SIZE_LABELS[] = {"16", "32", "64", "256", "512", "1K", "8K", "64K", 
 struct BenchmarkResult {
     float median_time_ms;    // -1.0 if skipped/failed
     bool skipped;
-    char skip_reason[128];
+    std::string skip_reason;  // Modern C++ string (no buffer overflow possible)
 };
 
 struct VerificationResult {
@@ -265,7 +266,7 @@ void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
         for (int s = 0; s < NUM_SIZES; s++) {
             if (results[m][s].skipped || results[m][s].median_time_ms < 0) {
                 if (!has_skip) {
-                    printf("- %s: %s\n", BENCHMARK_METHODS[m], results[m][s].skip_reason);
+                    printf("- %s: %s\n", BENCHMARK_METHODS[m], results[m][s].skip_reason.c_str());
                     has_skip = true;
                 }
             }
@@ -388,7 +389,7 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
         for (int s = 0; s < NUM_SIZES; s++) {
             perf_results[m][s].median_time_ms = -1.0f;
             perf_results[m][s].skipped = true;
-            strcpy(perf_results[m][s].skip_reason, "Not run");
+            perf_results[m][s].skip_reason = "Not run";
 
             verify_results[m][s].skipped = true;
             verify_results[m][s].passed = false;
@@ -416,7 +417,7 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
 
             if (!h_output) {
                 printf("SKIPPED (host allocation failed)\n");
-                strcpy(perf_results[m][s].skip_reason, "Host allocation failed");
+                perf_results[m][s].skip_reason = "Host allocation failed";
                 freeHostVector(h_input);
                 continue;
             }
@@ -426,7 +427,7 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
             cudaError_t err = cudaMalloc(&d_input, n * sizeof(float));
             if (err != cudaSuccess) {
                 printf("SKIPPED (device allocation failed)\n");
-                strcpy(perf_results[m][s].skip_reason, "Device allocation failed");
+                perf_results[m][s].skip_reason = "Device allocation failed";
                 freeHostVector(h_input);
                 free(h_output);
                 continue;
@@ -435,7 +436,7 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
             err = cudaMalloc(&d_output, n * sizeof(float));
             if (err != cudaSuccess) {
                 printf("SKIPPED (device allocation failed)\n");
-                strcpy(perf_results[m][s].skip_reason, "Device allocation failed");
+                perf_results[m][s].skip_reason = "Device allocation failed";
                 freeHostVector(h_input);
                 free(h_output);
                 cudaFree(d_input);
@@ -482,18 +483,18 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
 
                 if (!kernel) {
                     printf("SKIPPED (unknown method)\n");
-                    strcpy(perf_results[m][s].skip_reason, "Unknown method");
+                    perf_results[m][s].skip_reason = "Unknown method";
                 } else {
                     // Run performance benchmark
                     float median_time = get_median_time(kernel, d_input, d_output, n, 100);
 
                     if (median_time < 0.0f) {
                         printf("SKIPPED (benchmark failed)\n");
-                        strcpy(perf_results[m][s].skip_reason, "Benchmark failed");
+                        perf_results[m][s].skip_reason = "Benchmark failed";
                     } else {
                         perf_results[m][s].median_time_ms = median_time;
                         perf_results[m][s].skipped = false;
-                        strcpy(perf_results[m][s].skip_reason, "");
+                        perf_results[m][s].skip_reason = "";
 
                         // Run verification if enabled
                         if (verify && h_expected) {
@@ -519,12 +520,11 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
                 }
             } catch (const std::exception &e) {
                 printf("SKIPPED (exception: %s)\n", e.what());
-                snprintf(perf_results[m][s].skip_reason, sizeof(perf_results[m][s].skip_reason),
-                         "Exception: %.80s", e.what());
+                perf_results[m][s].skip_reason = std::string("Exception: ") + e.what();
                 if (kernel) delete kernel;
             } catch (...) {
                 printf("SKIPPED (unknown exception)\n");
-                strcpy(perf_results[m][s].skip_reason, "Unknown exception");
+                perf_results[m][s].skip_reason = "Unknown exception";
                 if (kernel) delete kernel;
             }
 
