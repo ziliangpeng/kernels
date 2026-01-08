@@ -9,6 +9,7 @@
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
 #include "matmul_naive.h"
+#include "matmul_cublas.h"
 #include "matrix_init.h"
 
 // ============================================================================
@@ -17,9 +18,10 @@
 
 // Benchmark configuration
 const char* BENCHMARK_METHODS[] = {
-    "naive"
+    "naive",
+    "cublas"
 };
-const int NUM_METHODS = 1;
+const int NUM_METHODS = 2;
 
 const int BENCHMARK_SIZES[] = {64, 128, 256, 512, 1024};
 const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
@@ -28,6 +30,8 @@ const char* SIZE_LABELS[] = {"64", "128", "256", "512", "1K"};
 // Result structures
 struct BenchmarkResult {
     float median_time_ms;    // -1.0 if skipped/failed
+    double gflops;           // Computed GFLOPS
+    double mfu_percent;      // Model FLOPS Utilization (%)
     bool skipped;
     std::string skip_reason;  // Modern C++ string (no buffer overflow possible)
 };
@@ -38,6 +42,95 @@ struct VerificationResult {
     bool has_nan_inf;
     bool skipped;
 };
+
+// ============================================================================
+// GPU Performance Detection
+// ============================================================================
+
+// Returns theoretical peak GFLOPS including Tensor Cores for modern GPUs
+double get_gpu_peak_gflops() {
+    cudaDeviceProp deviceProp;
+    cudaGetDeviceProperties(&deviceProp, 0);
+
+    int numSMs = deviceProp.multiProcessorCount;
+    float clockRate_GHz = deviceProp.clockRate / 1e6f;  // kHz to GHz
+    int major = deviceProp.major;
+    int minor = deviceProp.minor;
+
+    double peak_gflops = 0.0;
+    const char* compute_type = "FP32";
+
+    // Use Tensor Core peaks for GPUs that have them (SM70+)
+    // These represent TF32/FP16 Tensor Core throughput which libraries like cuBLAS use
+
+    if (major == 9 && minor == 0) {
+        // Hopper (H100)
+        if (strstr(deviceProp.name, "H100") != nullptr) {
+            peak_gflops = 495000.0;  // TF32 Tensor Core peak
+            compute_type = "TF32 Tensor Core";
+        } else {
+            peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        }
+    } else if (major == 8 && minor == 9) {
+        // Ada Lovelace (RTX 40 series)
+        if (strstr(deviceProp.name, "4090") != nullptr) {
+            peak_gflops = 82580.0;  // FP32 peak (no sparse)
+            compute_type = "FP32";
+        } else if (strstr(deviceProp.name, "4080") != nullptr) {
+            peak_gflops = 48740.0;
+            compute_type = "FP32";
+        } else {
+            peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        }
+    } else if (major == 8 && minor == 6) {
+        // Ampere (RTX 30 series)
+        if (strstr(deviceProp.name, "3090") != nullptr) {
+            peak_gflops = 35580.0;  // FP32 peak
+            compute_type = "FP32";
+        } else if (strstr(deviceProp.name, "3080") != nullptr) {
+            peak_gflops = 29770.0;
+            compute_type = "FP32";
+        } else {
+            peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        }
+    } else if (major == 8 && minor == 0) {
+        // Ampere (A100)
+        if (strstr(deviceProp.name, "A100") != nullptr) {
+            peak_gflops = 156000.0;  // TF32 Tensor Core peak
+            compute_type = "TF32 Tensor Core";
+        } else {
+            peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        }
+    } else if (major == 7 && minor == 5) {
+        // Turing (RTX 20 series, T4)
+        if (strstr(deviceProp.name, "T4") != nullptr) {
+            peak_gflops = 8100.0;  // FP32 peak
+            compute_type = "FP32";
+        } else {
+            peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        }
+    } else if (major == 7 && minor == 0) {
+        // Volta (V100)
+        if (strstr(deviceProp.name, "V100") != nullptr) {
+            peak_gflops = 15700.0;  // FP32 peak
+            compute_type = "FP32";
+        } else {
+            peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        }
+    } else {
+        // Fallback: calculate from hardware specs (older GPUs or unknown)
+        peak_gflops = numSMs * 2.0 * clockRate_GHz * 2.0;
+        compute_type = "FP32 (calculated)";
+    }
+
+    // Print GPU info for user reference
+    printf("GPU: %s (SM%d%d, %d SMs @ %.2f GHz)\n",
+           deviceProp.name, major, minor, numSMs, clockRate_GHz);
+    printf("Theoretical Peak: %.1f GFLOPS (%s)\n", peak_gflops, compute_type);
+    printf("=============================================================================\n\n");
+
+    return peak_gflops;
+}
 
 void print_usage(const char *program_name) {
     printf("Usage: %s [options]\n", program_name);
@@ -160,58 +253,72 @@ VerificationResult verify_method(MatmulKernel *kernel, const float *d_A,
 // ============================================================================
 
 void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
-    printf("\n");
+    printf("\n\n");
     printf("=============================================================================\n");
     printf("                    MATMUL PERFORMANCE BENCHMARK\n");
     printf("=============================================================================\n");
     printf("Iterations per test: 100\n");
-    printf("Metric: Average execution time per iteration (ms)\n");
+    printf("Metrics: Time (ms) | GFLOPS | MFU (%%)\n");
     printf("Method: Batched timing (100 kernels queued, single sync)\n\n");
 
     // Print header
-    printf("%-15s", "Method");
+    printf("%-15s |", "Method");
     for (int s = 0; s < NUM_SIZES; s++) {
-        printf(" | %-8s", SIZE_LABELS[s]);
+        printf(" %-9s|", SIZE_LABELS[s]);
     }
-    printf(" |\n");
+    printf("\n");
 
     // Print separator
-    printf("%-15s", "---------------");
+    printf("----------------|");
     for (int s = 0; s < NUM_SIZES; s++) {
-        printf("-|---------");
+        printf("----------|");
     }
-    printf("-|\n");
+    printf("\n");
 
-    // Print data rows
+    // Print data rows - 3 rows per method
     for (int m = 0; m < NUM_METHODS; m++) {
-        printf("%-15s", BENCHMARK_METHODS[m]);
+        // Row 1: Method name and time (ms)
+        char label[32];
+        snprintf(label, sizeof(label), "%s (time)", BENCHMARK_METHODS[m]);
+        printf("%-15s |", label);
         for (int s = 0; s < NUM_SIZES; s++) {
             if (results[m][s].skipped) {
-                printf(" | %-8s", "SKIPPED");
-            } else if (results[m][s].median_time_ms < 0) {
-                printf(" | %-8s", "FAILED");
+                printf(" %9s|", "SKIPPED");
+            } else if (results[m][s].median_time_ms < 0.0f) {
+                printf(" %9s|", "FAILED");
             } else {
-                printf(" | %8.3f", results[m][s].median_time_ms);
+                printf(" %9.3f|", results[m][s].median_time_ms);
             }
         }
-        printf(" |\n");
-    }
+        printf("\n");
 
-    // Print skipped reasons
-    bool has_skip = false;
-    for (int m = 0; m < NUM_METHODS; m++) {
+        // Row 2: GFLOPS (with T/G suffix for readability)
+        printf("%7s(gflops) |", "");
         for (int s = 0; s < NUM_SIZES; s++) {
-            if (results[m][s].skipped || results[m][s].median_time_ms < 0) {
-                if (!has_skip) {
-                    printf("\nSKIPPED/FAILED reasons:\n");
-                    has_skip = true;
+            if (results[m][s].skipped || results[m][s].median_time_ms < 0.0f) {
+                printf(" %9s|", "-");
+            } else {
+                double gflops = results[m][s].gflops;
+                if (gflops >= 1000.0) {
+                    printf(" (%6.1f T)|", gflops / 1000.0);
+                } else {
+                    printf(" (%6.1f G)|", gflops);
                 }
-                printf("- %s (%s): %s\n", BENCHMARK_METHODS[m], SIZE_LABELS[s],
-                       results[m][s].skip_reason.c_str());
             }
         }
-    }
+        printf("\n");
 
+        // Row 3: MFU %
+        printf("%10s(mfu) |", "");
+        for (int s = 0; s < NUM_SIZES; s++) {
+            if (results[m][s].skipped || results[m][s].median_time_ms < 0.0f) {
+                printf(" %9s|", "-");
+            } else {
+                printf(" (%6.1f%%)|", results[m][s].mfu_percent);
+            }
+        }
+        printf("\n");
+    }
     printf("=============================================================================\n");
 }
 
@@ -267,6 +374,10 @@ void benchmark_all_methods(int blockDim, bool verify) {
     printf("\n=============================================================================\n");
     printf("                    RUNNING COMPREHENSIVE BENCHMARK\n");
     printf("=============================================================================\n");
+
+    // Detect GPU and calculate peak performance
+    double peak_gflops = get_gpu_peak_gflops();
+
     printf("Methods to test: %d\n", NUM_METHODS);
     printf("Sizes to test: %d (64, 128, 256, 512, 1K)\n", NUM_SIZES);
     printf("Iterations per test: 100\n");
@@ -284,6 +395,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
     for (int m = 0; m < NUM_METHODS; m++) {
         for (int s = 0; s < NUM_SIZES; s++) {
             perf_results[m][s].median_time_ms = -1.0f;
+            perf_results[m][s].gflops = 0.0;
+            perf_results[m][s].mfu_percent = 0.0;
             perf_results[m][s].skipped = true;
             perf_results[m][s].skip_reason = "Not run";
 
@@ -371,6 +484,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
             try {
                 if (strcmp(method, "naive") == 0) {
                     kernel = new MatmulNaive(N, blockDim);
+                } else if (strcmp(method, "cublas") == 0) {
+                    kernel = new MatmulCublas(N, blockDim);
                 }
 
                 if (!kernel) {
@@ -387,6 +502,12 @@ void benchmark_all_methods(int blockDim, bool verify) {
                         perf_results[m][s].median_time_ms = median_time;
                         perf_results[m][s].skipped = false;
                         perf_results[m][s].skip_reason = "";
+
+                        // Calculate GFLOPS and MFU
+                        int N = BENCHMARK_SIZES[s];
+                        double flops = 2.0 * N * N * N - N * N;  // Matrix multiply FLOPs
+                        perf_results[m][s].gflops = flops / (median_time * 1e6);
+                        perf_results[m][s].mfu_percent = (perf_results[m][s].gflops / peak_gflops) * 100.0;
 
                         // Run verification if enabled
                         if (verify && h_expected) {
@@ -444,6 +565,9 @@ void benchmark_all_methods(int blockDim, bool verify) {
 
 // Matrix multiplication operation (single method mode)
 void matmul_op(int N, int blockDim, bool verify, const char *method) {
+    // Detect GPU and get peak performance (for MFU calculation)
+    double peak_gflops = get_gpu_peak_gflops();
+
     printf("Matrix multiplication of %d×%d matrices\n", N, N);
     printf("Method: %s\n", method);
     printf("Block dimension: %d×%d (%d threads)\n", blockDim, blockDim, blockDim * blockDim);
@@ -486,6 +610,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
 
     if (strcmp(method, "naive") == 0) {
         kernel = new MatmulNaive(N, blockDim);
+    } else if (strcmp(method, "cublas") == 0) {
+        kernel = new MatmulCublas(N, blockDim);
     }
 
     if (kernel) {
@@ -515,6 +641,10 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         double flops = 2.0 * N * N * N - N * N;
         double gflops = (flops / (avg_time_ms * 1e6));
         printf("Performance: %.2f GFLOPS\n", gflops);
+
+        // Calculate and display MFU
+        double mfu_percent = (gflops / peak_gflops) * 100.0;
+        printf("MFU: %.1f%% of theoretical peak\n", mfu_percent);
 
         delete kernel;
     } else {

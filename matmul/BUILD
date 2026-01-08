@@ -37,6 +37,26 @@ cuda_library(
     includes = [".."],
 )
 
+# cuBLAS baseline kernel
+cuda_library(
+    name = "matmul_cublas",
+    srcs = ["matmul_cublas.cu"],
+    hdrs = [
+        "matmul_cublas.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    linkopts = [
+        "-L/usr/local/cuda/lib64",
+        "-lcublas",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+    tags = ["cuda", "gpu"],
+)
+
 # ============================================================================
 # Matrix Multiplication Main Binary
 # ============================================================================
@@ -46,9 +66,14 @@ cuda_binary(
     srcs = ["matmul.cpp"],
     deps = [
         ":matmul_naive",
+        ":matmul_cublas",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
+    ],
+    linkopts = [
+        "-L/usr/local/cuda/lib64",
+        "-lcublas",
     ],
     target_compatible_with = ["//constraints:cuda"],
     tags = ["cuda", "gpu"],
@@ -116,6 +141,52 @@ cuda_test(
     tags = ["cuda", "gpu"],
 )
 
+# cuBLAS tests for various sizes
+cuda_test(
+    name = "matmul_cublas_256_test",
+    srcs = ["matmul.cpp"],
+    deps = [
+        ":matmul_kernel_h",
+        ":matmul_naive",
+        ":matmul_cublas",
+        ":matrix_init",
+        "//cuda:cuda_utils",
+    ],
+    args = ["--size", "256", "--method", "cublas", "--verify"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
+cuda_test(
+    name = "matmul_cublas_1024_test",
+    srcs = ["matmul.cpp"],
+    deps = [
+        ":matmul_kernel_h",
+        ":matmul_naive",
+        ":matmul_cublas",
+        ":matrix_init",
+        "//cuda:cuda_utils",
+    ],
+    args = ["--size", "1024", "--method", "cublas", "--verify"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
+cuda_test(
+    name = "matmul_cublas_2048_test",
+    srcs = ["matmul.cpp"],
+    deps = [
+        ":matmul_kernel_h",
+        ":matmul_naive",
+        ":matmul_cublas",
+        ":matrix_init",
+        "//cuda:cuda_utils",
+    ],
+    args = ["--size", "2048", "--method", "cublas", "--verify"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
 # ============================================================================
 # Test Suite (run all matmul tests)
 # ============================================================================
@@ -127,5 +198,8 @@ test_suite(
         ":matmul_naive_128_test",
         ":matmul_naive_256_test",
         ":matmul_naive_512_test",
+        ":matmul_cublas_256_test",
+        ":matmul_cublas_1024_test",
+        ":matmul_cublas_2048_test",
     ],
 )
