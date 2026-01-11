@@ -1,6 +1,0 @@
-# Triton GPU kernel dependencies
-# Install with: uv pip install -r requirements.txt
-
-torch>=2.0.0
-triton>=2.0.0
-numpy>=1.24.0

@@ -657,26 +657,18 @@ As GPUs become faster and frameworks more optimized, this gap will narrow. But f
 ### Setup
 
 ```bash
-# Install TinyGrad
-cd /home/ziliang/cyborg/cuda
-uv pip install tinygrad
-
-# Compile CUDA binaries
-make all
-
-# Verify
-make test
+# Build CUDA binaries and Python benchmarks with Bazel-managed deps
+bazel build //cuda:run_comparison
 ```
 
 ### Run Benchmarks
 
 ```bash
 # Single operation test
-source /home/ziliang/cyborg/.venv/bin/activate
-python tinygrad_comparison.py -n 1000000 -o vma --iterations 100
+bazel run //cuda:tinygrad_comparison -- -n 1000000 -o vma --iterations 100
 
 # Full comparison
-python run_comparison.py
+bazel run //cuda:run_comparison
 ```
 
 ### Files

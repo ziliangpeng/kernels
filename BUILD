@@ -1,4 +1,5 @@
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_binary")
+load("@rules_python//python:defs.bzl", "py_binary")
 
 # ============================================================================
 # Shared CUDA Libraries (used across multiple projects)
@@ -93,4 +94,33 @@ filegroup(
         ":reduce",
         ":mem_benchmark",
     ],
+)
+
+# ============================================================================
+# Python Benchmarks (Bazel-managed deps)
+# ============================================================================
+
+py_binary(
+    name = "tinygrad_comparison",
+    srcs = ["tinygrad_comparison.py"],
+    deps = [
+        "@pip//numpy",
+        "@pip//tinygrad",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
+)
+
+py_binary(
+    name = "run_comparison",
+    srcs = ["run_comparison.py"],
+    data = [
+        ":vector",
+        ":reduce",
+        ":tinygrad_comparison",
+        "//cuda/softmax:softmax",
+    ],
+    deps = ["@bazel_tools//tools/python/runfiles"],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["cuda", "gpu"],
 )

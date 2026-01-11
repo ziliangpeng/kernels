@@ -3,11 +3,35 @@
 Simple script to run CUDA vs TinyGrad comparison and collect results.
 """
 
+import os
 import re
 import subprocess
 
+from bazel_tools.tools.python.runfiles import runfiles
+
 sizes = [100000, 1000000, 10000000, 100000000]
 size_labels = ["100K", "1M", "10M", "100M"]
+
+
+def _workspace_name() -> str:
+    return os.environ.get("TEST_WORKSPACE") or os.environ.get("BUILD_WORKSPACE_NAME") or "cyborg"
+
+
+def _rlocation(path: str) -> str:
+    runner = runfiles.Create()
+    if not runner:
+        raise RuntimeError("Bazel runfiles are unavailable; run via `bazel run`.")
+    resolved = runner.Rlocation(path)
+    if not resolved:
+        raise RuntimeError(f"Runfile not found: {path}")
+    return resolved
+
+
+workspace = _workspace_name()
+cuda_vector = _rlocation(f"{workspace}/cuda/vector")
+cuda_reduce = _rlocation(f"{workspace}/cuda/reduce")
+cuda_softmax = _rlocation(f"{workspace}/cuda/softmax/softmax")
+tinygrad_bench = _rlocation(f"{workspace}/cuda/tinygrad_comparison")
 
 print("=" * 80)
 print("CUDA vs TinyGrad Performance Comparison")
@@ -23,14 +47,14 @@ print("-" * 80)
 
 for size, label in zip(sizes, size_labels, strict=True):
     # Run CUDA
-    cuda_cmd = f"./vector -n {size} --mode vma --fused"
-    cuda_output = subprocess.run(cuda_cmd, shell=True, capture_output=True, text=True)
+    cuda_cmd = [cuda_vector, "-n", str(size), "--mode", "vma", "--fused"]
+    cuda_output = subprocess.run(cuda_cmd, capture_output=True, text=True, check=False)
     cuda_match = re.search(r"Median:\s+([\d.]+)", cuda_output.stdout)
     cuda_time = float(cuda_match.group(1)) if cuda_match else None
 
     # Run TinyGrad
-    tinygrad_cmd = f"python tinygrad_comparison.py -n {size} -o vma --iterations 100"
-    tinygrad_output = subprocess.run(tinygrad_cmd, shell=True, capture_output=True, text=True)
+    tinygrad_cmd = [tinygrad_bench, "-n", str(size), "-o", "vma", "--iterations", "100"]
+    tinygrad_output = subprocess.run(tinygrad_cmd, capture_output=True, text=True, check=False)
     tinygrad_match = re.search(r"Median:\s+([\d.]+)", tinygrad_output.stdout)
     tinygrad_time = float(tinygrad_match.group(1)) if tinygrad_match else None
 
@@ -50,14 +74,14 @@ print("-" * 80)
 
 for size, label in zip(sizes, size_labels, strict=True):
     # Run CUDA
-    cuda_cmd = f"./reduce -n {size} --method threshold --warp-opt"
-    cuda_output = subprocess.run(cuda_cmd, shell=True, capture_output=True, text=True)
+    cuda_cmd = [cuda_reduce, "-n", str(size), "--method", "threshold", "--warp-opt"]
+    cuda_output = subprocess.run(cuda_cmd, capture_output=True, text=True, check=False)
     cuda_match = re.search(r"Median:\s+([\d.]+)", cuda_output.stdout)
     cuda_time = float(cuda_match.group(1)) if cuda_match else None
 
     # Run TinyGrad
-    tinygrad_cmd = f"python tinygrad_comparison.py -n {size} -o reduce --iterations 100"
-    tinygrad_output = subprocess.run(tinygrad_cmd, shell=True, capture_output=True, text=True)
+    tinygrad_cmd = [tinygrad_bench, "-n", str(size), "-o", "reduce", "--iterations", "100"]
+    tinygrad_output = subprocess.run(tinygrad_cmd, capture_output=True, text=True, check=False)
     tinygrad_match = re.search(r"Median:\s+([\d.]+)", tinygrad_output.stdout)
     tinygrad_time = float(tinygrad_match.group(1)) if tinygrad_match else None
 
@@ -77,14 +101,14 @@ print("-" * 80)
 
 for size, label in zip(sizes, size_labels, strict=True):
     # Run CUDA
-    cuda_cmd = f"./softmax -n {size} --method multi"
-    cuda_output = subprocess.run(cuda_cmd, shell=True, capture_output=True, text=True)
+    cuda_cmd = [cuda_softmax, "-n", str(size), "--method", "multi"]
+    cuda_output = subprocess.run(cuda_cmd, capture_output=True, text=True, check=False)
     cuda_match = re.search(r"Median:\s+([\d.]+)", cuda_output.stdout)
     cuda_time = float(cuda_match.group(1)) if cuda_match else None
 
     # Run TinyGrad (extract built-in softmax time)
-    tinygrad_cmd = f"python tinygrad_comparison.py -n {size} -o softmax --iterations 100"
-    tinygrad_output = subprocess.run(tinygrad_cmd, shell=True, capture_output=True, text=True)
+    tinygrad_cmd = [tinygrad_bench, "-n", str(size), "-o", "softmax", "--iterations", "100"]
+    tinygrad_output = subprocess.run(tinygrad_cmd, capture_output=True, text=True, check=False)
     # Get the built-in softmax result (first median after "Built-in")
     tinygrad_lines = tinygrad_output.stdout.split("\n")
     tinygrad_time = None
