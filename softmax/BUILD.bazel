@@ -187,6 +187,7 @@ cuda_library(
     deps = [
         "//cuda:cuda_utils",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -201,6 +202,7 @@ cuda_library(
     deps = [
         "//cuda:cuda_utils",
     ],
+    target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
 )
 
@@ -233,13 +235,11 @@ cuda_binary(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # ============================================================================
 # Test Targets (mirrors Makefile test cases)
 # ============================================================================
-# IMPORTANT: tags = ["cuda", "gpu"] allows CI to skip these (no GPU in GitHub Actions)
 
 # Naive method tests
 cuda_test(
@@ -252,7 +252,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -265,7 +264,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # Multi-pass method tests
@@ -279,7 +277,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -292,7 +289,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -305,7 +301,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # Fused3 method tests
@@ -319,7 +314,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -332,7 +326,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -345,7 +338,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -358,7 +350,6 @@ cuda_test(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
     timeout = "moderate",  # Larger test needs more time
 )
 

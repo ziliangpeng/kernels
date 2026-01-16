@@ -54,7 +54,6 @@ cuda_library(
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
-    tags = ["cuda", "gpu"],
 )
 
 # WMMA Tensor Core kernel (FP16)
@@ -70,7 +69,6 @@ cuda_library(
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
-    tags = ["cuda", "gpu"],
 )
 
 # ============================================================================
@@ -93,13 +91,11 @@ cuda_binary(
         "-lcublas",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # ============================================================================
 # Test Targets
 # ============================================================================
-# IMPORTANT: tags = ["cuda", "gpu"] allows CI to skip these (no GPU in GitHub Actions)
 
 # Test naive implementation on small matrices
 cuda_test(
@@ -113,7 +109,6 @@ cuda_test(
         "//cuda:cuda_utils",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -127,7 +122,6 @@ cuda_test(
         "//cuda:cuda_utils",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -141,7 +135,6 @@ cuda_test(
         "//cuda:cuda_utils",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -155,7 +148,6 @@ cuda_test(
         "//cuda:cuda_utils",
     ],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # cuBLAS tests for various sizes
@@ -171,7 +163,6 @@ cuda_test(
     ],
     args = ["--size", "256", "--method", "cublas", "--verify"],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -186,7 +177,6 @@ cuda_test(
     ],
     args = ["--size", "1024", "--method", "cublas", "--verify"],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -201,7 +191,6 @@ cuda_test(
     ],
     args = ["--size", "2048", "--method", "cublas", "--verify"],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # WMMA tests for various sizes
@@ -218,7 +207,6 @@ cuda_test(
     ],
     args = ["--size", "256", "--method", "wmma", "--verify"],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -234,7 +222,6 @@ cuda_test(
     ],
     args = ["--size", "1024", "--method", "wmma", "--verify"],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 cuda_test(
@@ -250,7 +237,6 @@ cuda_test(
     ],
     args = ["--size", "2048", "--method", "wmma", "--verify"],
     target_compatible_with = ["//constraints:cuda"],
-    tags = ["cuda", "gpu"],
 )
 
 # ============================================================================
