@@ -207,7 +207,7 @@ cuda_library(
 )
 
 # ============================================================================
-# Softmax Main Binary
+# Softmax Main Binary (Performance Benchmark)
 # ============================================================================
 
 cuda_binary(
@@ -229,6 +229,7 @@ cuda_binary(
         ":softmax_small",
         "//cuda:cuda_utils",
         "//cuda:vector_init",
+        "//cuda/common:benchmark_utils",
     ],
     linkopts = [
         "-L/lib/x86_64-linux-gnu",
@@ -238,136 +239,30 @@ cuda_binary(
 )
 
 # ============================================================================
-# Test Targets (mirrors Makefile test cases)
+# Correctness Tests (googletest-based, manual - not run in CI)
 # ============================================================================
 
-# Naive method tests
 cuda_test(
-    name = "softmax_naive_1k_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "1000", "--method", "naive", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
+    name = "softmax_test",
+    srcs = ["softmax_test.cpp"],
+    deps = [
+        ":softmax_naive",
+        ":softmax_fused3",
+        ":softmax_fused2",
+        ":softmax_online_simple",
+        ":softmax_online_warp",
+        ":softmax_cub_block",
+        ":softmax_cub_device",
+        ":softmax_cudnn",
+        ":softmax_tiny",
+        ":softmax_small",
+        "//cuda:cuda_utils",
+        "@googletest//:gtest_main",
+    ],
     linkopts = [
         "-L/lib/x86_64-linux-gnu",
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
-)
-
-cuda_test(
-    name = "softmax_naive_10k_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "10000", "--method", "naive", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-# Multi-pass method tests
-cuda_test(
-    name = "softmax_multi_1k_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "1000", "--method", "multi", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-cuda_test(
-    name = "softmax_multi_100k_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "100000", "--method", "multi", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-cuda_test(
-    name = "softmax_multi_1m_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "1000000", "--method", "multi", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-# Fused3 method tests
-cuda_test(
-    name = "softmax_fused3_1k_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "1000", "--method", "fused3", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-cuda_test(
-    name = "softmax_fused3_100k_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "100000", "--method", "fused3", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-cuda_test(
-    name = "softmax_fused3_1m_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "1000000", "--method", "fused3", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-cuda_test(
-    name = "softmax_fused3_10m_test",
-    srcs = ["softmax.cpp"],
-    args = ["--size", "10000000", "--method", "fused3", "--verify"],
-    deps = [":softmax_naive", ":softmax_multipass", ":softmax_fused3", ":softmax_fused2", ":softmax_fused1", ":softmax_online", ":softmax_online_simple", ":softmax_online_warp", ":softmax_cub_block", ":softmax_cub_device", ":softmax_cudnn", "//cuda:cuda_utils", "//cuda:vector_init"],
-    linkopts = [
-        "-L/lib/x86_64-linux-gnu",
-        "-lcudnn",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-    timeout = "moderate",  # Larger test needs more time
-)
-
-# ============================================================================
-# Test Suite (run all softmax tests)
-# ============================================================================
-
-test_suite(
-    name = "all_tests",
-    tests = [
-        ":softmax_naive_1k_test",
-        ":softmax_naive_10k_test",
-        ":softmax_multi_1k_test",
-        ":softmax_multi_100k_test",
-        ":softmax_multi_1m_test",
-        ":softmax_fused3_1k_test",
-        ":softmax_fused3_100k_test",
-        ":softmax_fused3_1m_test",
-        ":softmax_fused3_10m_test",
-    ],
+    tags = ["manual"],  # Not run in CI - requires GPU
 )

@@ -1,0 +1,13 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library")
+
+# ============================================================================
+# Common CUDA Utilities
+# ============================================================================
+
+cuda_library(
+    name = "benchmark_utils",
+    srcs = ["benchmark/benchmark_utils.cu"],
+    hdrs = ["benchmark/benchmark_utils.h"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+)

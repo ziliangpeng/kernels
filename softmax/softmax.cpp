@@ -23,6 +23,7 @@
 #include "softmax_tiny.h"
 #include "softmax_small.h"
 #include "vector_init.h"
+#include "common/benchmark/benchmark_utils.h"
 
 // ============================================================================
 // BENCHMARK MODE: Data Structures and Constants
@@ -48,39 +49,17 @@ const int BENCHMARK_SIZES[] = {16, 32, 64, 256, 512, 1<<10, 1<<13, 1<<16, 1<<18,
 const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
 const char* SIZE_LABELS[] = {"16", "32", "64", "256", "512", "1K", "8K", "64K", "256K", "1M", "8M"};
 
-// Result structures
-struct TimingStats {
-    float p50_ms;  // Median (50th percentile)
-    float p90_ms;  // 90th percentile
-};
-
-struct BenchmarkResult {
-    float p50_time_ms;       // Median (50th percentile), -1.0 if skipped/failed
-    float p90_time_ms;       // 90th percentile, -1.0 if skipped/failed
-    bool skipped;
-    std::string skip_reason;
-};
-
-struct VerificationResult {
-    bool passed;
-    double max_rel_error;    // -1.0 if skipped
-    double sum_error;        // -1.0 if skipped
-    bool has_nan_inf;
-    bool skipped;
-};
-
 void print_usage(const char *program_name) {
     printf("Usage: %s [options]\n", program_name);
     printf("Options:\n");
     printf("  -n, --size N              Set array size (default: 1048576)\n");
     printf("  -b, --block-size N        Set threads per block (default: 256)\n");
     printf("  -m, --method METHOD       Softmax method: 'naive', 'multi', 'fused3', 'fused2', 'fused1', 'online', 'online_simple', 'online_warp', 'cub_block', 'cub_device', 'cudnn', 'tiny', or 'small' (default: online_warp)\n");
-    printf("  -v, --verify              Enable result verification\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nMethods:\n");
     printf("  naive:         Naive exp(x)/sum (unstable - demonstrates overflow)\n");
-    printf("  multi:         Multi-pass stable (max → exp-sum → normalize)\n");
-    printf("  fused3:        3-kernel fused (block stats → global reduce → normalize) [IMPLEMENTED]\n");
+    printf("  multi:         Multi-pass stable (max -> exp-sum -> normalize)\n");
+    printf("  fused3:        3-kernel fused (block stats -> global reduce -> normalize) [IMPLEMENTED]\n");
     printf("  fused2:        2-kernel fused (cooperative groups, grid sync) [IMPLEMENTED]\n");
     printf("  fused1:        1-kernel fused (single kernel, grid sync, cooperative groups) [SKELETON]\n");
     printf("  online:        Single-pass online algorithm (streaming max/sum) [SKELETON]\n");
@@ -89,307 +68,24 @@ void print_usage(const char *program_name) {
     printf("  cub_block:     3-kernel with CUB block-level primitives [IMPLEMENTED]\n");
     printf("  cub_device:    CUB device-level primitives (single-call reductions) [IMPLEMENTED]\n");
     printf("  cudnn:         NVIDIA cuDNN library (industry-standard) [IMPLEMENTED]\n");
-    printf("  tiny:          Single-warp kernel (32 threads, warp shuffles only, optimal for ≤1K) [IMPLEMENTED]\n");
+    printf("  tiny:          Single-warp kernel (32 threads, warp shuffles only, optimal for <=1K) [IMPLEMENTED]\n");
     printf("  small:         Single-block kernel (256 threads, hybrid reduction, optimal for 1K-8K) [IMPLEMENTED]\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 16, 32, 64, 256, 512, 1K, 8K, 64K, 256K, 1M, 8M\n");
     printf("                 Iterations: 100 per test\n");
     printf("                 Output: Formatted performance table\n");
-    printf("\n                 When combined with --verify:\n");
-    printf("                   - Validates correctness against CPU reference\n");
-    printf("                   - Prints accuracy comparison table\n");
     printf("\nExample usage:\n");
-    printf("  %s --method all                # Performance benchmark only\n", program_name);
-    printf("  %s --method all --verify       # Performance + verification\n", program_name);
+    printf("  %s --method all                # Performance benchmark\n", program_name);
     printf("  %s --method all -b 512         # Custom block size\n", program_name);
 }
 
-// CPU reference implementation for verification (numerically stable)
-void softmax_cpu_reference(const float *input, float *output, int n) {
-    // Find max
-    float max_val = input[0];
-    for (int i = 1; i < n; i++) {
-        if (input[i] > max_val) {
-            max_val = input[i];
-        }
-    }
-
-    // Compute exp-sum (use double for better accuracy)
-    double sum_exp = 0.0;
-    for (int i = 0; i < n; i++) {
-        sum_exp += exp(input[i] - max_val);
-    }
-
-    // Normalize
-    for (int i = 0; i < n; i++) {
-        output[i] = exp(input[i] - max_val) / sum_exp;
-    }
-}
-
 // ============================================================================
-// BENCHMARK MODE: Helper Functions
+// BENCHMARK MODE: Main Benchmark Function
 // ============================================================================
-
-// Helper: Get per-iteration timing statistics using CUDA events
-// Uses per-iteration event pairs without CPU sync between iterations,
-// then extracts P50 (median) and P90 percentiles for accurate kernel timing
-TimingStats get_timing_stats(SoftmaxKernel *kernel, const float *d_input, float *d_output,
-                             int n, int num_iterations) {
-    // Allocate event pairs for each iteration
-    std::vector<cudaEvent_t> starts(num_iterations), stops(num_iterations);
-    for (int i = 0; i < num_iterations; i++) {
-        cudaEventCreate(&starts[i]);
-        cudaEventCreate(&stops[i]);
-    }
-
-    // Warmup: run a few iterations to ensure kernel is compiled and caches are warm
-    for (int i = 0; i < 10; i++) {
-        kernel->execute(d_input, d_output);
-    }
-    cudaDeviceSynchronize();  // No events recorded yet, use device sync
-
-    // Queue all iterations with per-iteration events (no sync between)
-    for (int i = 0; i < num_iterations; i++) {
-        cudaEventRecord(starts[i]);
-        kernel->execute(d_input, d_output);
-        cudaEventRecord(stops[i]);
-    }
-
-    // Single sync at the end - wait for last event
-    cudaEventSynchronize(stops[num_iterations - 1]);
-
-    // Extract individual timings
-    std::vector<float> timings(num_iterations);
-    for (int i = 0; i < num_iterations; i++) {
-        cudaEventElapsedTime(&timings[i], starts[i], stops[i]);
-    }
-
-    // Sort for percentile calculation
-    std::sort(timings.begin(), timings.end());
-
-    TimingStats stats;
-    stats.p50_ms = timings[num_iterations / 2];            // 50th percentile (median)
-    stats.p90_ms = timings[(num_iterations * 90) / 100];   // 90th percentile
-
-    // Cleanup
-    for (int i = 0; i < num_iterations; i++) {
-        cudaEventDestroy(starts[i]);
-        cudaEventDestroy(stops[i]);
-    }
-
-    return stats;
-}
-
-// Helper: Run verification for a method
-VerificationResult verify_method(SoftmaxKernel *kernel, const float *d_input,
-                                 float *d_output, const float *h_input,
-                                 float *h_output, const float *h_expected, int n) {
-    VerificationResult result;
-    result.skipped = false;
-    result.passed = false;
-    result.max_rel_error = -1.0;
-    result.sum_error = -1.0;
-    result.has_nan_inf = false;
-
-    // Run kernel once
-    kernel->execute(d_input, d_output);
-    cudaError_t err = cudaGetLastError();
-    if (err != cudaSuccess) {
-        result.skipped = true;
-        return result;
-    }
-
-    // Transfer output
-    err = cudaMemcpy(h_output, d_output, n * sizeof(float), cudaMemcpyDeviceToHost);
-    if (err != cudaSuccess) {
-        result.skipped = true;
-        return result;
-    }
-
-    // Check for NaN/Inf
-    for (int i = 0; i < n; i++) {
-        if (isnan(h_output[i]) || isinf(h_output[i])) {
-            result.has_nan_inf = true;
-            result.passed = false;
-            return result;
-        }
-    }
-
-    // Compare against CPU reference
-    double max_abs_error = 0.0;
-    double max_rel_error = 0.0;
-    double sum_gpu = 0.0;
-
-    for (int i = 0; i < n; i++) {
-        double abs_error = fabs(h_output[i] - h_expected[i]);
-        double rel_error = abs_error / (fabs(h_expected[i]) + 1e-10);
-
-        if (abs_error > max_abs_error) max_abs_error = abs_error;
-        if (rel_error > max_rel_error) max_rel_error = rel_error;
-        sum_gpu += h_output[i];
-    }
-
-    double sum_error = fabs(sum_gpu - 1.0);
-
-    result.max_rel_error = max_rel_error;
-    result.sum_error = sum_error;
-    result.passed = (max_rel_error < 1e-4 && sum_error < 1e-4);
-
-    return result;
-}
-
-// ============================================================================
-// BENCHMARK MODE: Table Printing Functions
-// ============================================================================
-
-void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
-    printf("\n");
-    printf("=======================================================================================\n");
-    printf("                         SOFTMAX PERFORMANCE BENCHMARK\n");
-    printf("=======================================================================================\n");
-    printf("Iterations per test: 100\n");
-    printf("Metric: P50/P90 execution time (ms) - median and 90th percentile\n");
-    printf("Method: Per-iteration CUDA event timing (no CPU sync between iterations)\n\n");
-
-    // Print header
-    printf("%-15s", "Method");
-    for (int s = 0; s < NUM_SIZES; s++) {
-        printf(" | %-13s", SIZE_LABELS[s]);
-    }
-    printf(" |\n");
-
-    // Print separator
-    printf("%-15s", "---------------");
-    for (int s = 0; s < NUM_SIZES; s++) {
-        printf("-|--------------");
-    }
-    printf("-|\n");
-
-    // Print data rows (P50/P90 format)
-    for (int m = 0; m < NUM_METHODS; m++) {
-        printf("%-15s", BENCHMARK_METHODS[m]);
-        for (int s = 0; s < NUM_SIZES; s++) {
-            if (results[m][s].skipped) {
-                printf(" | %-13s", "SKIPPED");
-            } else if (results[m][s].p50_time_ms < 0) {
-                printf(" | %-13s", "FAILED");
-            } else {
-                printf(" | %5.3f/%5.3f", results[m][s].p50_time_ms, results[m][s].p90_time_ms);
-            }
-        }
-        printf(" |\n");
-    }
-
-    // Print skipped reasons
-    printf("\nSKIPPED/FAILED reasons:\n");
-    for (int m = 0; m < NUM_METHODS; m++) {
-        bool has_skip = false;
-        for (int s = 0; s < NUM_SIZES; s++) {
-            if (results[m][s].skipped || results[m][s].p50_time_ms < 0) {
-                if (!has_skip) {
-                    printf("- %s: %s\n", BENCHMARK_METHODS[m], results[m][s].skip_reason.c_str());
-                    has_skip = true;
-                }
-            }
-        }
-    }
-
-    // Find top 3 fastest per size (excluding naive method which is numerically unstable)
-    printf("\nTOP 3 FASTEST per size by P50 (excluding naive):\n");
-    for (int s = 0; s < NUM_SIZES; s++) {
-        // Create array of (method_index, time) pairs
-        struct MethodTime {
-            int method_idx;
-            float time;
-        };
-        MethodTime method_times[NUM_METHODS];
-        int count = 0;
-
-        // Collect valid methods
-        for (int m = 0; m < NUM_METHODS; m++) {
-            // Skip naive method - it's numerically unstable
-            if (strcmp(BENCHMARK_METHODS[m], "naive") == 0) continue;
-
-            if (!results[m][s].skipped && results[m][s].p50_time_ms > 0) {
-                method_times[count].method_idx = m;
-                method_times[count].time = results[m][s].p50_time_ms;
-                count++;
-            }
-        }
-
-        // Sort by time (simple selection sort for top 3)
-        for (int i = 0; i < count && i < 3; i++) {
-            for (int j = i + 1; j < count; j++) {
-                if (method_times[j].time < method_times[i].time) {
-                    MethodTime temp = method_times[i];
-                    method_times[i] = method_times[j];
-                    method_times[j] = temp;
-                }
-            }
-        }
-
-        // Print top 3
-        printf("- %-5s: ", SIZE_LABELS[s]);
-        int print_count = (count < 3) ? count : 3;
-        for (int i = 0; i < print_count; i++) {
-            if (i > 0) printf(", ");
-            printf("%s (%.3f ms)", BENCHMARK_METHODS[method_times[i].method_idx], method_times[i].time);
-        }
-        printf("\n");
-    }
-    printf("=======================================================================================\n");
-}
-
-void print_verification_table(VerificationResult results[][NUM_SIZES]) {
-    printf("\n");
-    printf("=============================================================================\n");
-    printf("                    SOFTMAX VERIFICATION RESULTS\n");
-    printf("=============================================================================\n");
-    printf("Reference: CPU softmax (numerically stable)\n");
-    printf("Threshold: Max relative error < 1e-4, Sum error < 1e-4\n\n");
-
-    // Print header
-    printf("%-15s", "Method");
-    for (int s = 0; s < NUM_SIZES; s++) {
-        printf(" | %-13s", SIZE_LABELS[s]);
-    }
-    printf(" |\n");
-
-    // Print separator
-    printf("%-15s", "---------------");
-    for (int s = 0; s < NUM_SIZES; s++) {
-        printf("-|--------------");
-    }
-    printf("-|\n");
-
-    // Print data rows
-    for (int m = 0; m < NUM_METHODS; m++) {
-        printf("%-15s", BENCHMARK_METHODS[m]);
-        for (int s = 0; s < NUM_SIZES; s++) {
-            if (results[m][s].skipped) {
-                printf(" | %-13s", "SKIPPED");
-            } else if (results[m][s].has_nan_inf) {
-                printf(" | %-13s", "FAIL (NaN)");
-            } else if (results[m][s].passed) {
-                printf(" | PASS (%.2e)", results[m][s].max_rel_error);
-            } else {
-                printf(" | FAIL (%.2e)", results[m][s].max_rel_error);
-            }
-        }
-        printf(" |\n");
-    }
-
-    printf("\nLegend:\n");
-    printf("- PASS (error): Verification passed, shows max relative error\n");
-    printf("- FAIL (NaN):   Output contains NaN or Inf\n");
-    printf("- FAIL (error): Error exceeds threshold\n");
-    printf("- SKIPPED:      Method failed to execute\n");
-    printf("=============================================================================\n");
-}
 
 // Main benchmark function: test all methods across all sizes
-void benchmark_all_methods(int threadsPerBlock, bool verify) {
+void benchmark_all_methods(int threadsPerBlock) {
     printf("\n=============================================================================\n");
     printf("                    RUNNING COMPREHENSIVE BENCHMARK\n");
     printf("=============================================================================\n");
@@ -397,30 +93,18 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
     printf("Sizes to test: %d (16, 32, 64, 256, 512, 1K, 8K, 64K, 256K, 1M, 8M)\n", NUM_SIZES);
     printf("Iterations per test: 100\n");
     printf("Threads per block: %d\n", threadsPerBlock);
-    if (verify) {
-        printf("Verification: ENABLED\n");
-    }
     printf("=============================================================================\n\n");
 
+    // Convert to vectors for the utility functions
+    std::vector<std::string> method_names(BENCHMARK_METHODS, BENCHMARK_METHODS + NUM_METHODS);
+    std::vector<std::string> size_labels(SIZE_LABELS, SIZE_LABELS + NUM_SIZES);
+
     // Allocate result arrays
-    BenchmarkResult perf_results[NUM_METHODS][NUM_SIZES];
-    VerificationResult verify_results[NUM_METHODS][NUM_SIZES];
+    std::vector<std::vector<BenchmarkResult>> all_results(NUM_METHODS, std::vector<BenchmarkResult>(NUM_SIZES));
 
-    // Initialize all results as skipped by default
-    for (int m = 0; m < NUM_METHODS; m++) {
-        for (int s = 0; s < NUM_SIZES; s++) {
-            perf_results[m][s].p50_time_ms = -1.0f;
-            perf_results[m][s].p90_time_ms = -1.0f;
-            perf_results[m][s].skipped = true;
-            perf_results[m][s].skip_reason = "Not run";
-
-            verify_results[m][s].skipped = true;
-            verify_results[m][s].passed = false;
-            verify_results[m][s].max_rel_error = -1.0;
-            verify_results[m][s].sum_error = -1.0;
-            verify_results[m][s].has_nan_inf = false;
-        }
-    }
+    BenchmarkConfig config;
+    config.warmup_iterations = 10;
+    config.timed_iterations = 100;
 
     // Run benchmarks for each method and size
     for (int m = 0; m < NUM_METHODS; m++) {
@@ -435,46 +119,27 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
             // Allocate host memory
             float *h_input;
             allocateAndInitVector(&h_input, n);
-            float *h_output = (float*)malloc(n * sizeof(float));
-            float *h_expected = nullptr;
-
-            if (!h_output) {
-                printf("SKIPPED (host allocation failed)\n");
-                perf_results[m][s].skip_reason = "Host allocation failed";
-                freeHostVector(h_input);
-                continue;
-            }
 
             // Allocate device memory
             float *d_input, *d_output;
             cudaError_t err = cudaMalloc(&d_input, n * sizeof(float));
             if (err != cudaSuccess) {
                 printf("SKIPPED (device allocation failed)\n");
-                perf_results[m][s].skip_reason = "Device allocation failed";
+                all_results[m][s] = BenchmarkResult("Device allocation failed");
                 freeHostVector(h_input);
-                free(h_output);
                 continue;
             }
 
             err = cudaMalloc(&d_output, n * sizeof(float));
             if (err != cudaSuccess) {
                 printf("SKIPPED (device allocation failed)\n");
-                perf_results[m][s].skip_reason = "Device allocation failed";
+                all_results[m][s] = BenchmarkResult("Device allocation failed");
                 freeHostVector(h_input);
-                free(h_output);
                 cudaFree(d_input);
                 continue;
             }
 
             cudaMemcpy(d_input, h_input, n * sizeof(float), cudaMemcpyHostToDevice);
-
-            // Compute CPU reference if verification enabled
-            if (verify) {
-                h_expected = (float*)malloc(n * sizeof(float));
-                if (h_expected) {
-                    softmax_cpu_reference(h_input, h_expected, n);
-                }
-            }
 
             // Try to instantiate kernel
             SoftmaxKernel *kernel = nullptr;
@@ -506,86 +171,55 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
 
                 if (!kernel) {
                     printf("SKIPPED (unknown method)\n");
-                    perf_results[m][s].skip_reason = "Unknown method";
+                    all_results[m][s] = BenchmarkResult("Unknown method");
                 } else {
                     // Run performance benchmark with per-iteration timing
-                    TimingStats stats = get_timing_stats(kernel, d_input, d_output, n, 100);
+                    auto kernel_fn = [&]() { kernel->execute(d_input, d_output); };
+                    TimingStats stats = get_timing_stats(kernel_fn, config);
 
-                    perf_results[m][s].p50_time_ms = stats.p50_ms;
-                    perf_results[m][s].p90_time_ms = stats.p90_ms;
-                    perf_results[m][s].skipped = false;
-                    perf_results[m][s].skip_reason = "";
-
-                    // Run verification if enabled
-                    if (verify && h_expected) {
-                        VerificationResult vr = verify_method(kernel, d_input, d_output,
-                                                              h_input, h_output, h_expected, n);
-                        verify_results[m][s] = vr;
-
-                        if (vr.has_nan_inf) {
-                            printf("%.3f/%.3f ms [FAIL: NaN/Inf]\n", stats.p50_ms, stats.p90_ms);
-                        } else if (vr.passed) {
-                            printf("%.3f/%.3f ms [PASS: %.2e]\n", stats.p50_ms, stats.p90_ms, vr.max_rel_error);
-                        } else if (!vr.skipped) {
-                            printf("%.3f/%.3f ms [FAIL: %.2e]\n", stats.p50_ms, stats.p90_ms, vr.max_rel_error);
-                        } else {
-                            printf("%.3f/%.3f ms [verify skipped]\n", stats.p50_ms, stats.p90_ms);
-                        }
-                    } else {
-                        printf("%.3f/%.3f ms\n", stats.p50_ms, stats.p90_ms);
-                    }
+                    all_results[m][s] = BenchmarkResult(stats.p50_ms, stats.p90_ms);
+                    printf("%.3f/%.3f ms\n", stats.p50_ms, stats.p90_ms);
 
                     delete kernel;
                 }
             } catch (const std::exception &e) {
                 printf("SKIPPED (exception: %s)\n", e.what());
-                perf_results[m][s].skip_reason = std::string("Exception: ") + e.what();
+                all_results[m][s] = BenchmarkResult(std::string("Exception: ") + e.what());
                 if (kernel) delete kernel;
             } catch (...) {
                 printf("SKIPPED (unknown exception)\n");
-                perf_results[m][s].skip_reason = "Unknown exception";
+                all_results[m][s] = BenchmarkResult("Unknown exception");
                 if (kernel) delete kernel;
             }
 
             // Cleanup
             freeHostVector(h_input);
-            free(h_output);
-            if (h_expected) free(h_expected);
             cudaFree(d_input);
             cudaFree(d_output);
         }
         printf("\n");
     }
 
-    // Print results
-    printf("\n");
-    print_performance_table(perf_results);
-
-    if (verify) {
-        printf("\n");
-        print_verification_table(verify_results);
+    // Print results using utility functions
+    print_benchmark_header("SOFTMAX PERFORMANCE BENCHMARK", size_labels, config.timed_iterations);
+    for (int m = 0; m < NUM_METHODS; m++) {
+        print_benchmark_row(BENCHMARK_METHODS[m], all_results[m]);
     }
+    print_benchmark_footer(method_names, all_results);
+    print_top_fastest(method_names, all_results, size_labels, 3, {"naive"});
 }
 
-// Softmax operation
-void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
+// ============================================================================
+// Single Method Benchmark
+// ============================================================================
+
+void softmax_op(int n, int threadsPerBlock, const char *method) {
     printf("Softmax of %d elements\n", n);
     printf("Method: %s\n", method);
-
-    if (verify) {
-        printf("Verification enabled\n");
-    }
 
     // Allocate and initialize input vector
     float *h_input;
     allocateAndInitVector(&h_input, n);
-
-    // Allocate output vector on host
-    float *h_output = (float*)malloc(n * sizeof(float));
-    if (!h_output) {
-        fprintf(stderr, "Failed to allocate host output memory\n");
-        exit(EXIT_FAILURE);
-    }
 
     // Allocate device vectors
     float *d_input, *d_output;
@@ -599,7 +233,6 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
     if (!timings) {
         fprintf(stderr, "Failed to allocate memory for timings\n");
         freeHostVector(h_input);
-        free(h_output);
         freeDeviceVector(d_input);
         freeDeviceVector(d_output);
         return;
@@ -669,104 +302,10 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
     // Calculate and print statistics
     calculate_and_print_statistics(timings, num_iterations);
 
-    // Transfer result back for verification
-    if (verify) {
-        // Run one final time to get a clean result (not timed)
-        if (strcmp(method, "cudnn") == 0) {
-            // Use class-based API
-            CudnnSoftmax cudnn_kernel(n, threadsPerBlock);
-            cudnn_kernel.execute(d_input, d_output);
-        } else if (strcmp(method, "naive") == 0) {
-            softmax_Naive(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "multi") == 0) {
-            softmax_MultiPass(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "fused3") == 0) {
-            softmax_Fused3(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "fused2") == 0) {
-            softmax_Fused2(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "fused1") == 0) {
-            softmax_Fused1(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "online") == 0) {
-            softmax_Online(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "tiny") == 0) {
-            softmax_Tiny(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "small") == 0) {
-            softmax_Small(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "online_simple") == 0) {
-            softmax_OnlineSimple(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "online_warp") == 0) {
-            softmax_OnlineWarp(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "cub_block") == 0) {
-            softmax_CubBlock(d_input, d_output, n, threadsPerBlock);
-        } else if (strcmp(method, "cub_device") == 0) {
-            softmax_CubDevice(d_input, d_output, n, threadsPerBlock);
-        }
-        cudaDeviceSynchronize();
-
-        transferFromDevice(h_output, d_output, n);
-
-        printf("\nVerifying results...\n");
-
-        // Calculate expected result on CPU
-        float *h_expected = (float*)malloc(n * sizeof(float));
-        if (!h_expected) {
-            fprintf(stderr, "Failed to allocate CPU reference memory\n");
-            exit(EXIT_FAILURE);
-        }
-        softmax_cpu_reference(h_input, h_expected, n);
-
-        // Check for NaN/Inf (common with naive method for large inputs)
-        bool has_nan_inf = false;
-        for (int i = 0; i < n; i++) {
-            if (isnan(h_output[i]) || isinf(h_output[i])) {
-                has_nan_inf = true;
-                break;
-            }
-        }
-
-        if (has_nan_inf) {
-            printf("✗ Verification FAILED: Output contains NaN or Inf\n");
-            printf("  This is expected for naive method with large input values\n");
-            printf("  (demonstrates numerical instability)\n");
-        } else {
-            // Compare GPU vs CPU
-            double max_abs_error = 0.0;
-            double max_rel_error = 0.0;
-            double sum_gpu = 0.0;
-
-            for (int i = 0; i < n; i++) {
-                double abs_error = fabs(h_output[i] - h_expected[i]);
-                double rel_error = abs_error / (fabs(h_expected[i]) + 1e-10);
-
-                if (abs_error > max_abs_error) max_abs_error = abs_error;
-                if (rel_error > max_rel_error) max_rel_error = rel_error;
-
-                sum_gpu += h_output[i];
-            }
-
-            // Check if sum is approximately 1.0 (probability distribution property)
-            double sum_error = fabs(sum_gpu - 1.0);
-
-            if (max_rel_error < 1e-4 && sum_error < 1e-4) {
-                printf("✓ Verification PASSED\n");
-                printf("  Max relative error: %.2e\n", max_rel_error);
-                printf("  Sum(output) = %.6f (expected 1.0, error: %.2e)\n", sum_gpu, sum_error);
-            } else {
-                printf("✗ Verification FAILED\n");
-                printf("  Max absolute error: %.6e\n", max_abs_error);
-                printf("  Max relative error: %.2e\n", max_rel_error);
-                printf("  Sum(output) = %.6f (expected 1.0, error: %.2e)\n", sum_gpu, sum_error);
-            }
-        }
-
-        free(h_expected);
-    }
-
     // Cleanup
     freeDeviceVector(d_input);
     freeDeviceVector(d_output);
     freeHostVector(h_input);
-    free(h_output);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
 
@@ -775,7 +314,6 @@ void softmax_op(int n, int threadsPerBlock, bool verify, const char *method) {
 
 int main(int argc, char *argv[]) {
     // Parse command line arguments
-    bool verify = false;
     const char *method = "online_warp";  // Default method
     int n = 1 << 20;  // Default: 1 million elements
     int threadsPerBlock = 256;  // Default: 256 threads per block (optimal)
@@ -784,13 +322,12 @@ int main(int argc, char *argv[]) {
         {"size",       required_argument, 0, 'n'},
         {"block-size", required_argument, 0, 'b'},
         {"method",     required_argument, 0, 'm'},
-        {"verify",     no_argument,       0, 'v'},
         {"help",       no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "n:b:m:vh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:b:m:h", long_options, NULL)) != -1) {
         switch (opt) {
             case 'n':
                 n = atoi(optarg);
@@ -819,9 +356,6 @@ int main(int argc, char *argv[]) {
                     return 1;
                 }
                 break;
-            case 'v':
-                verify = true;
-                break;
             case 'h':
                 print_usage(argv[0]);
                 return 0;
@@ -837,10 +371,10 @@ int main(int argc, char *argv[]) {
     // Run softmax operation
     if (strcmp(method, "all") == 0) {
         // Benchmark mode: test all methods across all sizes
-        benchmark_all_methods(threadsPerBlock, verify);
+        benchmark_all_methods(threadsPerBlock);
     } else {
         // Single method mode (original behavior)
-        softmax_op(n, threadsPerBlock, verify, method);
+        softmax_op(n, threadsPerBlock, method);
     }
 
     return 0;
