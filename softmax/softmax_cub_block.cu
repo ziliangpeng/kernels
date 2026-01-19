@@ -1,6 +1,6 @@
 #include "softmax_cub_block.h"
 #include "cuda_utils.h"
-#include "elementwise_kernels.h"
+#include "elementwise/normalize.h"
 #include <cuda_runtime.h>
 #include <cub/cub.cuh>  // CUB library
 #include <stdlib.h>

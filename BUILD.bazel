@@ -11,7 +11,7 @@ cuda_library(
     srcs = ["cuda_utils.cu"],
     hdrs = ["cuda_utils.h"],
     target_compatible_with = ["//constraints:cuda"],
-    visibility = ["//cuda:__subpackages__"],  # Visible to cuda/* subdirs
+    visibility = ["//cuda:__subpackages__"],
 )
 
 # Vector initialization utilities
@@ -24,52 +24,9 @@ cuda_library(
     visibility = ["//cuda:__subpackages__"],
 )
 
-# Reduction kernels (shared by reduce.cu and softmax)
-cuda_library(
-    name = "reduce_kernels",
-    srcs = ["reduce_kernels.cu"],
-    hdrs = ["reduce_kernels.h"],
-    deps = [":cuda_utils"],
-    target_compatible_with = ["//constraints:cuda"],
-    visibility = ["//cuda:__subpackages__"],
-)
-
 # ============================================================================
-# Root-level CUDA Projects (not yet restructured)
+# Root-level CUDA Projects (standalone tools)
 # ============================================================================
-
-# Element-wise kernels (shared across multiple modules)
-cuda_library(
-    name = "elementwise_kernels",
-    srcs = ["elementwise_kernels.cu"],
-    hdrs = ["elementwise_kernels.h"],
-    target_compatible_with = ["//constraints:cuda"],
-    visibility = ["//visibility:public"],
-)
-
-# Vector addition binary
-cuda_binary(
-    name = "vector",
-    srcs = ["vector.cu"],
-    deps = [
-        ":cuda_utils",
-        ":vector_init",
-        ":elementwise_kernels",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
-
-# Reduction binary
-cuda_binary(
-    name = "reduce",
-    srcs = ["reduce.cu"],
-    deps = [
-        ":cuda_utils",
-        ":vector_init",
-        ":reduce_kernels",
-    ],
-    target_compatible_with = ["//constraints:cuda"],
-)
 
 # Memory benchmark binary
 cuda_binary(
@@ -77,20 +34,6 @@ cuda_binary(
     srcs = ["mem_benchmark.cu"],
     deps = [":cuda_utils"],
     target_compatible_with = ["//constraints:cuda"],
-)
-
-# ============================================================================
-# Convenience Targets
-# ============================================================================
-
-# Build all root-level binaries (for backwards compatibility with Makefile)
-filegroup(
-    name = "all_root_binaries",
-    srcs = [
-        ":vector",
-        ":reduce",
-        ":mem_benchmark",
-    ],
 )
 
 # ============================================================================
@@ -111,8 +54,8 @@ py_binary(
     name = "run_comparison",
     srcs = ["run_comparison.py"],
     data = [
-        ":vector",
-        ":reduce",
+        "//cuda/elementwise:elementwise",
+        "//cuda/reduce:reduce",
         ":tinygrad_comparison",
         "//cuda/softmax:softmax",
     ],

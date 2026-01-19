@@ -1,6 +1,6 @@
 #include "softmax_online_simple.h"
 #include "cuda_utils.h"
-#include "elementwise_kernels.h"
+#include "elementwise/normalize.h"
 #include <cuda_runtime.h>
 #include <math.h>
 

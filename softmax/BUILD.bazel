@@ -14,8 +14,9 @@ cuda_library(
     ],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:reduce_kernels",
-        "//cuda:elementwise_kernels",
+        "//cuda/reduce:sum_reduce",
+        "//cuda/reduce:max_reduce",
+        "//cuda/elementwise:normalize",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -28,8 +29,9 @@ cuda_library(
     hdrs = ["softmax_multipass.h"],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:reduce_kernels",
-        "//cuda:elementwise_kernels",
+        "//cuda/reduce:sum_reduce",
+        "//cuda/reduce:max_reduce",
+        "//cuda/elementwise:normalize",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -45,8 +47,9 @@ cuda_library(
     ],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:reduce_kernels",
-        "//cuda:elementwise_kernels",
+        "//cuda/reduce:sum_reduce",
+        "//cuda/reduce:max_reduce",
+        "//cuda/elementwise:normalize",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -75,7 +78,8 @@ cuda_library(
     hdrs = ["softmax_fused1.h"],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:reduce_kernels",
+        "//cuda/reduce:sum_reduce",
+        "//cuda/reduce:max_reduce",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -88,7 +92,8 @@ cuda_library(
     hdrs = ["softmax_online.h"],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:reduce_kernels",
+        "//cuda/reduce:sum_reduce",
+        "//cuda/reduce:max_reduce",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -104,7 +109,7 @@ cuda_library(
     ],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:elementwise_kernels",
+        "//cuda/elementwise:normalize",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -135,7 +140,7 @@ cuda_library(
     ],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:elementwise_kernels",
+        "//cuda/elementwise:normalize",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -151,7 +156,6 @@ cuda_library(
     ],
     deps = [
         "//cuda:cuda_utils",
-        "//cuda:elementwise_kernels",
     ],
     target_compatible_with = ["//constraints:cuda"],
     includes = [".."],
@@ -236,6 +240,7 @@ cuda_binary(
         "-lcudnn",
     ],
     target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__pkg__"],
 )
 
 # ============================================================================

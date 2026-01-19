@@ -6,7 +6,8 @@
 #include <getopt.h>
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
-#include "reduce_kernels.h"
+#include "reduce/sum_reduce.h"
+#include "reduce/sum_reduce_atomic.h"
 #include "vector_init.h"
 
 void print_usage(const char *program_name) {
@@ -17,7 +18,6 @@ void print_usage(const char *program_name) {
     printf("  -m, --method METHOD       Reduction method: 'gpu', 'threshold', or 'atomic' (default: threshold)\n");
     printf("  -t, --cpu-threshold N     CPU threshold for 'threshold' method (default: 1000)\n");
     printf("  -w, --warp-opt            Use warp shuffle optimization (requires block size >= 64 and power of 2)\n");
-    printf("  -v, --verify              Enable result verification\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nMethods:\n");
     printf("  gpu:       Fully GPU recursive reduction (reduce until 1 element)\n");
@@ -31,7 +31,7 @@ void print_usage(const char *program_name) {
 }
 
 // SUM reduction operation
-void sum_op(int n, int threadsPerBlock, bool verify, const char *method, int cpuThreshold, bool useWarpOpt) {
+void sum_op(int n, int threadsPerBlock, const char *method, int cpuThreshold, bool useWarpOpt) {
     printf("Vector sum reduction of %d elements\n", n);
     printf("Method: %s", method);
     if (strcmp(method, "threshold") == 0) {
@@ -41,10 +41,6 @@ void sum_op(int n, int threadsPerBlock, bool verify, const char *method, int cpu
         printf(" [warp-optimized]");
     }
     printf("\n");
-
-    if (verify) {
-        printf("Verification enabled\n");
-    }
 
     // Allocate and initialize input vector
     float *h_input;
@@ -102,35 +98,12 @@ void sum_op(int n, int threadsPerBlock, bool verify, const char *method, int cpu
 
     printf("\nSum result: %f\n", result);
 
-    // Verify result if requested
-    if (verify) {
-        printf("Verifying results...\n");
-
-        // Calculate expected sum on CPU
-        double expected = 0.0;  // Use double for better accuracy
-        for (int i = 0; i < n; i++) {
-            expected += h_input[i];
-        }
-
-        double diff = fabs(result - expected);
-        double rel_error = diff / expected;
-
-        // Floating point accumulation order differs, so use relaxed tolerance
-        if (rel_error < 1e-4) {
-            printf("✓ Verification PASSED (relative error: %.2e)\n", rel_error);
-        } else {
-            printf("✗ Verification FAILED\n");
-            printf("  Expected: %.6f, Got: %.6f\n", (float)expected, result);
-            printf("  Absolute diff: %.6e\n", diff);
-            printf("  Relative error: %.2e\n", rel_error);
-        }
-    }
-
     // Cleanup
     freeDeviceVector(d_input);
     freeHostVector(h_input);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
+    free(timings);
 
     printf("\nReduction completed successfully!\n");
 }
@@ -142,7 +115,6 @@ bool isPowerOfTwo(int n) {
 
 int main(int argc, char *argv[]) {
     // Parse command line arguments
-    bool verify = false;
     bool useWarpOpt = false;  // Warp shuffle optimization flag
     const char *method = "threshold";  // Default method
     int n = 1 << 20;  // Default: 1 million elements
@@ -155,13 +127,12 @@ int main(int argc, char *argv[]) {
         {"method",        required_argument, 0, 'm'},
         {"cpu-threshold", required_argument, 0, 't'},
         {"warp-opt",      no_argument,       0, 'w'},
-        {"verify",        no_argument,       0, 'v'},
         {"help",          no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "n:b:m:t:wvh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:b:m:t:wh", long_options, NULL)) != -1) {
         switch (opt) {
             case 'n':
                 n = atoi(optarg);
@@ -194,9 +165,6 @@ int main(int argc, char *argv[]) {
             case 'w':
                 useWarpOpt = true;
                 break;
-            case 'v':
-                verify = true;
-                break;
             case 'h':
                 print_usage(argv[0]);
                 return 0;
@@ -218,7 +186,7 @@ int main(int argc, char *argv[]) {
     srand(time(NULL));
 
     // Run sum reduction operation
-    sum_op(n, threadsPerBlock, verify, method, cpuThreshold, useWarpOpt);
+    sum_op(n, threadsPerBlock, method, cpuThreshold, useWarpOpt);
 
     return 0;
 }

@@ -6,7 +6,9 @@
 #include <getopt.h>
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
-#include "elementwise_kernels.h"
+#include "elementwise/vector_add.h"
+#include "elementwise/vector_mul.h"
+#include "elementwise/vector_fma.h"
 #include "vector_init.h"
 
 void print_usage(const char *program_name) {
@@ -17,7 +19,6 @@ void print_usage(const char *program_name) {
     printf("  -m, --mode MODE      Computation mode: 'add' or 'vma' (default: add)\n");
     printf("  -f, --fused          Use fused kernel for VMA (default: separate)\n");
     printf("  -V, --vectorized     Use float4 vectorized kernel (requires --fused, VMA mode)\n");
-    printf("  -v, --verify         Enable result verification\n");
     printf("  -h, --help           Show this help message\n");
     printf("\nModes:\n");
     printf("  add: c = a + b (2 inputs, 1 output)\n");
@@ -28,11 +29,8 @@ void print_usage(const char *program_name) {
 }
 
 // ADD operation: c = a + b
-void add_op(int n, int threadsPerBlock, bool verify) {
+void add_op(int n, int threadsPerBlock) {
     printf("Vector operation: add mode on %d elements\n", n);
-    if (verify) {
-        printf("Verification enabled\n");
-    }
 
     // Allocate and initialize host vectors
     float *h_a, *h_b, *h_c;
@@ -86,24 +84,6 @@ void add_op(int n, int threadsPerBlock, bool verify) {
     transferFromDevice(h_c, d_c, n);
     printf("Vector operation completed successfully!\n");
 
-    // Verify result if requested
-    if (verify) {
-        printf("Verifying results...\n");
-        bool success = true;
-        for (int i = 0; i < n; i++) {
-            float expected = h_a[i] + h_b[i];
-            if (fabs(h_c[i] - expected) > 1e-5) {
-                fprintf(stderr, "Verification failed at element %d: expected %f, got %f\n",
-                        i, expected, h_c[i]);
-                success = false;
-                break;
-            }
-        }
-        if (success) {
-            printf("Verification PASSED! All %d elements are correct.\n", n);
-        }
-    }
-
     // Cleanup
     freeDeviceVector(d_a);
     freeDeviceVector(d_b);
@@ -113,12 +93,11 @@ void add_op(int n, int threadsPerBlock, bool verify) {
     freeHostVector(h_c);
     cudaEventDestroy(kernel_start);
     cudaEventDestroy(kernel_stop);
-
-    printf("\nCongratulations! Your first CUDA program ran successfully!\n");
+    free(timings);
 }
 
 // VMA operation: d = (a * b) + c
-void vma_op(int n, int threadsPerBlock, bool verify, bool fused, bool vectorized) {
+void vma_op(int n, int threadsPerBlock, bool fused, bool vectorized) {
     printf("Vector operation: vma mode on %d elements\n", n);
     if (fused && vectorized) {
         printf("Using fused FMA kernel with float4 vectorization\n");
@@ -126,9 +105,6 @@ void vma_op(int n, int threadsPerBlock, bool verify, bool fused, bool vectorized
         printf("Using fused FMA kernel\n");
     } else {
         printf("Using separate multiply + add kernels\n");
-    }
-    if (verify) {
-        printf("Verification enabled\n");
     }
 
     // Allocate and initialize host vectors
@@ -211,24 +187,6 @@ void vma_op(int n, int threadsPerBlock, bool verify, bool fused, bool vectorized
     transferFromDevice(h_d, d_d, n);
     printf("Vector operation completed successfully!\n");
 
-    // Verify result if requested
-    if (verify) {
-        printf("Verifying results...\n");
-        bool success = true;
-        for (int i = 0; i < n; i++) {
-            float expected = h_a[i] * h_b[i] + h_c[i];
-            if (fabs(h_d[i] - expected) > 1e-5) {
-                fprintf(stderr, "Verification failed at element %d: expected %f, got %f\n",
-                        i, expected, h_d[i]);
-                success = false;
-                break;
-            }
-        }
-        if (success) {
-            printf("Verification PASSED! All %d elements are correct.\n", n);
-        }
-    }
-
     // Cleanup
     freeDeviceVector(d_a);
     freeDeviceVector(d_b);
@@ -240,13 +198,11 @@ void vma_op(int n, int threadsPerBlock, bool verify, bool fused, bool vectorized
     freeHostVector(h_d);
     cudaEventDestroy(kernel_start);
     cudaEventDestroy(kernel_stop);
-
-    printf("\nCongratulations! Your first CUDA program ran successfully!\n");
+    free(timings);
 }
 
 int main(int argc, char *argv[]) {
     // Parse command line arguments
-    bool verify = false;
     bool fused = false;
     bool vectorized = false;
     const char *mode = "add";  // Default mode
@@ -260,13 +216,12 @@ int main(int argc, char *argv[]) {
         {"mode",       required_argument, 0, 'm'},
         {"fused",      no_argument,       0, 'f'},
         {"vectorized", no_argument,       0, 'V'},
-        {"verify",     no_argument,       0, 'v'},
         {"help",       no_argument,       0, 'h'},
         {0, 0, 0, 0}
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "n:b:m:fVvh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "n:b:m:fVh", long_options, NULL)) != -1) {
         switch (opt) {
             case 'n':
                 n = atoi(optarg);
@@ -294,9 +249,6 @@ int main(int argc, char *argv[]) {
                 break;
             case 'V':
                 vectorized = true;
-                break;
-            case 'v':
-                verify = true;
                 break;
             case 'h':
                 print_usage(argv[0]);
@@ -328,9 +280,9 @@ int main(int argc, char *argv[]) {
 
     // Call appropriate operation function
     if (strcmp(mode, "add") == 0) {
-        add_op(n, threadsPerBlock, verify);
+        add_op(n, threadsPerBlock);
     } else if (strcmp(mode, "vma") == 0) {
-        vma_op(n, threadsPerBlock, verify, fused, vectorized);
+        vma_op(n, threadsPerBlock, fused, vectorized);
     } else {
         fprintf(stderr, "Error: operation '%s' is not supported\n", mode);
         return 1;

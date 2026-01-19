@@ -28,8 +28,8 @@ def _rlocation(path: str) -> str:
 
 
 workspace = _workspace_name()
-cuda_vector = _rlocation(f"{workspace}/cuda/vector")
-cuda_reduce = _rlocation(f"{workspace}/cuda/reduce")
+cuda_vector = _rlocation(f"{workspace}/cuda/elementwise/elementwise")
+cuda_reduce = _rlocation(f"{workspace}/cuda/reduce/reduce")
 cuda_softmax = _rlocation(f"{workspace}/cuda/softmax/softmax")
 tinygrad_bench = _rlocation(f"{workspace}/cuda/tinygrad_comparison")
 

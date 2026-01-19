@@ -1,6 +1,7 @@
 #include "softmax_fused1.h"
 #include "cuda_utils.h"
-#include "reduce_kernels.h"
+#include "reduce/sum_reduce.h"
+#include "reduce/max_reduce.h"
 #include <cuda_runtime.h>
 #include <stdlib.h>
 #include <math.h>

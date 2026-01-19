@@ -1,0 +1,78 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_binary", "cuda_test")
+
+# ============================================================================
+# Elementwise Kernel Libraries
+# ============================================================================
+
+cuda_library(
+    name = "vector_add",
+    srcs = ["vector_add.cu"],
+    hdrs = ["vector_add.h"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+cuda_library(
+    name = "vector_mul",
+    srcs = ["vector_mul.cu"],
+    hdrs = ["vector_mul.h"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+cuda_library(
+    name = "vector_fma",
+    srcs = ["vector_fma.cu"],
+    hdrs = ["vector_fma.h"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+cuda_library(
+    name = "normalize",
+    srcs = ["normalize.cu"],
+    hdrs = ["normalize.h"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+# ============================================================================
+# Elementwise Benchmark Binary
+# ============================================================================
+
+cuda_binary(
+    name = "elementwise",
+    srcs = ["elementwise.cu"],
+    deps = [
+        ":vector_add",
+        ":vector_mul",
+        ":vector_fma",
+        "//cuda:cuda_utils",
+        "//cuda:vector_init",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__pkg__"],
+    includes = [".."],
+)
+
+# ============================================================================
+# Correctness Tests (manual - requires GPU)
+# ============================================================================
+
+cuda_test(
+    name = "elementwise_test",
+    srcs = ["elementwise_test.cpp"],
+    deps = [
+        ":vector_add",
+        ":vector_mul",
+        ":vector_fma",
+        "@googletest//:gtest_main",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["manual"],
+    includes = [".."],
+)

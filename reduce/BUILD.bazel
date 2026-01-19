@@ -1,0 +1,71 @@
+load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_binary", "cuda_test")
+
+# ============================================================================
+# Reduce Kernel Libraries
+# ============================================================================
+
+cuda_library(
+    name = "sum_reduce",
+    srcs = ["sum_reduce.cu"],
+    hdrs = ["sum_reduce.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+cuda_library(
+    name = "sum_reduce_atomic",
+    srcs = ["sum_reduce_atomic.cu"],
+    hdrs = ["sum_reduce_atomic.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+cuda_library(
+    name = "max_reduce",
+    srcs = ["max_reduce.cu"],
+    hdrs = ["max_reduce.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__subpackages__"],
+    includes = [".."],
+)
+
+# ============================================================================
+# Reduce Benchmark Binary
+# ============================================================================
+
+cuda_binary(
+    name = "reduce",
+    srcs = ["reduce.cpp"],
+    deps = [
+        ":sum_reduce",
+        ":sum_reduce_atomic",
+        "//cuda:cuda_utils",
+        "//cuda:vector_init",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    visibility = ["//cuda:__pkg__"],
+    includes = [".."],
+)
+
+# ============================================================================
+# Correctness Tests (manual - requires GPU)
+# ============================================================================
+
+cuda_test(
+    name = "reduce_test",
+    srcs = ["reduce_test.cpp"],
+    deps = [
+        ":sum_reduce",
+        ":sum_reduce_atomic",
+        ":max_reduce",
+        "@googletest//:gtest_main",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    tags = ["manual"],
+    includes = [".."],
+)
