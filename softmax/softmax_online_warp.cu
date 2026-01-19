@@ -233,6 +233,19 @@ __global__ void onlineWarp_CooperativeKernel(
 OnlineWarpSoftmax::OnlineWarpSoftmax(int n, int threadsPerBlock)
     : n(n), threadsPerBlock(threadsPerBlock) {
 
+    // Validate block size: must be multiple of 32 and warpsPerBlock <= 32
+    int warpsPerBlock = threadsPerBlock / 32;
+    if (threadsPerBlock % 32 != 0) {
+        fprintf(stderr, "ERROR: threadsPerBlock (%d) must be a multiple of 32!\n", threadsPerBlock);
+        exit(EXIT_FAILURE);
+    }
+    if (warpsPerBlock > 32) {
+        fprintf(stderr, "ERROR: threadsPerBlock (%d) results in %d warps per block, but maximum is 32!\n", 
+                threadsPerBlock, warpsPerBlock);
+        fprintf(stderr, "       This kernel uses warp 0 to reduce warp results, which can only handle up to 32 warps.\n");
+        exit(EXIT_FAILURE);
+    }
+
     // Check if device supports cooperative launch
     int device;
     cudaGetDevice(&device);
