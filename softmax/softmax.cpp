@@ -6,6 +6,7 @@
 #include <time.h>
 #include <getopt.h>
 #include <algorithm>
+#include <vector>
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
 #include "softmax_naive.h"
@@ -48,10 +49,16 @@ const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
 const char* SIZE_LABELS[] = {"16", "32", "64", "256", "512", "1K", "8K", "64K", "256K", "1M", "8M"};
 
 // Result structures
+struct TimingStats {
+    float p50_ms;  // Median (50th percentile)
+    float p90_ms;  // 90th percentile
+};
+
 struct BenchmarkResult {
-    float median_time_ms;    // -1.0 if skipped/failed
+    float p50_time_ms;       // Median (50th percentile), -1.0 if skipped/failed
+    float p90_time_ms;       // 90th percentile, -1.0 if skipped/failed
     bool skipped;
-    std::string skip_reason;  // Modern C++ string (no buffer overflow possible)
+    std::string skip_reason;
 };
 
 struct VerificationResult {
@@ -124,39 +131,54 @@ void softmax_cpu_reference(const float *input, float *output, int n) {
 // BENCHMARK MODE: Helper Functions
 // ============================================================================
 
-// Helper: Get batched time for a method (returns -1.0 on failure)
-// This measures throughput by queuing all kernels and timing the batch,
-// which removes per-iteration event overhead and shows pure kernel performance
-float get_median_time(SoftmaxKernel *kernel, const float *d_input, float *d_output,
-                      int n, int num_iterations) {
-    cudaEvent_t start, stop;
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
+// Helper: Get per-iteration timing statistics using CUDA events
+// Uses per-iteration event pairs without CPU sync between iterations,
+// then extracts P50 (median) and P90 percentiles for accurate kernel timing
+TimingStats get_timing_stats(SoftmaxKernel *kernel, const float *d_input, float *d_output,
+                             int n, int num_iterations) {
+    // Allocate event pairs for each iteration
+    std::vector<cudaEvent_t> starts(num_iterations), stops(num_iterations);
+    for (int i = 0; i < num_iterations; i++) {
+        cudaEventCreate(&starts[i]);
+        cudaEventCreate(&stops[i]);
+    }
 
     // Warmup: run a few iterations to ensure kernel is compiled and caches are warm
     for (int i = 0; i < 10; i++) {
         kernel->execute(d_input, d_output);
     }
-    cudaDeviceSynchronize();
+    cudaDeviceSynchronize();  // No events recorded yet, use device sync
 
-    // Batched timing: queue all iterations, then sync once at the end
-    // This removes per-iteration event recording overhead
-    cudaEventRecord(start);
+    // Queue all iterations with per-iteration events (no sync between)
     for (int i = 0; i < num_iterations; i++) {
+        cudaEventRecord(starts[i]);
         kernel->execute(d_input, d_output);
+        cudaEventRecord(stops[i]);
     }
-    cudaEventRecord(stop);
-    cudaEventSynchronize(stop);
 
-    float total_time_ms;
-    cudaEventElapsedTime(&total_time_ms, start, stop);
+    // Single sync at the end - wait for last event
+    cudaEventSynchronize(stops[num_iterations - 1]);
 
-    float avg_time_ms = total_time_ms / num_iterations;
+    // Extract individual timings
+    std::vector<float> timings(num_iterations);
+    for (int i = 0; i < num_iterations; i++) {
+        cudaEventElapsedTime(&timings[i], starts[i], stops[i]);
+    }
 
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
+    // Sort for percentile calculation
+    std::sort(timings.begin(), timings.end());
 
-    return avg_time_ms;
+    TimingStats stats;
+    stats.p50_ms = timings[num_iterations / 2];            // 50th percentile (median)
+    stats.p90_ms = timings[(num_iterations * 90) / 100];   // 90th percentile
+
+    // Cleanup
+    for (int i = 0; i < num_iterations; i++) {
+        cudaEventDestroy(starts[i]);
+        cudaEventDestroy(stops[i]);
+    }
+
+    return stats;
 }
 
 // Helper: Run verification for a method
@@ -223,37 +245,37 @@ VerificationResult verify_method(SoftmaxKernel *kernel, const float *d_input,
 
 void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
     printf("\n");
-    printf("=============================================================================\n");
-    printf("                    SOFTMAX PERFORMANCE BENCHMARK\n");
-    printf("=============================================================================\n");
+    printf("=======================================================================================\n");
+    printf("                         SOFTMAX PERFORMANCE BENCHMARK\n");
+    printf("=======================================================================================\n");
     printf("Iterations per test: 100\n");
-    printf("Metric: Average execution time per iteration (ms)\n");
-    printf("Method: Batched timing (100 kernels queued, single sync)\n\n");
+    printf("Metric: P50/P90 execution time (ms) - median and 90th percentile\n");
+    printf("Method: Per-iteration CUDA event timing (no CPU sync between iterations)\n\n");
 
     // Print header
     printf("%-15s", "Method");
     for (int s = 0; s < NUM_SIZES; s++) {
-        printf(" | %-8s", SIZE_LABELS[s]);
+        printf(" | %-13s", SIZE_LABELS[s]);
     }
     printf(" |\n");
 
     // Print separator
     printf("%-15s", "---------------");
     for (int s = 0; s < NUM_SIZES; s++) {
-        printf("-|---------");
+        printf("-|--------------");
     }
     printf("-|\n");
 
-    // Print data rows
+    // Print data rows (P50/P90 format)
     for (int m = 0; m < NUM_METHODS; m++) {
         printf("%-15s", BENCHMARK_METHODS[m]);
         for (int s = 0; s < NUM_SIZES; s++) {
             if (results[m][s].skipped) {
-                printf(" | %-8s", "SKIPPED");
-            } else if (results[m][s].median_time_ms < 0) {
-                printf(" | %-8s", "FAILED");
+                printf(" | %-13s", "SKIPPED");
+            } else if (results[m][s].p50_time_ms < 0) {
+                printf(" | %-13s", "FAILED");
             } else {
-                printf(" | %8.3f", results[m][s].median_time_ms);
+                printf(" | %5.3f/%5.3f", results[m][s].p50_time_ms, results[m][s].p90_time_ms);
             }
         }
         printf(" |\n");
@@ -264,7 +286,7 @@ void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
     for (int m = 0; m < NUM_METHODS; m++) {
         bool has_skip = false;
         for (int s = 0; s < NUM_SIZES; s++) {
-            if (results[m][s].skipped || results[m][s].median_time_ms < 0) {
+            if (results[m][s].skipped || results[m][s].p50_time_ms < 0) {
                 if (!has_skip) {
                     printf("- %s: %s\n", BENCHMARK_METHODS[m], results[m][s].skip_reason.c_str());
                     has_skip = true;
@@ -274,7 +296,7 @@ void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
     }
 
     // Find top 3 fastest per size (excluding naive method which is numerically unstable)
-    printf("\nTOP 3 FASTEST per size (excluding naive):\n");
+    printf("\nTOP 3 FASTEST per size by P50 (excluding naive):\n");
     for (int s = 0; s < NUM_SIZES; s++) {
         // Create array of (method_index, time) pairs
         struct MethodTime {
@@ -289,9 +311,9 @@ void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
             // Skip naive method - it's numerically unstable
             if (strcmp(BENCHMARK_METHODS[m], "naive") == 0) continue;
 
-            if (!results[m][s].skipped && results[m][s].median_time_ms > 0) {
+            if (!results[m][s].skipped && results[m][s].p50_time_ms > 0) {
                 method_times[count].method_idx = m;
-                method_times[count].time = results[m][s].median_time_ms;
+                method_times[count].time = results[m][s].p50_time_ms;
                 count++;
             }
         }
@@ -316,7 +338,7 @@ void print_performance_table(BenchmarkResult results[][NUM_SIZES]) {
         }
         printf("\n");
     }
-    printf("=============================================================================\n");
+    printf("=======================================================================================\n");
 }
 
 void print_verification_table(VerificationResult results[][NUM_SIZES]) {
@@ -387,7 +409,8 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
     // Initialize all results as skipped by default
     for (int m = 0; m < NUM_METHODS; m++) {
         for (int s = 0; s < NUM_SIZES; s++) {
-            perf_results[m][s].median_time_ms = -1.0f;
+            perf_results[m][s].p50_time_ms = -1.0f;
+            perf_results[m][s].p90_time_ms = -1.0f;
             perf_results[m][s].skipped = true;
             perf_results[m][s].skip_reason = "Not run";
 
@@ -485,35 +508,31 @@ void benchmark_all_methods(int threadsPerBlock, bool verify) {
                     printf("SKIPPED (unknown method)\n");
                     perf_results[m][s].skip_reason = "Unknown method";
                 } else {
-                    // Run performance benchmark
-                    float median_time = get_median_time(kernel, d_input, d_output, n, 100);
+                    // Run performance benchmark with per-iteration timing
+                    TimingStats stats = get_timing_stats(kernel, d_input, d_output, n, 100);
 
-                    if (median_time < 0.0f) {
-                        printf("SKIPPED (benchmark failed)\n");
-                        perf_results[m][s].skip_reason = "Benchmark failed";
-                    } else {
-                        perf_results[m][s].median_time_ms = median_time;
-                        perf_results[m][s].skipped = false;
-                        perf_results[m][s].skip_reason = "";
+                    perf_results[m][s].p50_time_ms = stats.p50_ms;
+                    perf_results[m][s].p90_time_ms = stats.p90_ms;
+                    perf_results[m][s].skipped = false;
+                    perf_results[m][s].skip_reason = "";
 
-                        // Run verification if enabled
-                        if (verify && h_expected) {
-                            VerificationResult vr = verify_method(kernel, d_input, d_output,
-                                                                  h_input, h_output, h_expected, n);
-                            verify_results[m][s] = vr;
+                    // Run verification if enabled
+                    if (verify && h_expected) {
+                        VerificationResult vr = verify_method(kernel, d_input, d_output,
+                                                              h_input, h_output, h_expected, n);
+                        verify_results[m][s] = vr;
 
-                            if (vr.has_nan_inf) {
-                                printf("%.3f ms [FAIL: NaN/Inf]\n", median_time);
-                            } else if (vr.passed) {
-                                printf("%.3f ms [PASS: %.2e]\n", median_time, vr.max_rel_error);
-                            } else if (!vr.skipped) {
-                                printf("%.3f ms [FAIL: %.2e]\n", median_time, vr.max_rel_error);
-                            } else {
-                                printf("%.3f ms [verify skipped]\n", median_time);
-                            }
+                        if (vr.has_nan_inf) {
+                            printf("%.3f/%.3f ms [FAIL: NaN/Inf]\n", stats.p50_ms, stats.p90_ms);
+                        } else if (vr.passed) {
+                            printf("%.3f/%.3f ms [PASS: %.2e]\n", stats.p50_ms, stats.p90_ms, vr.max_rel_error);
+                        } else if (!vr.skipped) {
+                            printf("%.3f/%.3f ms [FAIL: %.2e]\n", stats.p50_ms, stats.p90_ms, vr.max_rel_error);
                         } else {
-                            printf("%.3f ms\n", median_time);
+                            printf("%.3f/%.3f ms [verify skipped]\n", stats.p50_ms, stats.p90_ms);
                         }
+                    } else {
+                        printf("%.3f/%.3f ms\n", stats.p50_ms, stats.p90_ms);
                     }
 
                     delete kernel;
