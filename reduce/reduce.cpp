@@ -103,7 +103,7 @@ void sum_op(int n, int threadsPerBlock, const char *method, int cpuThreshold, bo
     freeHostVector(h_input);
     cudaEventDestroy(start);
     cudaEventDestroy(stop);
-    free(timings);
+    // Note: timings is freed by calculate_and_print_statistics
 
     printf("\nReduction completed successfully!\n");
 }

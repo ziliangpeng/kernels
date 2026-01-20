@@ -93,7 +93,7 @@ void add_op(int n, int threadsPerBlock) {
     freeHostVector(h_c);
     cudaEventDestroy(kernel_start);
     cudaEventDestroy(kernel_stop);
-    free(timings);
+    // Note: timings is freed by calculate_and_print_statistics
 }
 
 // VMA operation: d = (a * b) + c
@@ -198,7 +198,7 @@ void vma_op(int n, int threadsPerBlock, bool fused, bool vectorized) {
     freeHostVector(h_d);
     cudaEventDestroy(kernel_start);
     cudaEventDestroy(kernel_stop);
-    free(timings);
+    // Note: timings is freed by calculate_and_print_statistics
 }
 
 int main(int argc, char *argv[]) {
