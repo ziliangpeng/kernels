@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Python Benchmark CLI for Softmax: CUDA vs TinyGrad
+Python Benchmark CLI for Softmax: CUDA vs TinyGrad vs Triton
 
 Usage:
     python bench.py -n 1000000 -i 100 -m all
     python bench.py -n 1000000 -m cuda
     python bench.py -n 1000000 -m tinygrad
+    python bench.py -n 1000000 -m triton
     python bench.py --sweep                      # Run all sizes
 """
 
@@ -47,7 +48,7 @@ def print_comparison_table(results: dict, size: int, iterations: int):
     """Print comparison table for all benchmarked methods."""
     print()
     print("=" * 80)
-    print("Softmax Benchmark: CUDA vs TinyGrad")
+    print("Softmax Benchmark: CUDA vs TinyGrad vs Triton")
     print(f"Size: {size:,} elements | Iterations: {iterations}")
     print("=" * 80)
 
@@ -61,10 +62,11 @@ def print_comparison_table(results: dict, size: int, iterations: int):
         cuda_p50 = 1.0  # Avoid division by zero
 
     # Print results in order
-    method_order = ["cuda", "tinygrad"]
+    method_order = ["cuda", "tinygrad", "triton"]
     method_names = {
         "cuda": "CUDA (online warp)",
         "tinygrad": "TinyGrad",
+        "triton": "Triton",
     }
 
     for method in method_order:
@@ -137,8 +139,25 @@ def benchmark_tinygrad(x: np.ndarray, iterations: int, warmup: int) -> tuple[dic
         return None, None
 
 
+def benchmark_triton(x: np.ndarray, iterations: int, warmup: int) -> tuple[dict, np.ndarray]:
+    """Benchmark Triton implementation."""
+    try:
+        from cuda.softmax.softmax_triton import benchmark, softmax
+
+        # Run benchmark
+        times = benchmark(x, iterations, warmup)
+
+        # Get result for verification
+        result = softmax(x)
+
+        return calculate_statistics(times), result
+    except ImportError as e:
+        print(f"  Triton not available: {e}")
+        return None, None
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Softmax benchmark: CUDA vs TinyGrad")
+    parser = argparse.ArgumentParser(description="Softmax benchmark: CUDA vs TinyGrad vs Triton")
     parser.add_argument("-n", "--size", type=int, default=1000000, help="Array size (default: 1000000)")
     parser.add_argument(
         "-i", "--iterations", type=int, default=100, help="Number of benchmark iterations (default: 100)"
@@ -147,7 +166,7 @@ def main():
     parser.add_argument(
         "-m",
         "--method",
-        choices=["cuda", "tinygrad", "all"],
+        choices=["cuda", "tinygrad", "triton", "all"],
         default="all",
         help="Method to benchmark (default: all)",
     )
@@ -156,7 +175,7 @@ def main():
     parser.add_argument(
         "--sweep",
         action="store_true",
-        help="Run benchmark across multiple sizes (1K, 10K, 100K, 1M, 10M, 100M)",
+        help="Run benchmark across multiple sizes (2^10 to 2^27)",
     )
 
     args = parser.parse_args()
@@ -164,11 +183,11 @@ def main():
     # Set random seed
     np.random.seed(args.seed)
 
-    # Determine sizes to benchmark
-    sizes = [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000] if args.sweep else [args.size]
+    # Determine sizes to benchmark (powers of 2: 1K, 4K, 16K, 64K, 256K, 1M, 4M, 16M, 64M, 128M)
+    sizes = [2**10, 2**12, 2**14, 2**16, 2**18, 2**20, 2**22, 2**24, 2**26, 2**27] if args.sweep else [args.size]
 
     # Methods to run
-    methods_to_run = ["cuda", "tinygrad"] if args.method == "all" else [args.method]
+    methods_to_run = ["cuda", "tinygrad", "triton"] if args.method == "all" else [args.method]
 
     # Run sweep mode
     if args.sweep:
@@ -193,6 +212,8 @@ def run_single(size: int, methods: list[str], iterations: int, warmup: int, no_v
             stats, result = benchmark_cuda(x, iterations, warmup)
         elif method == "tinygrad":
             stats, result = benchmark_tinygrad(x, iterations, warmup)
+        elif method == "triton":
+            stats, result = benchmark_triton(x, iterations, warmup)
         else:
             continue
 
@@ -246,6 +267,8 @@ def run_sweep(sizes: list[int], methods: list[str], iterations: int, warmup: int
                 stats, result = benchmark_cuda(x, iterations, warmup)
             elif method == "tinygrad":
                 stats, result = benchmark_tinygrad(x, iterations, warmup)
+            elif method == "triton":
+                stats, result = benchmark_triton(x, iterations, warmup)
             else:
                 continue
 
@@ -261,26 +284,37 @@ def run_sweep(sizes: list[int], methods: list[str], iterations: int, warmup: int
 
     # Print summary table
     print("\n")
-    print("=" * 90)
-    print("SUMMARY: Softmax Benchmark (CUDA vs TinyGrad)")
+    print("=" * 110)
+    print("SUMMARY: Softmax Benchmark (CUDA vs TinyGrad vs Triton)")
     print(f"Iterations: {iterations} | Warmup: {warmup}")
-    print("=" * 90)
-    print(f"{'Size':>12} | {'CUDA P50 (ms)':>14} | {'TinyGrad P50 (ms)':>18} | {'Speedup':>10}")
-    print("-" * 12 + "-+-" + "-" * 14 + "-+-" + "-" * 18 + "-+-" + "-" * 10)
+    print("=" * 110)
+    print(
+        f"{'Size':>12} | {'CUDA P50 (ms)':>14} | {'TinyGrad P50 (ms)':>18} | {'Triton P50 (ms)':>16} | {'TinyGrad/CUDA':>14} | {'Triton/CUDA':>12}"
+    )
+    print("-" * 12 + "-+-" + "-" * 14 + "-+-" + "-" * 18 + "-+-" + "-" * 16 + "-+-" + "-" * 14 + "-+-" + "-" * 12)
 
     for size in sizes:
         cuda_p50 = all_results[size].get("cuda", {}).get("p50", float("nan"))
         tinygrad_p50 = all_results[size].get("tinygrad", {}).get("p50", float("nan"))
+        triton_p50 = all_results[size].get("triton", {}).get("p50", float("nan"))
 
         if cuda_p50 > 0 and tinygrad_p50 > 0:
-            speedup = tinygrad_p50 / cuda_p50
-            speedup_str = f"{speedup:.1f}x"
+            tinygrad_ratio = tinygrad_p50 / cuda_p50
+            tinygrad_ratio_str = f"{tinygrad_ratio:.1f}x"
         else:
-            speedup_str = "N/A"
+            tinygrad_ratio_str = "N/A"
 
-        print(f"{size:>12,} | {cuda_p50:>14.3f} | {tinygrad_p50:>18.3f} | {speedup_str:>10}")
+        if cuda_p50 > 0 and triton_p50 > 0:
+            triton_ratio = triton_p50 / cuda_p50
+            triton_ratio_str = f"{triton_ratio:.1f}x"
+        else:
+            triton_ratio_str = "N/A"
 
-    print("=" * 90)
+        print(
+            f"{size:>12,} | {cuda_p50:>14.3f} | {tinygrad_p50:>18.3f} | {triton_p50:>16.3f} | {tinygrad_ratio_str:>14} | {triton_ratio_str:>12}"
+        )
+
+    print("=" * 110)
 
 
 if __name__ == "__main__":

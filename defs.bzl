@@ -6,6 +6,24 @@ pip-installed NVIDIA CUDA libraries (like nvidia-cudnn-cu12, etc.).
 
 load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
 
+# Default list of NVIDIA packages needed for PyTorch/Triton CUDA support.
+# Use this in cuda_py_binary's nvidia_packages parameter to avoid repetition.
+DEFAULT_NVIDIA_PACKAGES = [
+    "nvidia_cublas_cu12",
+    "nvidia_cuda_cupti_cu12",
+    "nvidia_cuda_nvrtc_cu12",
+    "nvidia_cuda_runtime_cu12",
+    "nvidia_cudnn_cu12",
+    "nvidia_cufft_cu12",
+    "nvidia_curand_cu12",
+    "nvidia_cusolver_cu12",
+    "nvidia_cusparse_cu12",
+    "nvidia_cusparselt_cu12",
+    "nvidia_nccl_cu12",
+    "nvidia_nvjitlink_cu12",
+    "nvidia_nvtx_cu12",
+]
+
 def _nvidia_lib_dirs():
     """Returns a list of (package, path) tuples for NVIDIA library directories.
 

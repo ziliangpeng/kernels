@@ -1,7 +1,7 @@
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_binary", "cuda_test")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
-load("//cuda:defs.bzl", "cuda_py_binary")
+load("//cuda:defs.bzl", "cuda_py_binary", "DEFAULT_NVIDIA_PACKAGES")
 
 # ============================================================================
 # Softmax Implementation Libraries (one per approach)
@@ -317,16 +317,18 @@ py_library(
     target_compatible_with = ["//constraints:cuda"],
 )
 
-# Python benchmark CLI
-py_binary(
+# Python benchmark CLI (uses cuda_py_binary for hermetic CUDA library paths needed by Triton)
+cuda_py_binary(
     name = "bench",
     srcs = ["bench.py"],
     data = [":softmax_cuda.so"],
     deps = [
         ":softmax_tinygrad",
+        ":softmax_triton",
         "@bazel_tools//tools/python/runfiles",
         "@pip//numpy",
     ],
+    nvidia_packages = DEFAULT_NVIDIA_PACKAGES,
     target_compatible_with = ["//constraints:cuda"],
 )
 
@@ -352,22 +354,19 @@ cuda_py_binary(
         ":softmax_triton",
         "@pip//numpy",
     ],
-    # NVIDIA packages that need LD_LIBRARY_PATH configured
-    # (transitive deps through torch, not auto-detected)
-    nvidia_packages = [
-        "nvidia_cublas_cu12",
-        "nvidia_cuda_cupti_cu12",
-        "nvidia_cuda_nvrtc_cu12",
-        "nvidia_cuda_runtime_cu12",
-        "nvidia_cudnn_cu12",
-        "nvidia_cufft_cu12",
-        "nvidia_curand_cu12",
-        "nvidia_cusolver_cu12",
-        "nvidia_cusparse_cu12",
-        "nvidia_cusparselt_cu12",
-        "nvidia_nccl_cu12",
-        "nvidia_nvjitlink_cu12",
-        "nvidia_nvtx_cu12",
+    nvidia_packages = DEFAULT_NVIDIA_PACKAGES,
+    target_compatible_with = ["//constraints:cuda"],
+)
+
+# Block size tuning test
+cuda_py_binary(
+    name = "block_size_test",
+    srcs = ["block_size_test.py"],
+    deps = [
+        "@pip//numpy",
+        "@pip_cuda//torch",
+        "@pip_cuda//triton",
     ],
+    nvidia_packages = DEFAULT_NVIDIA_PACKAGES,
     target_compatible_with = ["//constraints:cuda"],
 )
