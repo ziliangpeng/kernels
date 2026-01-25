@@ -1,4 +1,6 @@
 load("@rules_cuda//cuda:defs.bzl", "cuda_library", "cuda_binary", "cuda_test")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 
 # ============================================================================
 # Softmax Implementation Libraries (one per approach)
@@ -270,4 +272,59 @@ cuda_test(
     ],
     target_compatible_with = ["//constraints:cuda"],
     tags = ["manual"],  # Not run in CI - requires GPU
+)
+
+# ============================================================================
+# Python Bindings (pybind11)
+# ============================================================================
+
+# C API wrapper for the CUDA kernel (no pybind11 dependency)
+cuda_library(
+    name = "softmax_c_api",
+    srcs = ["softmax_c_api.cu"],
+    hdrs = ["softmax_c_api.h"],
+    deps = [
+        ":softmax_online_warp",
+        "//cuda:cuda_utils",
+    ],
+    # -fPIC for nvcc is specified via -Xcompiler
+    copts = ["-Xcompiler", "-fPIC"],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Python extension using pybind11
+# Uses the C API to avoid mixing CUDA and pybind11 compilation
+pybind_extension(
+    name = "softmax_cuda",
+    srcs = ["softmax_pybind.cpp"],
+    deps = [":softmax_c_api"],
+    target_compatible_with = ["//constraints:cuda"],
+)
+
+# ============================================================================
+# Python Benchmark Implementations
+# ============================================================================
+
+py_library(
+    name = "softmax_tinygrad",
+    srcs = ["softmax_tinygrad.py"],
+    deps = [
+        "@pip//numpy",
+        "@pip//tinygrad",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+)
+
+# Python benchmark CLI
+py_binary(
+    name = "bench",
+    srcs = ["bench.py"],
+    data = [":softmax_cuda.so"],
+    deps = [
+        ":softmax_tinygrad",
+        "@bazel_tools//tools/python/runfiles",
+        "@pip//numpy",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
 )
