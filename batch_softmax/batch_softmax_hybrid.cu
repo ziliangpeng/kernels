@@ -42,7 +42,8 @@ HybridBatchSoftmax::HybridBatchSoftmax(int batch_size, int dim, int threadsPerBl
     if (dim <= 64) {
         kernel_impl = std::make_unique<WarpBatchSoftmax>(batch_size, dim, 32);
     } else {
-        kernel_impl = std::make_unique<MultiWarpBatchSoftmax>(batch_size, dim, 256);
+        // Use 8 warps (256 threads) as default for multi_warp kernel
+        kernel_impl = std::make_unique<MultiWarpBatchSoftmax>(batch_size, dim, 8);
     }
 }
 

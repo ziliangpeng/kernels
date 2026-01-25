@@ -43,10 +43,10 @@
 // CLASS-BASED IMPLEMENTATION
 // ============================================================================
 
-CudnnBatchSoftmax::CudnnBatchSoftmax(int batch_size, int dim, int threadsPerBlock)
+CudnnBatchSoftmax::CudnnBatchSoftmax(int batch_size, int dim, int algorithm)
     : batch_size(batch_size), dim(dim) {
-    // threadsPerBlock is unused for cuDNN
-    (void)threadsPerBlock;
+    // Set algorithm: 0 = FAST, 1 = ACCURATE (default)
+    algo = (algorithm == 0) ? CUDNN_SOFTMAX_FAST : CUDNN_SOFTMAX_ACCURATE;
 
     // Create cuDNN handle
     cudnnCheckError(cudnnCreate(&cudnn));
@@ -72,7 +72,7 @@ void CudnnBatchSoftmax::execute(const float *d_input, float *d_output) {
 
     cudnnCheckError(cudnnSoftmaxForward(
         cudnn,
-        CUDNN_SOFTMAX_ACCURATE,      // Algorithm: numerically stable
+        algo,                        // Algorithm: FAST or ACCURATE
         CUDNN_SOFTMAX_MODE_CHANNEL,  // Mode: softmax across C (dim) for each N
         &alpha,
         tensor_desc,

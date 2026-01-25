@@ -2,12 +2,13 @@
 #include "cuda_utils.h"
 #include <cuda_runtime.h>
 #include <math.h>
+#include <stdexcept>
 
 // ============================================================================
 // MULTI-WARP BATCH SOFTMAX WITH VECTORIZED LOADS
 // ============================================================================
 //
-// This kernel uses multiple warps per block (typically 8 warps = 256 threads)
+// This kernel uses multiple warps per block (configurable: 4, 8, or 16 warps)
 // with a hybrid reduction strategy and vectorized memory access.
 //
 // HYBRID REDUCTION STRATEGY:
@@ -22,7 +23,7 @@
 // Savings:
 //   - Warp shuffles: ~1 cycle per op (vs 20-30 for shared memory)
 //   - Only 2 __syncthreads() per phase (vs 8 in tree reduction)
-//   - Only 8 shared memory writes (vs 256 in tree reduction)
+//   - Only num_warps shared memory writes (vs block_size in tree reduction)
 //
 // VECTORIZED LOADS (float4):
 // --------------------------
@@ -39,19 +40,25 @@
 // Requirement: dim must be divisible by 4 for vectorized path.
 // Fallback: Scalar path when dim % 4 != 0.
 //
+// TEMPLATE PARAMETER:
+// -------------------
+// WARPS_PER_BLOCK: Number of warps per block (4, 8, or 16)
+// This determines the block size (WARPS_PER_BLOCK * 32 threads)
+//
 // ============================================================================
 
 #define FULL_MASK 0xffffffff
-#define WARPS_PER_BLOCK 8
-#define BLOCK_SIZE (WARPS_PER_BLOCK * 32)  // 256 threads
 
 // Scalar kernel for non-vectorizable dimensions
+template<int WARPS_PER_BLOCK>
 __global__ void batch_softmax_multi_warp_scalar_kernel(
     const float *input,
     float *output,
     int batch_size,
     int dim
 ) {
+    constexpr int BLOCK_SIZE = WARPS_PER_BLOCK * 32;
+
     // Each block processes one row
     int row = blockIdx.x;
     if (row >= batch_size) return;
@@ -154,12 +161,15 @@ __global__ void batch_softmax_multi_warp_scalar_kernel(
 }
 
 // Vectorized kernel using float4 loads
+template<int WARPS_PER_BLOCK>
 __global__ void batch_softmax_multi_warp_vec4_kernel(
     const float *input,
     float *output,
     int batch_size,
     int dim
 ) {
+    constexpr int BLOCK_SIZE = WARPS_PER_BLOCK * 32;
+
     // Each block processes one row
     int row = blockIdx.x;
     if (row >= batch_size) return;
@@ -280,24 +290,43 @@ __global__ void batch_softmax_multi_warp_vec4_kernel(
 // CLASS-BASED IMPLEMENTATION
 // ============================================================================
 
-MultiWarpBatchSoftmax::MultiWarpBatchSoftmax(int batch_size, int dim, int threadsPerBlock)
-    : batch_size(batch_size), dim(dim), threadsPerBlock(BLOCK_SIZE) {
-    // Ignore threadsPerBlock parameter - we always use 256 (8 warps)
-    (void)threadsPerBlock;
+MultiWarpBatchSoftmax::MultiWarpBatchSoftmax(int batch_size, int dim, int num_warps)
+    : batch_size(batch_size), dim(dim), num_warps(num_warps) {
+    // Validate num_warps (must be 4, 8, or 16)
+    if (num_warps != 4 && num_warps != 8 && num_warps != 16) {
+        fprintf(stderr, "Error: multi_warp batch softmax only supports 4, 8, or 16 warps.\n");
+        fprintf(stderr, "       Requested warps: %d\n", num_warps);
+        throw std::invalid_argument("Unsupported num_warps for multi_warp batch softmax");
+    }
 
     // Check if we can use vectorized loads
     use_vectorized = (dim % 4 == 0);
 }
 
 void MultiWarpBatchSoftmax::execute(const float *d_input, float *d_output) {
+    // Dispatch based on num_warps and vectorization
     if (use_vectorized) {
-        batch_softmax_multi_warp_vec4_kernel<<<batch_size, BLOCK_SIZE>>>(
-            d_input, d_output, batch_size, dim
-        );
+        if (num_warps == 4) {
+            batch_softmax_multi_warp_vec4_kernel<4><<<batch_size, 4 * 32>>>(
+                d_input, d_output, batch_size, dim);
+        } else if (num_warps == 8) {
+            batch_softmax_multi_warp_vec4_kernel<8><<<batch_size, 8 * 32>>>(
+                d_input, d_output, batch_size, dim);
+        } else if (num_warps == 16) {
+            batch_softmax_multi_warp_vec4_kernel<16><<<batch_size, 16 * 32>>>(
+                d_input, d_output, batch_size, dim);
+        }
     } else {
-        batch_softmax_multi_warp_scalar_kernel<<<batch_size, BLOCK_SIZE>>>(
-            d_input, d_output, batch_size, dim
-        );
+        if (num_warps == 4) {
+            batch_softmax_multi_warp_scalar_kernel<4><<<batch_size, 4 * 32>>>(
+                d_input, d_output, batch_size, dim);
+        } else if (num_warps == 8) {
+            batch_softmax_multi_warp_scalar_kernel<8><<<batch_size, 8 * 32>>>(
+                d_input, d_output, batch_size, dim);
+        } else if (num_warps == 16) {
+            batch_softmax_multi_warp_scalar_kernel<16><<<batch_size, 16 * 32>>>(
+                d_input, d_output, batch_size, dim);
+        }
     }
     cudaCheckError(cudaGetLastError());
 }

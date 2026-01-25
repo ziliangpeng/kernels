@@ -16,6 +16,8 @@
 #include "batch_softmax_cub.h"
 #include "batch_softmax_cudnn.h"
 #include "batch_softmax_hybrid.h"
+#include "batch_softmax_online_multi_warp.h"
+#include "batch_softmax_autotuner.h"
 #include "vector_init.h"
 #include "common/benchmark/benchmark_utils.h"
 
@@ -55,14 +57,20 @@
 // Benchmark configuration
 const char* BENCHMARK_METHODS[] = {
     "naive",
+    "naive_tuned",
     "warp",
     "online_warp",
     "multi_warp",
+    "multi_warp_tuned",
+    "online_multi_warp",
+    "online_multi_warp_tuned",
     "cub",
+    "cub_tuned",
     "cudnn",
+    "cudnn_tuned",
     "hybrid"
 };
-const int NUM_METHODS = 7;
+const int NUM_METHODS = 13;
 
 // Benchmark sizes: (batch_size, dim) pairs
 struct BenchmarkSize {
@@ -101,13 +109,19 @@ void print_usage(const char *program_name) {
     printf("  -m, --method METHOD       Method name or 'all' (default: hybrid)\n");
     printf("  -h, --help                Show this help message\n");
     printf("\nMethods:\n");
-    printf("  naive:       One block per row, shared memory reductions\n");
-    printf("  warp:        One warp per row, warp shuffle reductions\n");
-    printf("  online_warp: Single-pass online algorithm with warp shuffles\n");
-    printf("  multi_warp:  Multiple warps per row with vectorized loads (float4)\n");
-    printf("  cub:         NVIDIA CUB BlockReduce-based implementation\n");
-    printf("  cudnn:       cuDNN library implementation (industry standard)\n");
-    printf("  hybrid:      Adaptive kernel selection based on dimension size\n");
+    printf("  naive:           One block per row, shared memory reductions\n");
+    printf("  naive_tuned:     Naive with autotuned threadsPerBlock (64-512)\n");
+    printf("  warp:            One warp per row, warp shuffle reductions\n");
+    printf("  online_warp:     Single-pass online algorithm with warp shuffles (32 threads)\n");
+    printf("  multi_warp:      Multiple warps per row with vectorized loads (float4)\n");
+    printf("  multi_warp_tuned: Multi-warp with autotuned warps (4, 8, or 16)\n");
+    printf("  online_multi_warp: Online softmax + multi-warp + vectorization\n");
+    printf("  online_multi_warp_tuned: Online multi-warp with autotuned warps\n");
+    printf("  cub:             NVIDIA CUB BlockReduce-based implementation\n");
+    printf("  cub_tuned:       CUB with autotuned threadsPerBlock (128-512)\n");
+    printf("  cudnn:           cuDNN library implementation (ACCURATE algorithm)\n");
+    printf("  cudnn_tuned:     cuDNN with autotuned algorithm (FAST or ACCURATE)\n");
+    printf("  hybrid:          Adaptive kernel selection based on dimension size\n");
     printf("\nSpecial method:\n");
     printf("  all:         Run comprehensive benchmark across all methods and sizes\n");
     printf("\nExample usage:\n");
@@ -241,16 +255,36 @@ void benchmark_all_methods(int threadsPerBlock) {
             try {
                 if (strcmp(method, "naive") == 0) {
                     kernel = new NaiveBatchSoftmax(batch_size, dim, threadsPerBlock);
+                } else if (strcmp(method, "naive_tuned") == 0) {
+                    AutotuneResult result = autotune_naive(batch_size, dim, d_input, d_output);
+                    kernel = new NaiveBatchSoftmax(batch_size, dim, result.best_config);
                 } else if (strcmp(method, "warp") == 0) {
                     kernel = new WarpBatchSoftmax(batch_size, dim, threadsPerBlock);
                 } else if (strcmp(method, "online_warp") == 0) {
                     kernel = new OnlineWarpBatchSoftmax(batch_size, dim, threadsPerBlock);
                 } else if (strcmp(method, "multi_warp") == 0) {
-                    kernel = new MultiWarpBatchSoftmax(batch_size, dim, threadsPerBlock);
+                    // Default to 8 warps (256 threads)
+                    kernel = new MultiWarpBatchSoftmax(batch_size, dim, 8);
+                } else if (strcmp(method, "multi_warp_tuned") == 0) {
+                    AutotuneResult result = autotune_multi_warp(batch_size, dim, d_input, d_output);
+                    kernel = new MultiWarpBatchSoftmax(batch_size, dim, result.best_config);
+                } else if (strcmp(method, "online_multi_warp") == 0) {
+                    // Default to 8 warps (256 threads)
+                    kernel = new OnlineMultiWarpBatchSoftmax(batch_size, dim, 8);
+                } else if (strcmp(method, "online_multi_warp_tuned") == 0) {
+                    AutotuneResult result = autotune_online_multi_warp(batch_size, dim, d_input, d_output);
+                    kernel = new OnlineMultiWarpBatchSoftmax(batch_size, dim, result.best_config);
                 } else if (strcmp(method, "cub") == 0) {
                     kernel = new CubBatchSoftmax(batch_size, dim, threadsPerBlock);
+                } else if (strcmp(method, "cub_tuned") == 0) {
+                    AutotuneResult result = autotune_cub(batch_size, dim, d_input, d_output);
+                    kernel = new CubBatchSoftmax(batch_size, dim, result.best_config);
                 } else if (strcmp(method, "cudnn") == 0) {
-                    kernel = new CudnnBatchSoftmax(batch_size, dim, threadsPerBlock);
+                    // Default to ACCURATE algorithm (1)
+                    kernel = new CudnnBatchSoftmax(batch_size, dim, 1);
+                } else if (strcmp(method, "cudnn_tuned") == 0) {
+                    AutotuneResult result = autotune_cudnn(batch_size, dim, d_input, d_output);
+                    kernel = new CudnnBatchSoftmax(batch_size, dim, result.best_config);
                 } else if (strcmp(method, "hybrid") == 0) {
                     kernel = new HybridBatchSoftmax(batch_size, dim, threadsPerBlock);
                 }
@@ -292,7 +326,7 @@ void benchmark_all_methods(int threadsPerBlock) {
         print_benchmark_row(BENCHMARK_METHODS[m], all_results[m]);
     }
     print_benchmark_footer(method_names, all_results);
-    print_top_fastest(method_names, all_results, size_labels, 2, {});
+    print_top_fastest(method_names, all_results, size_labels, 3, {});
 }
 
 // ============================================================================
@@ -356,16 +390,47 @@ void batch_softmax_op(int batch_size, int dim, int threadsPerBlock, const char *
     BatchSoftmaxKernel *kernel = nullptr;
     if (strcmp(method, "naive") == 0) {
         kernel = new NaiveBatchSoftmax(batch_size, dim, threadsPerBlock);
+    } else if (strcmp(method, "naive_tuned") == 0) {
+        printf("Autotuning naive kernel...\n");
+        AutotuneResult result = autotune_naive(batch_size, dim, d_input, d_output);
+        printf("Best config: %d threads (%.3f ms)\n", result.best_config, result.best_time_ms);
+        kernel = new NaiveBatchSoftmax(batch_size, dim, result.best_config);
     } else if (strcmp(method, "warp") == 0) {
         kernel = new WarpBatchSoftmax(batch_size, dim, threadsPerBlock);
     } else if (strcmp(method, "online_warp") == 0) {
         kernel = new OnlineWarpBatchSoftmax(batch_size, dim, threadsPerBlock);
     } else if (strcmp(method, "multi_warp") == 0) {
-        kernel = new MultiWarpBatchSoftmax(batch_size, dim, threadsPerBlock);
+        // Default to 8 warps (256 threads)
+        kernel = new MultiWarpBatchSoftmax(batch_size, dim, 8);
+    } else if (strcmp(method, "multi_warp_tuned") == 0) {
+        printf("Autotuning multi_warp kernel...\n");
+        AutotuneResult result = autotune_multi_warp(batch_size, dim, d_input, d_output);
+        printf("Best config: %d warps (%.3f ms)\n", result.best_config, result.best_time_ms);
+        kernel = new MultiWarpBatchSoftmax(batch_size, dim, result.best_config);
+    } else if (strcmp(method, "online_multi_warp") == 0) {
+        // Default to 8 warps (256 threads)
+        kernel = new OnlineMultiWarpBatchSoftmax(batch_size, dim, 8);
+    } else if (strcmp(method, "online_multi_warp_tuned") == 0) {
+        printf("Autotuning online_multi_warp kernel...\n");
+        AutotuneResult result = autotune_online_multi_warp(batch_size, dim, d_input, d_output);
+        printf("Best config: %d warps (%.3f ms)\n", result.best_config, result.best_time_ms);
+        kernel = new OnlineMultiWarpBatchSoftmax(batch_size, dim, result.best_config);
     } else if (strcmp(method, "cub") == 0) {
         kernel = new CubBatchSoftmax(batch_size, dim, threadsPerBlock);
+    } else if (strcmp(method, "cub_tuned") == 0) {
+        printf("Autotuning cub kernel...\n");
+        AutotuneResult result = autotune_cub(batch_size, dim, d_input, d_output);
+        printf("Best config: %d threads (%.3f ms)\n", result.best_config, result.best_time_ms);
+        kernel = new CubBatchSoftmax(batch_size, dim, result.best_config);
     } else if (strcmp(method, "cudnn") == 0) {
-        kernel = new CudnnBatchSoftmax(batch_size, dim, threadsPerBlock);
+        // Default to ACCURATE algorithm (1)
+        kernel = new CudnnBatchSoftmax(batch_size, dim, 1);
+    } else if (strcmp(method, "cudnn_tuned") == 0) {
+        printf("Autotuning cudnn kernel...\n");
+        AutotuneResult result = autotune_cudnn(batch_size, dim, d_input, d_output);
+        const char* algo_name = (result.best_config == 0) ? "FAST" : "ACCURATE";
+        printf("Best config: %s (%.3f ms)\n", algo_name, result.best_time_ms);
+        kernel = new CudnnBatchSoftmax(batch_size, dim, result.best_config);
     } else if (strcmp(method, "hybrid") == 0) {
         kernel = new HybridBatchSoftmax(batch_size, dim, threadsPerBlock);
     }

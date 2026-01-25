@@ -115,6 +115,45 @@ cuda_library(
     includes = [".."],
 )
 
+# Online multi-warp implementation (single-pass statistics + multi-warp + vectorization)
+cuda_library(
+    name = "batch_softmax_online_multi_warp",
+    srcs = ["batch_softmax_online_multi_warp.cu"],
+    hdrs = [
+        "batch_softmax_online_multi_warp.h",
+        "batch_softmax_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Autotuner for runtime configuration optimization
+cuda_library(
+    name = "batch_softmax_autotuner",
+    srcs = ["batch_softmax_autotuner.cu"],
+    hdrs = [
+        "batch_softmax_autotuner.h",
+        "batch_softmax_kernel.h",
+    ],
+    deps = [
+        ":batch_softmax_naive",
+        ":batch_softmax_multi_warp",
+        ":batch_softmax_cub",
+        ":batch_softmax_cudnn",
+        ":batch_softmax_online_multi_warp",
+        "//cuda:cuda_utils",
+    ],
+    linkopts = [
+        "-L/lib/x86_64-linux-gnu",
+        "-lcudnn",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # ============================================================================
 # Batch Softmax Main Binary (Performance Benchmark)
 # ============================================================================
@@ -130,6 +169,8 @@ cuda_binary(
         ":batch_softmax_cub",
         ":batch_softmax_cudnn",
         ":batch_softmax_hybrid",
+        ":batch_softmax_online_multi_warp",
+        ":batch_softmax_autotuner",
         "//cuda:cuda_utils",
         "//cuda:vector_init",
         "//cuda/common:benchmark_utils",
