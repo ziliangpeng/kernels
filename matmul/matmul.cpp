@@ -9,8 +9,16 @@
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
 #include "matmul_naive.h"
+#include "matmul_coalesced.h"
+#include "matmul_smem.h"
+#include "matmul_1d_blocktile.h"
+#include "matmul_2d_blocktile.h"
+#include "matmul_vectorized.h"
+#include "matmul_warptile.h"
 #include "matmul_cublas.h"
 #include "matmul_wmma.h"
+#include "matmul_wmma_bf16.h"
+#include "matmul_cublas_bf16.h"
 #include "matrix_init.h"
 
 // ============================================================================
@@ -20,10 +28,18 @@
 // Benchmark configuration
 const char* BENCHMARK_METHODS[] = {
     "naive",
+    "coalesced",
+    "smem",
+    "1d_blocktile",
+    "2d_blocktile",
+    "vectorized",
+    "warptile",
     "cublas",
-    "wmma"
+    "wmma",
+    "wmma_bf16",
+    "cublas_bf16"
 };
-const int NUM_METHODS = 3;
+const int NUM_METHODS = 11;
 
 const int BENCHMARK_SIZES[] = {64, 128, 256, 512, 1024, 2048};
 const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
@@ -142,10 +158,18 @@ void print_usage(const char *program_name) {
     printf("  -m, --method METHOD       Matmul method: 'naive' (default: naive)\n");
     printf("  -v, --verify              Enable result verification\n");
     printf("  -h, --help                Show this help message\n");
-    printf("\nMethods:\n");
+    printf("\nMethods (ordered by optimization level):\n");
     printf("  naive:         Naive triple-nested loop (simple, unoptimized)\n");
+    printf("  coalesced:     Global memory coalescing optimization\n");
+    printf("  smem:          Shared memory tiling\n");
+    printf("  1d_blocktile:  1D block tiling (TM=8 elements per thread)\n");
+    printf("  2d_blocktile:  2D block tiling (TM=TN=8, 64 elements per thread)\n");
+    printf("  vectorized:    float4 vectorized memory access\n");
+    printf("  warptile:      Warp-level tiling (near-optimal)\n");
     printf("  cublas:        NVIDIA cuBLAS library (highly optimized)\n");
     printf("  wmma:          WMMA Tensor Core FP16 (Volta+ GPUs)\n");
+    printf("  wmma_bf16:     WMMA Tensor Core BF16 (Ampere+ GPUs)\n");
+    printf("  cublas_bf16:   cuBLAS BF16 Tensor Core (Ampere+ GPUs)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -502,10 +526,26 @@ void benchmark_all_methods(int blockDim, bool verify) {
             try {
                 if (strcmp(method, "naive") == 0) {
                     kernel = new MatmulNaive(N, blockDim);
+                } else if (strcmp(method, "coalesced") == 0) {
+                    kernel = new MatmulCoalesced(N, blockDim);
+                } else if (strcmp(method, "smem") == 0) {
+                    kernel = new MatmulSmem(N, blockDim);
+                } else if (strcmp(method, "1d_blocktile") == 0) {
+                    kernel = new Matmul1DBlocktile(N, blockDim);
+                } else if (strcmp(method, "2d_blocktile") == 0) {
+                    kernel = new Matmul2DBlocktile(N, blockDim);
+                } else if (strcmp(method, "vectorized") == 0) {
+                    kernel = new MatmulVectorized(N, blockDim);
+                } else if (strcmp(method, "warptile") == 0) {
+                    kernel = new MatmulWarptile(N, blockDim);
                 } else if (strcmp(method, "cublas") == 0) {
                     kernel = new MatmulCublas(N, blockDim);
                 } else if (strcmp(method, "wmma") == 0) {
                     kernel = new MatmulWMMA(N, blockDim);
+                } else if (strcmp(method, "wmma_bf16") == 0) {
+                    kernel = new MatmulWmmaBf16(N, blockDim);
+                } else if (strcmp(method, "cublas_bf16") == 0) {
+                    kernel = new MatmulCublasBf16(N, blockDim);
                 }
 
                 if (!kernel) {
@@ -630,10 +670,26 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
 
     if (strcmp(method, "naive") == 0) {
         kernel = new MatmulNaive(N, blockDim);
+    } else if (strcmp(method, "coalesced") == 0) {
+        kernel = new MatmulCoalesced(N, blockDim);
+    } else if (strcmp(method, "smem") == 0) {
+        kernel = new MatmulSmem(N, blockDim);
+    } else if (strcmp(method, "1d_blocktile") == 0) {
+        kernel = new Matmul1DBlocktile(N, blockDim);
+    } else if (strcmp(method, "2d_blocktile") == 0) {
+        kernel = new Matmul2DBlocktile(N, blockDim);
+    } else if (strcmp(method, "vectorized") == 0) {
+        kernel = new MatmulVectorized(N, blockDim);
+    } else if (strcmp(method, "warptile") == 0) {
+        kernel = new MatmulWarptile(N, blockDim);
     } else if (strcmp(method, "cublas") == 0) {
         kernel = new MatmulCublas(N, blockDim);
     } else if (strcmp(method, "wmma") == 0) {
         kernel = new MatmulWMMA(N, blockDim);
+    } else if (strcmp(method, "wmma_bf16") == 0) {
+        kernel = new MatmulWmmaBf16(N, blockDim);
+    } else if (strcmp(method, "cublas_bf16") == 0) {
+        kernel = new MatmulCublasBf16(N, blockDim);
     }
 
     if (kernel) {

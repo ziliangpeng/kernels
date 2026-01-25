@@ -9,6 +9,11 @@ MatmulCublas::MatmulCublas(int N, int blockDim) : N(N) {
         std::cerr << "cuBLAS initialization failed!" << std::endl;
         exit(EXIT_FAILURE);
     }
+
+    // Disable TF32 Tensor Cores to use pure FP32 for fair comparison
+    // TF32 is enabled by default on Ampere+ GPUs and gives ~3x speedup
+    // but uses lower precision (19-bit mantissa vs 23-bit for FP32)
+    cublasSetMathMode(handle, CUBLAS_PEDANTIC_MATH);
 }
 
 // Execute: Pure kernel execution (this method is timed in benchmarks)

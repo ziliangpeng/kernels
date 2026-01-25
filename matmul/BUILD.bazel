@@ -71,6 +71,131 @@ cuda_library(
     includes = [".."],
 )
 
+# Global memory coalescing optimization (Kernel 2)
+cuda_library(
+    name = "matmul_coalesced",
+    srcs = ["matmul_coalesced.cu"],
+    hdrs = [
+        "matmul_coalesced.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Shared memory caching optimization (Kernel 3)
+cuda_library(
+    name = "matmul_smem",
+    srcs = ["matmul_smem.cu"],
+    hdrs = [
+        "matmul_smem.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# 1D block tiling optimization (Kernel 4)
+cuda_library(
+    name = "matmul_1d_blocktile",
+    srcs = ["matmul_1d_blocktile.cu"],
+    hdrs = [
+        "matmul_1d_blocktile.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# 2D block tiling optimization (Kernel 5)
+cuda_library(
+    name = "matmul_2d_blocktile",
+    srcs = ["matmul_2d_blocktile.cu"],
+    hdrs = [
+        "matmul_2d_blocktile.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Vectorized memory access optimization (Kernel 6)
+cuda_library(
+    name = "matmul_vectorized",
+    srcs = ["matmul_vectorized.cu"],
+    hdrs = [
+        "matmul_vectorized.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Warp tiling optimization (Kernel 10)
+cuda_library(
+    name = "matmul_warptile",
+    srcs = ["matmul_warptile.cu"],
+    hdrs = [
+        "matmul_warptile.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# BF16 WMMA Tensor Core kernel (Ampere+)
+# BF16 WMMA requires SM80+
+cuda_library(
+    name = "matmul_wmma_bf16",
+    srcs = ["matmul_wmma_bf16.cu"],
+    hdrs = [
+        "matmul_wmma_bf16.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# cuBLAS BF16 baseline (Ampere+)
+cuda_library(
+    name = "matmul_cublas_bf16",
+    srcs = ["matmul_cublas_bf16.cu"],
+    hdrs = [
+        "matmul_cublas_bf16.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    linkopts = [
+        "-L/usr/local/cuda/lib64",
+        "-lcublas",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # ============================================================================
 # Matrix Multiplication Main Binary
 # ============================================================================
@@ -80,8 +205,16 @@ cuda_binary(
     srcs = ["matmul.cpp"],
     deps = [
         ":matmul_naive",
+        ":matmul_coalesced",
+        ":matmul_smem",
+        ":matmul_1d_blocktile",
+        ":matmul_2d_blocktile",
+        ":matmul_vectorized",
+        ":matmul_warptile",
         ":matmul_cublas",
         ":matmul_wmma",
+        ":matmul_wmma_bf16",
+        ":matmul_cublas_bf16",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
