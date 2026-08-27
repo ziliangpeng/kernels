@@ -6,10 +6,12 @@ Tests run-to-run and cross-implementation determinism for common inference kerne
 Designed to run on any NVIDIA GPU with PyTorch + CUDA.
 
 Usage:
-    python run_tests.py                    # run all tests, default flags
+    python run_tests.py                    # run all ops, all dtypes, default flags
     python run_tests.py --deterministic     # run with deterministic flags on
     python run_tests.py --op softmax        # run single op
-    python run_tests.py --n 100             # number of iterations (default 100)
+    python run_tests.py --dtype fp32        # run single dtype (fp32, fp16, bf16)
+    python run_tests.py --n 500             # number of iterations (default 500)
+    python run_tests.py --shapes all        # run all shapes (default: standard)
 
 Output: CSV to stdout + results/<timestamp>.csv
 """
@@ -27,12 +29,18 @@ import torch.nn.functional as F
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
+DTYPE_MAP = {
+    "fp32": torch.float32,
+    "fp16": torch.float16,
+    "bf16": torch.bfloat16,
+}
+
 def checksum(tensor: torch.Tensor) -> str:
     """Return a stable checksum: hex of raw bytes."""
     return hashlib.md5(tensor.detach().cpu().contiguous().numpy().tobytes()).hexdigest()
 
 def max_abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
-    return (a - b).abs().max().item()
+    return (a.float() - b.float()).abs().max().item()
 
 def seeded_tensor(*shape, dtype=torch.float32, seed=42):
     g = torch.Generator(device="cuda")
@@ -58,6 +66,9 @@ def softmax_online(x: torch.Tensor) -> torch.Tensor:
         m = new_m
     return torch.exp(x - m) / s
 
+def softmax_torch(x: torch.Tensor) -> torch.Tensor:
+    return F.softmax(x, dim=-1)
+
 # ── Op: Reduction (sum) ─────────────────────────────────────────────────────
 
 def reduction_naive(x: torch.Tensor) -> torch.Tensor:
@@ -71,14 +82,24 @@ def reduction_torch(x: torch.Tensor) -> torch.Tensor:
     """PyTorch built-in sum."""
     return x.sum()
 
+def reduction_torch_stable(x: torch.Tensor) -> torch.Tensor:
+    """PyTorch sum with upcast for FP16/BF16."""
+    return x.float().sum().to(x.dtype)
+
 # ── Op: GEMM ────────────────────────────────────────────────────────────────
 
-def gemm_torch(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+def gemm_torch_mm(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.mm(a, b)
 
-def gemm_cublas(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    # torch.mm already dispatches to cuBLAS, but force via matmul
+def gemm_torch_matmul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     return torch.matmul(a, b)
+
+def gemm_torch_addmm(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """torch.addmm with zero bias — different cuBLAS algo path."""
+    M, K = a.shape
+    N = b.shape[1]
+    bias = torch.zeros(M, N, device=a.device, dtype=a.dtype)
+    return torch.addmm(bias, a, b)
 
 # ── Op: RMSNorm ─────────────────────────────────────────────────────────────
 
@@ -93,9 +114,27 @@ def rmsnorm_fused(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> t
     x_normed = x * torch.rsqrt(var + eps)
     return x_normed * weight
 
+def rmsnorm_fp32_upcast(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Upcast to FP32 for reduction, then cast back. Common production pattern."""
+    x_f32 = x.float()
+    var = x_f32.pow(2).mean(dim=-1, keepdim=True)
+    x_normed = x_f32 * torch.rsqrt(var + eps)
+    return (x_normed * weight.float()).to(x.dtype)
+
+# ── Op: LayerNorm ────────────────────────────────────────────────────────────
+
+def layernorm_naive(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """Naive LayerNorm: (x - mean) / sqrt(var + eps) * weight + bias."""
+    mean = x.mean(dim=-1, keepdim=True)
+    var = ((x - mean) ** 2).mean(dim=-1, keepdim=True)
+    return (x - mean) * torch.rsqrt(var + eps) * weight + bias
+
+def layernorm_torch(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    return F.layer_norm(x, (x.shape[-1],), weight, bias, eps)
+
 # ── Test runner ──────────────────────────────────────────────────────────────
 
-def run_test(name: str, fn, args, n: int = 100):
+def run_test(fn, args, n: int = 500):
     """Run fn(*args) n times, return (checksums, first_output, run_times)."""
     checksums = []
     times = []
@@ -113,81 +152,126 @@ def run_test(name: str, fn, args, n: int = 100):
             first_output = out.clone()
     return checksums, first_output, times
 
-def analyze_run_to_run(name: str, impl_name: str, checksums: list) -> dict:
-    """Check if all checksums are the same (run-to-run deterministic)."""
+def analyze_run_to_run(op: str, impl: str, dtype: str, shape: str, checksums: list) -> dict:
     unique = len(set(checksums))
     return {
-        "op": name,
-        "impl": impl_name,
+        "op": op,
+        "impl": impl,
+        "dtype": dtype,
+        "shape": shape,
         "test": "run_to_run",
         "n_runs": len(checksums),
         "unique_checksums": unique,
         "deterministic": unique == 1,
     }
 
-def analyze_cross_impl(name: str, ref_output: torch.Tensor, ref_name: str,
-                       other_output: torch.Tensor, other_name: str) -> dict:
-    """Compare outputs between two implementations."""
+def analyze_cross_impl(op: str, dtype: str, shape: str, ref_name: str,
+                       other_name: str, ref_output: torch.Tensor,
+                       other_output: torch.Tensor) -> dict:
     bit_exact = checksum(ref_output) == checksum(other_output)
     diff = max_abs_diff(ref_output, other_output)
     return {
-        "op": name,
-        "impl": f"{other_name} vs {ref_name}",
+        "op": op,
+        "dtype": dtype,
+        "shape": shape,
         "test": "cross_impl",
+        "impl": f"{other_name} vs {ref_name}",
         "bit_exact": bit_exact,
         "max_abs_diff": diff,
     }
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Op definitions ───────────────────────────────────────────────────────────
+
+# Each op: { name: { shapes: [...], impls: { name: (fn, nargs) } } }
+# For GEMM shapes are (M, K, N); for others shapes are the tensor shape.
 
 OPS = {
     "softmax": {
-        "shapes": [(128, 4096)],
-        "dtype": torch.float32,
+        "shapes": [(128, 4096), (1, 4096), (256, 8192), (1, 128000)],
         "impls": {
-            "naive": (softmax_naive, 1),  # (fn, num_args) 1 = just x
+            "naive": (softmax_naive, 1),
             "online": (softmax_online, 1),
-            "torch": (F.softmax, 1),      # torch built-in (cuDNN/FlashInfer)
+            "torch": (softmax_torch, 1),
         },
-        "kwargs": {"dim": -1},  # for F.softmax
     },
     "reduction": {
-        "shapes": [(100000,)],
-        "dtype": torch.float32,
+        "shapes": [(100000,), (1000000,), (128, 4096)],
         "impls": {
             "naive": (reduction_naive, 1),
             "torch": (reduction_torch, 1),
+            "torch_stable": (reduction_torch_stable, 1),
         },
     },
     "gemm": {
-        "shapes": [(1024, 1024, 1024)],  # (M, N, K)
-        "dtype": torch.float32,
+        "shapes": [(1024, 1024, 1024), (1, 4096, 4096), (128, 4096, 4096), (4096, 4096, 4096)],
         "impls": {
-            "torch_mm": (gemm_torch, 2),
-            "torch_matmul": (gemm_cublas, 2),
+            "torch_mm": (gemm_torch_mm, 2),
+            "torch_matmul": (gemm_torch_matmul, 2),
+            "torch_addmm": (gemm_torch_addmm, 2),
         },
     },
     "rmsnorm": {
-        "shapes": [(128, 4096)],
-        "dtype": torch.float32,
+        "shapes": [(128, 4096), (1, 4096), (256, 8192)],
         "impls": {
-            "naive": (rmsnorm_naive, 2),   # x, weight
+            "naive": (rmsnorm_naive, 2),
             "fused": (rmsnorm_fused, 2),
+            "fp32_upcast": (rmsnorm_fp32_upcast, 2),
+        },
+    },
+    "layernorm": {
+        "shapes": [(128, 4096), (1, 4096), (256, 8192)],
+        "impls": {
+            "naive": (layernorm_naive, 3),
+            "torch": (layernorm_torch, 3),
         },
     },
 }
 
+def impl_should_skip_online(shape, dtype_name) -> bool:
+    """Skip online softmax for large shapes (sequential loop too slow)."""
+    total_elements = 1
+    for s in shape:
+        total_elements *= s
+    return total_elements > 100000
+
+def make_inputs(op_name: str, shape, dtype):
+    """Create input tensors for a given op and shape."""
+    if op_name == "gemm":
+        M, K, N = shape
+        a = seeded_tensor(M, K, dtype=dtype)
+        b = seeded_tensor(K, N, dtype=dtype)
+        return (a, b)
+    elif op_name in ("rmsnorm", "layernorm"):
+        x = seeded_tensor(*shape, dtype=dtype)
+        w = seeded_tensor(shape[-1], dtype=dtype, seed=99)
+        if op_name == "layernorm":
+            bias = seeded_tensor(shape[-1], dtype=dtype, seed=88)
+            return (x, w, bias)
+        return (x, w)
+    else:
+        x = seeded_tensor(*shape, dtype=dtype)
+        return (x,)
+
+def shape_to_str(shape) -> str:
+    if len(shape) == 3:
+        return f"{shape[0]}×{shape[1]}×{shape[2]}"
+    return "×".join(str(s) for s in shape)
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser(description="Kernel determinism test suite")
     parser.add_argument("--op", type=str, default=None, help="single op to test")
-    parser.add_argument("--n", type=int, default=100, help="iterations per test")
+    parser.add_argument("--dtype", type=str, default=None, choices=list(DTYPE_MAP.keys()),
+                        help="single dtype to test (fp32, fp16, bf16)")
+    parser.add_argument("--n", type=int, default=500, help="iterations per test (default 500)")
     parser.add_argument("--deterministic", action="store_true", help="enable deterministic flags")
     args = parser.parse_args()
 
     if args.deterministic:
         os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         torch.use_deterministic_algorithms(True)
-        print("⚠️  Deterministic mode ON (CUBLAS_WORKSPACE_CONFIG + torch.use_deterministic_algorithms)")
+        print("⚠️  Deterministic mode ON")
     else:
         print("🚀 Default mode (no determinism flags)")
 
@@ -197,73 +281,70 @@ def main():
     print(f"Iterations per test: {args.n}")
     print()
 
-    results = []
+    dtypes_to_run = [args.dtype] if args.dtype else list(DTYPE_MAP.keys())
     ops_to_run = [args.op] if args.op else list(OPS.keys())
+    results = []
 
-    for op_name in ops_to_run:
-        if op_name not in OPS:
-            print(f"❌ Unknown op: {op_name}")
-            continue
-        cfg = OPS[op_name]
-        print(f"{'='*60}")
-        print(f"Op: {op_name}")
-        print(f"{'='*60}")
+    for dtype_name in dtypes_to_run:
+        dtype = DTYPE_MAP[dtype_name]
+        print(f"{'#'*60}")
+        print(f"# dtype: {dtype_name} ({dtype})")
+        print(f"{'#'*60}")
 
-        for shape in cfg["shapes"]:
-            dtype = cfg["dtype"]
-            print(f"\n  Shape: {shape}, dtype: {dtype}")
+        for op_name in ops_to_run:
+            if op_name not in OPS:
+                print(f"❌ Unknown op: {op_name}")
+                continue
+            cfg = OPS[op_name]
 
-            # Create inputs
-            if op_name == "gemm":
-                M, N, K = shape
-                a = seeded_tensor(M, K, dtype=dtype)
-                b = seeded_tensor(K, N, dtype=dtype)
-                inputs = {"a": a, "b": b}
-            elif op_name == "rmsnorm":
-                x = seeded_tensor(*shape, dtype=dtype)
-                w = seeded_tensor(shape[-1], dtype=dtype, seed=99)
-                inputs = {"x": x, "weight": w}
-            else:
-                x = seeded_tensor(*shape, dtype=dtype)
-                inputs = {"x": x}
+            for shape in cfg["shapes"]:
+                shape_str = shape_to_str(shape)
+                print(f"\n  [{dtype_name}] {op_name} shape={shape_str}")
 
-            # Run each implementation
-            outputs = {}
-            for impl_name, (fn, nargs) in cfg["impls"].items():
-                if op_name == "softmax" and impl_name == "torch":
-                    call_args = (x, -1)  # F.softmax needs dim
-                elif nargs == 1:
-                    call_args = (x,)
-                elif nargs == 2:
-                    if op_name == "rmsnorm":
-                        call_args = (x, w)
-                    else:
-                        call_args = (a, b)
-                else:
-                    call_args = (x,)
+                # Skip FP16 for online softmax (overflow risk)
+                if op_name == "softmax" and dtype_name == "fp16" and shape[-1] > 8192:
+                    print(f"    ⏭️  skip (fp16 online softmax overflow risk)")
+                    continue
 
-                print(f"  → {impl_name}...", end=" ", flush=True)
-                checksums, first_out, times = run_test(f"{op_name}/{impl_name}", fn, call_args, n=args.n)
-                outputs[impl_name] = first_out
+                inputs = make_inputs(op_name, shape, dtype)
 
-                # Run-to-run analysis
-                rr = analyze_run_to_run(op_name, impl_name, checksums)
-                results.append(rr)
-                status = "✅ stable" if rr["deterministic"] else f"❌ {rr['unique_checksums']} unique"
-                avg_ms = sum(times) / len(times) * 1000
-                print(f"{status} ({avg_ms:.3f} ms/iter)")
+                # Skip slow naive/online impls for large shapes
+                skip_impls = set()
+                if op_name == "softmax" and impl_should_skip_online(shape, dtype_name):
+                    skip_impls.add("online")
+                if op_name == "reduction" and shape[0] > 500000:
+                    skip_impls.add("naive")  # sequential loop too slow
 
-            # Cross-impl analysis (first impl = reference)
-            impl_names = list(outputs.keys())
-            if len(impl_names) >= 2:
-                ref_name = impl_names[0]
-                ref_out = outputs[ref_name]
-                print(f"\n  Cross-impl (ref={ref_name}):")
-                for other_name in impl_names[1:]:
-                    ci = analyze_cross_impl(op_name, ref_out, ref_name, outputs[other_name], other_name)
-                    results.append(ci)
-                    status = "✅ bit-exact" if ci["bit_exact"] else f"❌ diff={ci['max_abs_diff']:.2e}"
-                    print(f"    {other_name}: {status}")
+                # Run each implementation
+                outputs = {}
+                for impl_name, (fn, nargs) in cfg["impls"].items():
+                    if impl_name in skip_impls:
+                        print(f"    → {impl_name}... ⏭️  skip (too slow)")
+                        continue
+                    call_args = inputs[:nargs]
+                    print(f"    → {impl_name}...", end=" ", flush=True)
+                    try:
+                        checksums, first_out, times = run_test(fn, call_args, n=args.n)
+                        outputs[impl_name] = first_out
+                        rr = analyze_run_to_run(op_name, impl_name, dtype_name, shape_str, checksums)
+                        results.append(rr)
+                        status = "✅ stable" if rr["deterministic"] else f"❌ {rr['unique_checksums']} unique"
+                        avg_ms = sum(times) / len(times) * 1000
+                        print(f"{status} ({avg_ms:.3f} ms/iter)")
+                    except Exception as e:
+                        print(f"⚠️  error: {e}")
+
+                # Cross-impl analysis
+                impl_names = list(outputs.keys())
+                if len(impl_names) >= 2:
+                    ref_name = impl_names[0]
+                    ref_out = outputs[ref_name]
+                    for other_name in impl_names[1:]:
+                        ci = analyze_cross_impl(op_name, dtype_name, shape_str,
+                                                ref_name, other_name, ref_out, outputs[other_name])
+                        results.append(ci)
+                        status = "✅ bit-exact" if ci["bit_exact"] else f"❌ diff={ci['max_abs_diff']:.2e}"
+                        print(f"    {other_name} vs {ref_name}: {status}")
 
         print()
 
@@ -271,7 +352,6 @@ def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("results", exist_ok=True)
     csv_path = f"results/{ts}.csv"
-    # Collect all possible fieldnames
     fieldnames = set()
     for r in results:
         fieldnames.update(r.keys())
@@ -285,7 +365,6 @@ def main():
     print(f"Results saved to {csv_path}")
     print(f"Total tests: {len(results)}")
 
-    # Summary
     rr_tests = [r for r in results if r.get("test") == "run_to_run"]
     ci_tests = [r for r in results if r.get("test") == "cross_impl"]
     rr_pass = sum(1 for r in rr_tests if r["deterministic"])
