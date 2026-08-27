@@ -14,7 +14,7 @@ Step 4: Cast FP32 → FP16/BF16 → write output
 Output: C [M, N] — FP16/BF16
 ```
 
-Nobody uses FP16/BF16 as accumulator. FP16 max = 65504, K=4096 accumulation overflows.
+Nobody uses FP16/BF16 as accumulator in standard GEMM. FP16 max = 65504, K=4096 accumulation can overflow for non-centered distributions.
 
 ## Why FP32 accumulator
 
@@ -27,7 +27,9 @@ K=4096 with FP32 accumulator: ULP at sum~64 is ~0.000008, error negligible.
 
 ## FP8 exception
 
-H100 supports FP8 GEMM with **FP16 accumulator** (not FP32) in "fast accumulation" mode. Internal partial accumulator may be even narrower. Trades accuracy for ~2× throughput. Only for inference, not training.
+H100 supports FP8 GEMM with **FP16 accumulator** (not FP32) in "fast accumulation" mode. Internal partial accumulator may be even narrower than FP16. This is the one case where sub-FP32 accumulation is used in practice. Trades accuracy for ~2× throughput. Only for inference, not training.
+
+**Note (Sol review):** FP32 accumulation is the mainstream safe default, not a universal hardware law. FP16 accumulator, reduced-precision split-K reduction, and FP8 narrower internal fast accumulation all exist in real hardware. Exact behavior depends on hardware, backend, compute type, and math-mode flags.
 
 ## FP16 vs BF16
 
@@ -36,9 +38,15 @@ H100 supports FP8 GEMM with **FP16 accumulator** (not FP32) in "fast accumulatio
 | Exponent | 5 bit (range ±65504) | 8 bit (same range as FP32) |
 | Mantissa | 10 bit (~3.7 decimal digits) | 7 bit (~2.4 decimal digits) |
 | Training | Overflow/underflow risk | Safe (FP32 range) |
-| Cross-batch diff | Smaller (more mantissa bits) | Larger (fewer mantissa bits) |
+| Output cast | Risk of overflow (sum > 65504 → NaN) | Cannot overflow (same exponent as FP32) |
 
-BF16 has larger cross-batch diff because 7-bit mantissa means each algorithm switch causes larger relative rounding error. This explains MI325X BF16 0.35% vs FP16 0.04%.
+### Why BF16 has larger observed cross-batch diff (Sol review correction)
+
+Previous explanation ("BF16 amplifies accumulation rounding") was imprecise. The correct explanation:
+
+> BF16's coarser output quantization means small accumulator differences are often hidden if they round to the same BF16 value, but when they cross a rounding boundary the visible difference is at least one relatively large BF16 ULP. This can produce fewer non-exact cases but larger observed max differences than FP16.
+
+The FP32 accumulator's addition order rounding error is the same regardless of output dtype. The difference is in the **output cast step**: BF16's 7-bit mantissa means each ULP is larger, so when a rounding boundary is crossed, the visible diff is larger.
 
 ## Hardware implementation
 
@@ -54,6 +62,8 @@ wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);  // c += A × B (FP32 accumulate
 ```
 
 Tile size 16×16×16 is hardware-fixed. Software cannot choose different tile → fewer algorithm variants → more deterministic (see gemm-determinism.md).
+
+**Caveat (Sol review):** MMA instruction's fixed tile only fixes the *local* reduction structure, not the entire GEMM. CTA tile, warp tile, K-stage count, split-K, edge-tile handling, and epilogue fusion can still vary.
 
 ### AMD Matrix Core (MFMA)
 
