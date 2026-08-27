@@ -271,8 +271,13 @@ def main():
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     os.makedirs("results", exist_ok=True)
     csv_path = f"results/{ts}.csv"
+    # Collect all possible fieldnames
+    fieldnames = set()
+    for r in results:
+        fieldnames.update(r.keys())
+    fieldnames = sorted(fieldnames)
     with open(csv_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=results[0].keys())
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(results)
 
