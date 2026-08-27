@@ -33,6 +33,14 @@ def checksum(tensor):
 def max_abs_diff(a, b):
     return (a.float() - b.float()).abs().max().item()
 
+def rel_diff_pct(a, b):
+    """Relative difference as percentage: max(|a-b|) / max(|a|) * 100."""
+    abs_diff = (a.float() - b.float()).abs().max().item()
+    abs_val = a.float().abs().max().item()
+    if abs_val == 0:
+        return 0.0
+    return abs_diff / abs_val * 100.0
+
 def seeded_tensor(*shape, dtype=torch.float32, seed=42):
     g = torch.Generator(device="cuda")
     g.manual_seed(seed)
@@ -67,16 +75,16 @@ def main():
         ref_out = torch.bmm(x1, W1)[0]  # [M, N]
         ref_cs = checksum(ref_out)
 
-        print(f"  {'B':>6}  {'Bit-exact?':>12}  {'Max diff':>12}")
-        print(f"  {'-'*6}  {'-'*12}  {'-'*12}")
+        print(f"  {'B':>6}  {'Bit-exact?':>12}  {'Rel diff':>10}")
+        print(f"  {'-'*6}  {'-'*12}  {'-'*10}")
         for B in batch_sizes:
             x_batch = x1.repeat(B, 1, 1)
             W_batch = W1.repeat(B, 1, 1)
             out = torch.bmm(x_batch, W_batch)[0]
             cs = checksum(out)
-            diff = max_abs_diff(ref_out, out)
+            diff = rel_diff_pct(ref_out, out)
             status = "✅ exact" if cs == ref_cs else "❌ diff"
-            print(f"  {B:>6}  {status:>12}  {diff:>12.2e}")
+            print(f"  {B:>6}  {status:>12}  {diff:>10.4f}%")
 
         # ── Approach 2: Manual loop (one bmm call per batch slot, B=1 each time) ──
         # This forces the SAME algo for every "batch" because each call is B=1
@@ -98,9 +106,9 @@ def main():
                 outs.append(out_b)
 
             cs = checksum(outs[0])
-            diff = max_abs_diff(ref_mm, outs[0])
+            diff = rel_diff_pct(ref_mm, outs[0])
             status = "✅ exact" if cs == ref_mm_cs else "❌ diff"
-            print(f"  {B:>6}  {status:>12}  {diff:>12.2e}")
+            print(f"  {B:>6}  {status:>12}  {diff:>10.4f}%")
 
         # ── Approach 3: torch.mm with M padded to simulate batch ──
         # Instead of bmm, use mm with M_total = B*M, extract rows
@@ -115,9 +123,9 @@ def main():
             slot0 = out_flat[0:M]  # first M rows
 
             cs = checksum(slot0)
-            diff = max_abs_diff(ref_mm, slot0)
+            diff = rel_diff_pct(ref_mm, slot0)
             status = "✅ exact" if cs == ref_mm_cs else "❌ diff"
-            print(f"  {B:>6}  {status:>12}  {diff:>12.2e}")
+            print(f"  {B:>6}  {status:>12}  {diff:>10.4f}%")
 
         # ── Approach 4: einsum (different dispatch path) ──
         print(f"\n  ── Approach 4: torch.einsum ('bmk,bkn->bmn') ──")
@@ -132,9 +140,9 @@ def main():
             W_batch = W1.repeat(B, 1, 1)
             out = torch.einsum('bmk,bkn->bmn', x_batch, W_batch)[0]
             cs = checksum(out)
-            diff = max_abs_diff(ref_ein, out)
+            diff = rel_diff_pct(ref_ein, out)
             status = "✅ exact" if cs == ref_ein_cs else "❌ diff"
-            print(f"  {B:>6}  {status:>12}  {diff:>12.2e}")
+            print(f"  {B:>6}  {status:>12}  {diff:>10.4f}%")
 
         print()
 
