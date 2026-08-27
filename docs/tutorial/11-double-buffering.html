@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 11 — Double Buffering</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 11 — Double Buffering</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 11 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:55%"></div></div>
+  <span>12/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="10-vectorized-load.html">10 Vectorized Load</a>
+  <a href="#" class="current">11 Double Buffering</a>
+  <a href="12-tensor-cores.html">12 Tensor Cores</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#problem">Problem: sequential load → compute</a></li>
+    <li><a href="#idea">Double buffering — overlap</a></li>
+    <li><a href="#kernel">Double-buffered GEMM</a></li>
+    <li><a href="#measure">Measured improvement</a></li>
+    <li><a href="#cp-async">Modern alternative: cp.async</a></li>
+  </ol>
+</div>
+
+
+<h2 id="problem">1. Problem: sequential load → compute</h2>
+<p>In the tiled GEMM, each tile iteration is: <strong>load SMEM → syncthreads → compute → syncthreads</strong>. The load and compute are sequential — while computing, the memory bus is idle; while loading, the compute units are idle.</p>
+
+<div class="visual">Without double buffering (sequential):
+
+  Time →
+  ┌──────────┐         ┌──────────┐         ┌──────────┐
+  │ Load     │ sync    │ Compute  │ sync    │ Load     │ ...
+  │ tile 0   │         │ tile 0   │         │ tile 1   │
+  └──────────┘         └──────────┘         └──────────┘
+  ← memory busy →      ← compute busy →    ← memory busy →
+
+  Memory and compute are NEVER active at the same time!</div>
+
+<h2 id="idea">2. Double buffering — overlap load and compute</h2>
+<p>Use <strong>two SMEM buffers</strong> (ping-pong). While computing from buffer A, load the next tile into buffer B. Then swap.</p>
+
+<div class="visual">With double buffering (overlapped):
+
+  Time →
+  ┌──────────┐──────────┐──────────┐──────────┐
+  │ Load     │ Load     │ Load     │ Load     │  ← memory always busy
+  │ tile 0   │ tile 1   │ tile 2   │ tile 3   │
+  └──────────┴──────────┴──────────┴──────────┘
+             ┌──────────┐──────────┐──────────┐
+             │ Compute  │ Compute  │ Compute  │  ← compute always busy
+             │ tile 0   │ tile 1   │ tile 2   │
+             └──────────┴──────────┴──────────┘
+
+  Load and compute overlap → ~2× speedup for memory-bound phases</div>
+
+<h2 id="kernel">3. Double-buffered GEMM</h2>
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> gemm_double_buf(<span class="keyword">const</span> <span class="keyword">float</span>* A, <span class="keyword">const</span> <span class="keyword">float</span>* B,
+                                   <span class="keyword">float</span>* C, <span class="keyword">int</span> M, <span class="keyword">int</span> N, <span class="keyword">int</span> K) {
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> As[<span class="number">2</span>][BM][BK];  <span class="comment">// TWO buffers (ping-pong)</span>
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> Bs[<span class="number">2</span>][BK][BN];
+
+    <span class="keyword">int</span> buf = <span class="number">0</span>;  <span class="comment">// current buffer index</span>
+
+    <span class="comment">// Pre-load tile 0 into buffer 0</span>
+    load_tile(A, B, As[<span class="number">0</span>], Bs[<span class="number">0</span>], <span class="number">0</span>);
+    __syncthreads();
+
+    <span class="keyword">for</span> (<span class="keyword">int</span> kt = <span class="number">0</span>; kt &lt; K - BK; kt += BK) {
+        <span class="comment">// Load NEXT tile into the OTHER buffer (async, overlapped)</span>
+        <span class="keyword">int</span> next_buf = <span class="number">1</span> - buf;
+        load_tile(A, B, As[next_buf], Bs[next_buf], kt + BK);
+
+        <span class="comment">// Compute from CURRENT buffer</span>
+        compute_tile(As[buf], Bs[buf], regC);
+
+        <span class="comment">// Wait for both load and compute to finish</span>
+        __syncthreads();
+        buf = next_buf;
+    }
+
+    <span class="comment">// Compute the last tile</span>
+    compute_tile(As[buf], Bs[buf], regC);
+    __syncthreads();
+}</code></pre>
+
+<h2 id="measure">4. Measured improvement</h2>
+<table>
+  <tr><th>Kernel</th><th>TFLOPS</th><th>Improvement</th></tr>
+  <tr><td>Thread-tiled + float4</td><td>~10-12</td><td>baseline</td></tr>
+  <tr><td>+ double buffering</td><td>~12-14</td><td>~15% faster</td></tr>
+</table>
+
+<div class="note">
+  <strong>15% improvement</strong> — the load and compute phases overlap, hiding the memory latency behind compute. The improvement depends on the load/compute ratio: if your kernel is 50/50, double buffering gives ~2×; if it's 90% compute, you get ~10%.
+</div>
+
+<h2 id="cp-async">5. Modern alternative: cp.async</h2>
+<p>On Ampere+ (sm_80+), use <code>cp.async</code> for true async global→SMEM copies without going through registers. Combined with <code>cp.async.commit_group/wait_group</code>, this gives fine-grained pipelining without double SMEM allocation.</p>
+
+<pre><code><span class="comment">// Modern async copy (Ampere+)</span>
+asm(<span class="string">"cp.async.cg.shared.global [%0], [%1], 16;"</span>
+    :: <span class="string">"r"</span>(smem_addr), <span class="string">"l"</span>(global_addr));
+
+cp_async_commit_group();  <span class="comment">// mark a group of copies</span>
+cp_async_wait_group(<span class="number">0</span>);   <span class="comment">// wait for N-1 groups ago</span>
+__syncthreads();</code></pre>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 11 Summary</h3>
+  <p>Double buffering: two SMEM buffers (ping-pong). While computing from buffer A, load next tile into buffer B. Overlaps memory and compute → ~15% faster. Use <code>cp.async</code> (Ampere+) for true async global→SMEM copies without register intermediate, enabling finer pipelining. The improvement depends on the load/compute ratio.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why does double buffering only give ~15% improvement, not ~2×?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Because by this point in the optimization ladder, the kernel is already <strong>compute-bound</strong>, not memory-bound. Double buffering overlaps load with compute, but if compute takes 80% of the time and load 20%, the overlap only saves ~15% (you can hide most of the 20% load behind the 80% compute). If the kernel were 50/50, you'd get closer to 2×. The more compute-heavy the kernel, the less double buffering helps.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="10-vectorized-load.html">← 10 Vectorized Load</a>
+  <a href="12-tensor-cores.html" class="next">12 Tensor Cores →</a>
+</div>
+
+</body>
+</html>

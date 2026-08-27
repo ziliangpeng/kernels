@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 12 — Tensor Cores (wmma)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 12 — Tensor Cores (wmma)</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 12 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:59%"></div></div>
+  <span>13/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="11-double-buffering.html">11 Double Buffering</a>
+  <a href="#" class="current">12 Tensor Cores</a>
+  <a href="13-hip-basics.html">13 HIP Basics</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#problem">Problem: scalar FMA instructions</a></li>
+    <li><a href="#wmma">WMMA — Warp Matrix Multiply Accumulate</a></li>
+    <li><a href="#shapes">WMMA shapes and precision</a></li>
+    <li><a href="#measure">Measured improvement</a></li>
+    <li><a href="#beyond">Beyond wmma: wgmma and TMA</a></li>
+  </ol>
+</div>
+
+
+<h2 id="problem">1. Problem: scalar FMA instructions</h2>
+<p>So far, each thread does scalar multiply-adds: <code>sum += a * b</code>. One FMA instruction = 2 FLOPS (1 mul + 1 add). An H100 CUDA core can do ~2 FLOPS/cycle. With 16,896 cores: ~67 TFLOPS FP32.</p>
+
+<p>But H100 has <strong>tensor cores</strong> — hardware matrix multiply units that can do <code>D = A × B + C</code> on 16×16×16 matrices in a single instruction. Each tensor core does 16×16×16×2 = 8192 FLOPS per instruction. H100 has 528 tensor cores → <strong>989 TFLOPS FP16</strong> (15× the scalar FP32 peak).</p>
+
+<div class="visual">Tensor core vs scalar CUDA core:
+
+  Scalar CUDA core:
+    1 FMA instruction → 2 FLOPS (1 mul + 1 add)
+    Need 4096³ = 137 billion FMA instructions for a GEMM
+
+  Tensor core:
+    1 wmma instruction → 16×16×16 matrix multiply = 8192 FLOPS
+    Need 137B / 4096 = 33 million wmma instructions for same GEMM
+
+  → 4096× fewer instructions → 15× higher throughput (989 vs 67 TFLOPS)</div>
+
+<h2 id="wmma">2. WMMA — Warp Matrix Multiply Accumulate</h2>
+<p>The <code>wmma</code> API provides access to tensor cores. A <strong>warp</strong> (32 threads) cooperatively loads matrix fragments, multiplies them, and stores the result.</p>
+
+<pre><code><span class="preprocessor">#include</span> <span class="string">&lt;mma.h&gt;</span>
+<span class="keyword">using namespace</span> nvcuda;
+
+<span class="comment">// Define fragment types</span>
+<span class="keyword">wmma::fragment</span>&lt;wmma::matrix_a, <span class="number">16</span>, <span class="number">16</span>, <span class="number">16</span>, <span class="keyword">__half</span>, wmma::row_major&gt; a_frag;
+<span class="keyword">wmma::fragment</span>&lt;wmma::matrix_b, <span class="number">16</span>, <span class="number">16</span>, <span class="number">16</span>, <span class="keyword">__half</span>, wmma::col_major&gt; b_frag;
+<span class="keyword">wmma::fragment</span>&lt;wmma::accumulator, <span class="number">16</span>, <span class="number">16</span>, <span class="number">16</span>, <span class="keyword">float</span>&gt; c_frag;
+
+<span class="comment">// Initialize accumulator to zero</span>
+wmma::fill_fragment(c_frag, <span class="number">0.0f</span>);
+
+<span class="keyword">for</span> (<span class="keyword">int</span> kt = <span class="number">0</span>; kt &lt; K; kt += <span class="number">16</span>) {
+    <span class="comment">// Load 16×16 tiles from SMEM into fragments</span>
+    wmma::load_matrix_sync(a_frag, &amp;As[ty][kt], <span class="number">16</span>);
+    wmma::load_matrix_sync(b_frag, &amp;Bs[kt][tx], <span class="number">16</span>);
+
+    <span class="comment">// Tensor core multiply-accumulate: c_frag += a_frag × b_frag</span>
+    wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+}
+
+<span class="comment">// Store result to global memory</span>
+wmma::store_matrix_sync(&amp;C[row * N + col], c_frag, N, wmma::mem_row_major);</code></pre>
+
+<h2 id="shapes">3. WMMA shapes and precision</h2>
+<table>
+  <tr><th>Shape</th><th>A precision</th><th>B precision</th><th>Accumulate</th><th>FLOPS/instruction</th></tr>
+  <tr><td>16×16×16</td><td>FP16</td><td>FP16</td><td>FP32</td><td>8192</td></tr>
+  <tr><td>16×16×16</td><td>BF16</td><td>BF16</td><td>FP32</td><td>8192</td></tr>
+  <tr><td>16×16×16</td><td>INT8</td><td>INT8</td><td>INT32</td><td>8192</td></tr>
+  <tr><td>16×8×16 (H100)</td><td>FP8</td><td>FP8</td><td>FP32</td><td>16384</td></tr>
+</table>
+
+<div class="note">
+  <strong>The accumulate is always FP32.</strong> Even when A and B are FP16, the multiplication is done in FP16 but accumulation in FP32 for precision. This prevents overflow and gives near-FP32 accuracy.
+</div>
+
+<h2 id="measure">4. Measured improvement</h2>
+<table>
+  <tr><th>Kernel</th><th>TFLOPS</th><th>% of peak</th></tr>
+  <tr><td>Thread-tiled + float4 + double buf (scalar FP32)</td><td>~14</td><td>21%</td></tr>
+  <tr><td>+ Tensor cores (FP16)</td><td>~80-100</td><td>~10% of FP16 peak</td></tr>
+  <tr><td>+ Tensor cores (cuBLAS reference)</td><td>~989</td><td>100%</td></tr>
+</table>
+
+<div class="warning">
+  <strong>cuBLAS is still 10× faster than a hand-written wmma kernel.</strong> This is because cuBLAS uses CUTLASS templates with every optimization: perfect tiling, shared memory bank padding, register double buffering, async copy, TMA (Tensor Memory Accelerator), and auto-tuning. Writing a competitive GEMM is extremely hard — this is why libraries like cuBLAS/CUTLASS exist.
+</div>
+
+<h2 id="beyond">5. Beyond wmma: wgmma and TMA (Hopper+)</h2>
+<p>On H100 (sm_90), <code>wgmma</code> (warp-group MMA) replaces <code>wmma</code> — it operates on 4 warps (128 threads) at once, with larger tile sizes and direct global→register loads via TMA. This is the cutting edge of GEMM optimization.</p>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 12 Summary</h3>
+  <p>Tensor cores do 16×16×16 matrix multiply in one instruction = 8192 FLOPS (vs 2 for scalar FMA). Use <code>wmma</code> API: <code>load_matrix_sync</code> → <code>mma_sync</code> → <code>store_matrix_sync</code>. FP16/BF16 inputs, FP32 accumulate. 15× the FP32 throughput (989 TFLOPS FP16 on H100). cuBLAS still ~10× faster than hand-written due to CUTLASS-level optimizations. Hopper adds wgmma + TMA for even higher performance.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why is cuBLAS still ~10× faster than a hand-written wmma GEMM kernel?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>cuBLAS uses CUTLASS templates with <em>every</em> optimization stacked: perfect tile sizes for each architecture, SMEM bank conflict padding, register-level double buffering, <code>cp.async</code> pipelining, TMA (Tensor Memory Accelerator for Hopper), and auto-tuning across hundreds of configurations. A hand-written kernel typically gets ~10% of peak; cuBLAS gets ~90%+. This is why GEMM libraries exist — writing a competitive GEMM from scratch is months of engineering work.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="11-double-buffering.html">← 11 Double Buffering</a>
+  <a href="13-hip-basics.html" class="next">13 HIP Basics →</a>
+</div>
+
+</body>
+</html>

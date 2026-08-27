@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 17 — Triton Basics</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 17 — Triton Basics</h1>
+<p class="subtitle">Phase 4 · Triton & Beyond · Chapter 17 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:82%"></div></div>
+  <span>18/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="16-mi350x-gfx950.html">16 MI350X</a>
+  <a href="#" class="current">17 Triton Basics</a>
+  <a href="18-triton-gemm.html">18 Triton GEMM</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#what">What is Triton?</a></li>
+    <li><a href="#first">First Triton kernel — vector add</a></li>
+    <li><a href="#programming-model">Programming model — programs not threads</a></li>
+    <li><a href="#block">Block-level operations</a></li>
+    <li><a href="#compile">Compilation and debugging</a></li>
+  </ol>
+</div>
+
+
+<h2 id="what">1. What is Triton?</h2>
+<p><strong>Triton</strong> is a Python-based GPU programming language. It gives you CUDA-level performance without writing CUDA C++. Instead of managing threads, warps, and shared memory manually, you write <strong>block-level programs</strong> and Triton handles the low-level optimization automatically.</p>
+
+<table>
+  <tr><th></th><th>CUDA C++</th><th>Triton</th></tr>
+  <tr><td>Language</td><td>C++</td><td>Python</td></tr>
+  <tr><td>Abstraction</td><td>Per-thread</td><td>Per-block</td></tr>
+  <tr><td>SMEM management</td><td>Manual</td><td>Automatic</td></tr>
+  <tr><td>Coalescing</td><td>Manual</td><td>Automatic</td></tr>
+  <tr><td>Tensor cores</td><td>Manual (wmma)</td><td>Automatic (emits MFMA/WMMA)</td></tr>
+  <tr><td>Performance</td><td>Peak (with effort)</td><td>~90% of peak (with ease)</td></tr>
+  <tr><td>GPU support</td><td>NVIDIA only</td><td>NVIDIA + AMD</td></tr>
+</table>
+
+<div class="note">
+  <strong>Why Triton matters:</strong> FlashAttention, vLLM, and SGLang all use Triton kernels. It's the dominant way to write custom GPU kernels for ML today. OpenAI, Meta, AMD, and the entire open-source ML ecosystem have standardized on it.
+</div>
+
+<h2 id="first">2. First Triton kernel — vector add</h2>
+<pre><code><span class="keyword">import</span> triton
+<span class="keyword">import</span> triton.language <span class="keyword">as</span> tl
+<span class="keyword">import</span> torch
+
+<span class="comment"># @triton.jit = "this is a GPU kernel"</span>
+<span class="keyword">@triton.jit</span>
+<span class="keyword">def</span> vector_add(x_ptr, y_ptr, z_ptr, n,
+                  BLOCK_SIZE: tl.constexpr):
+    <span class="comment"># Get this program's ID (like blockIdx)</span>
+    pid = tl.program_id(<span class="number">0</span>)
+
+    <span class="comment"># Compute the range of elements this program handles</span>
+    offsets = pid * BLOCK_SIZE + tl.arange(<span class="number">0</span>, BLOCK_SIZE)
+
+    <span class="comment"># Bounds check</span>
+    mask = offsets &lt; n
+
+    <span class="comment"># Load from global memory (with masking)</span>
+    x = tl.load(x_ptr + offsets, mask=mask)
+    y = tl.load(y_ptr + offsets, mask=mask)
+
+    <span class="comment"># Compute</span>
+    z = x + y
+
+    <span class="comment"># Store to global memory</span>
+    tl.store(z_ptr + offsets, z, mask=mask)
+
+<span class="comment"># Launch from Python</span>
+<span class="keyword">def</span> launch(x, y):
+    z = torch.empty_like(x)
+    n = x.numel()
+    grid = (triton.cdiv(n, <span class="number">1024</span>),)  <span class="comment"># number of programs</span>
+    vector_add[grid](x, y, z, n, BLOCK_SIZE=<span class="number">1024</span>)
+    <span class="keyword">return</span> z</code></pre>
+
+<h2 id="programming-model">3. Programming model — programs not threads</h2>
+<div class="visual">CUDA vs Triton mental model:
+
+  CUDA:
+    You think about THREADS.
+    "Thread 0 loads element 0, thread 1 loads element 1..."
+    You manage threadIdx, blockIdx, __syncthreads, shared memory.
+
+  Triton:
+    You think about PROGRAMS (≈ blocks).
+    "Program 0 loads elements [0:1024], program 1 loads [1024:2048]..."
+    Triton handles threads, coalescing, SMEM, and synchronization.
+
+  The key abstraction: tl.arange(0, BLOCK_SIZE) creates a vector
+  of indices. Operations on it are SIMT — applied to all elements
+  in parallel, like NumPy but running on the GPU as a single block.</div>
+
+<h2 id="block">4. Block-level operations</h2>
+<pre><code><span class="comment"># tl.arange — create index vectors (like np.arange)</span>
+offsets = pid * BLOCK_SIZE + tl.arange(<span class="number">0</span>, BLOCK_SIZE)
+
+<span class="comment"># tl.load / tl.store — memory I/O with masking</span>
+x = tl.load(ptr + offsets, mask=offsets &lt; n)
+tl.store(ptr + offsets, result, mask=offsets &lt; n)
+
+<span class="comment"># Element-wise ops — automatic SIMD</span>
+z = x * <span class="number">2.0</span> + y
+
+<span class="comment"># Reductions — automatic tree reduction</span>
+total = tl.sum(x)           <span class="comment"># sum all elements</span>
+max_val = tl.max(x, axis=<span class="number">0</span>)  <span class="comment"># max along axis</span>
+
+<span class="comment"># tl.dot — matrix multiply (uses tensor cores automatically!)</span>
+c = tl.dot(a, b)  <span class="comment"># a: (M, K), b: (K, N) → c: (M, N)</span>
+
+<span class="comment"># tl.cdiv — ceiling division</span>
+grid = (tl.cdiv(n, BLOCK_SIZE),)</code></pre>
+
+<div class="note">
+  <strong><code>tl.dot</code> automatically uses tensor cores.</strong> If the inputs are FP16/BF16, Triton emits WMMA (NVIDIA) or MFMA (AMD) instructions. You get tensor core performance without writing any hardware-specific code. This is Triton's biggest advantage.
+</div>
+
+<h2 id="compile">5. Compilation and debugging</h2>
+<pre><code><span class="comment"># See the generated PTX (NVIDIA) / GCN (AMD) assembly</span>
+triton.compile(vector_add, [torch.float32] * <span class="number">4</span> + [<span class="string">'int32'</span>]).asm[<span class="string">'ptx'</span>]
+
+<span class="comment"># Debug with TRITON_INTERPRET — runs on CPU, Python-level debugging</span>
+TRITON_INTERPRET=<span class="number">1</span> python my_kernel.py
+
+<span class="comment"># Check auto-tuning results</span>
+<span class="keyword">@triton.autotune</span>(
+    configs=[
+        triton.Config({<span class="string">'BLOCK_SIZE'</span>: <span class="number">256</span>}, num_warps=<span class="number">4</span>),
+        triton.Config({<span class="string">'BLOCK_SIZE'</span>: <span class="number">512</span>}, num_warps=<span class="number">8</span>),
+        triton.Config({<span class="string">'BLOCK_SIZE'</span>: <span class="number">1024</span>}, num_warps=<span class="number">8</span>),
+    ],
+    key=[<span class="string">'n'</span>],  <span class="comment"># re-tune when n changes
+)
+@triton.jit
+def kernel(x_ptr, n, BLOCK_SIZE: tl.constexpr):
+    ...</span></code></pre>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 17 Summary</h3>
+  <p>Triton is Python-based GPU programming with block-level abstraction. You write <code>@triton.jit</code> kernels using <code>tl.program_id</code> (like blockIdx), <code>tl.arange</code> (index vectors), <code>tl.load/store</code> (memory I/O with masking), and <code>tl.dot</code> (auto tensor cores). No manual SMEM, coalescing, or synchronization — Triton handles it. Supports NVIDIA + AMD. FlashAttention, vLLM, SGLang all use Triton.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>In Triton, how do you handle arrays that aren't a multiple of BLOCK_SIZE?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Use <strong>masking</strong>. Create <code>offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</code>, then compute <code>mask = offsets &lt; n</code>. Pass <code>mask=mask</code> to <code>tl.load</code> and <code>tl.store</code>. Out-of-bounds elements get zero on load and are skipped on store. This is the Triton equivalent of <code>if (tid &lt; n)</code> in CUDA — but vectorized over the whole block.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="16-mi350x-gfx950.html">← 16 MI350X</a>
+  <a href="18-triton-gemm.html" class="next">18 Triton GEMM →</a>
+</div>
+
+</body>
+</html>

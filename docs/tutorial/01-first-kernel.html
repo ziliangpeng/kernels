@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 01 — First CUDA Kernel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>⚡ 01 — First CUDA Kernel — Vector Add</h1>
+<p class="subtitle">Phase 1 · CUDA Fundamentals · Chapter 1 of 22</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:9%"></div></div>
+  <span>2/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="00-gpu-architecture.html">00 Arch</a>
+  <a href="#" class="current">01 First Kernel</a>
+  <a href="02-memory-hierarchy.html">02 Memory</a>
+  <a href="03-thread-indexing.html">03 Indexing</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#anatomy">Anatomy of a CUDA program</a></li>
+    <li><a href="#kernel">The kernel function — <code>__global__</code></a></li>
+    <li><a href="#indexing">Thread indexing — finding your global ID</a></li>
+    <li><a href="#launch">Launching the kernel</a></li>
+    <li><a href="#full">Full working program</a></li>
+    <li><a href="#compile">Compiling with <code>nvcc</code></a></li>
+  </ol>
+</div>
+
+<h2 id="anatomy">1. Anatomy of a CUDA program</h2>
+
+<p>A CUDA program has two parts: <strong>host code</strong> (runs on CPU) and <strong>device code</strong> (runs on GPU). The flow is always:</p>
+
+<div class="visual">CUDA program flow:
+
+  CPU (host):                         GPU (device):
+  ───────────                         ────────────
+  1. cudaMalloc(&d_a, size)      →    allocate d_a in global memory
+  2. cudaMemcpy(d_a, h_a, H→D)   →    copy data to GPU
+  3. kernel&lt;&lt;&lt;grid,block&gt;&gt;&gt;(d_a)  →    launch kernel (ASYNC)
+       (CPU continues...)              [GPU runs kernel]
+  4. cudaDeviceSynchronize()      ←   wait for GPU to finish
+  5. cudaMemcpy(h_c, d_c, D→H)   ←   copy result back
+  6. cudaFree(d_a)                →    free GPU memory</div>
+
+<h2 id="kernel">2. The kernel function — <code>__global__</code></h2>
+
+<p>A <strong>kernel</strong> is a function that runs on the GPU. It's marked with <code>__global__</code> and is called from the CPU.</p>
+
+<pre><code><span class="comment">// __global__ = "this function runs on GPU, called from CPU"</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> vector_add(<span class="keyword">const</span> <span class="keyword">float</span>* a, <span class="keyword">const</span> <span class="keyword">float</span>* b, <span class="keyword">float</span>* c, <span class="keyword">int</span> n) {
+    <span class="comment">// Each thread computes ONE element of c</span>
+    <span class="keyword">int</span> tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+    <span class="comment">// Bounds check — make sure we don't go past the array</span>
+    <span class="keyword">if</span> (tid &lt; n) {
+        c[tid] = a[tid] + b[tid];
+    }
+}</code></pre>
+
+<h3>Function qualifiers</h3>
+<table>
+  <tr><th>Qualifier</th><th>Runs on</th><th>Called from</th></tr>
+  <tr><td><code>__global__</code></td><td>GPU</td><td>CPU (kernel launch)</td></tr>
+  <tr><td><code>__device__</code></td><td>GPU</td><td>GPU (helper functions)</td></tr>
+  <tr><td><code>__host__</code></td><td>CPU</td><td>CPU (default)</td></tr>
+  <tr><td><code>__host__ __device__</code></td><td>Both</td><td>Both (compiles for each)</td></tr>
+</table>
+
+<h2 id="indexing">3. Thread indexing — finding your global ID</h2>
+
+<p>Every thread needs to know "which element am I responsible for?" This is computed from the built-in variables:</p>
+
+<pre><code><span class="comment">// Built-in variables available in every kernel:</span>
+threadIdx.x   <span class="comment">// thread index within block (0..blockDim.x-1)</span>
+blockIdx.x    <span class="comment">// block index within grid (0..gridDim.x-1)</span>
+blockDim.x    <span class="comment">// threads per block</span>
+gridDim.x     <span class="comment">// blocks per grid</span>
+
+<span class="comment">// Global thread ID (1D):</span>
+<span class="keyword">int</span> global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+
+<span class="comment">// Example: gridDim=4, blockDim=256</span>
+<span class="comment">// Block 0: threads 0..255</span>
+<span class="comment">// Block 1: threads 256..511</span>
+<span class="comment">// Block 2: threads 512..767</span>
+<span class="comment">// Block 3: threads 768..1023</span></code></pre>
+
+<div class="visual">Computing global thread ID:
+
+  Grid (4 blocks):
+  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+  │  Block 0     │ │  Block 1     │ │  Block 2     │ │  Block 3     │
+  │  threads     │ │  threads     │ │  threads     │ │  threads     │
+  │  0..255      │ │  256..511    │ │  512..767    │ │  768..1023   │
+  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
+
+  For a thread in Block 2 with threadIdx.x = 5:
+    global_tid = blockIdx.x * blockDim.x + threadIdx.x
+               = 2 * 256 + 5 = 517
+
+  This thread handles element c[517].</div>
+
+<div class="warning">
+  <strong>Always bounds-check!</strong> If <code>n</code> isn't a multiple of <code>blockDim × gridDim</code>, some threads will compute IDs beyond the array. Without <code>if (tid &lt; n)</code>, they'll write out of bounds → memory corruption.
+</div>
+
+<h2 id="launch">4. Launching the kernel</h2>
+
+<pre><code><span class="comment">// Problem: add two arrays of n=1,000,000 elements</span>
+<span class="keyword">int</span> n = <span class="number">1000000</span>;
+
+<span class="comment">// Choose block size (typically 128 or 256)</span>
+<span class="keyword">int</span> blockDim = <span class="number">256</span>;
+
+<span class="comment">// Compute grid size to cover all elements</span>
+<span class="keyword">int</span> gridDim = (n + blockDim - <span class="number">1</span>) / blockDim;  <span class="comment">// ceiling division</span>
+
+<span class="comment">// Launch!</span>
+vector_add&lt;&lt;&lt;gridDim, blockDim&gt;&gt;&gt;(d_a, d_b, d_c, n);
+
+<span class="comment">// gridDim = ceil(1000000 / 256) = 3907 blocks</span>
+<span class="comment">// Total threads = 3907 * 256 = 1,000,192 (slightly more than n)</span>
+<span class="comment">// The extra 192 threads hit the bounds check and do nothing.</span></code></pre>
+
+<div class="note">
+  <strong>Ceiling division pattern:</strong> <code>(n + block - 1) / block</code> is the standard way to compute "how many blocks do I need?" It rounds up so all elements are covered.
+</div>
+
+<h2 id="full">5. Full working program</h2>
+
+<pre><code><span class="preprocessor">#include</span> <span class="string">&lt;stdio.h&gt;</span>
+<span class="preprocessor">#include</span> <span class="string">&lt;cuda_runtime.h&gt;</span>
+
+<span class="comment">// ── Kernel ───────────────────────────────────────────</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> vector_add(<span class="keyword">const</span> <span class="keyword">float</span>* a, <span class="keyword">const</span> <span class="keyword">float</span>* b, <span class="keyword">float</span>* c, <span class="keyword">int</span> n) {
+    <span class="keyword">int</span> tid = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="keyword">if</span> (tid &lt; n) {
+        c[tid] = a[tid] + b[tid];
+    }
+}
+
+<span class="comment">// ── Host code ────────────────────────────────────────</span>
+<span class="keyword">int</span> main() {
+    <span class="keyword">int</span> n = <span class="number">1000000</span>;
+    <span class="keyword">size_t</span> bytes = n * <span class="keyword">sizeof</span>(<span class="keyword">float</span>);
+
+    <span class="comment">// 1. Allocate host memory</span>
+    <span class="keyword">float</span> *h_a = (<span class="keyword">float</span>*)malloc(bytes);
+    <span class="keyword">float</span> *h_b = (<span class="keyword">float</span>*)malloc(bytes);
+    <span class="keyword">float</span> *h_c = (<span class="keyword">float</span>*)malloc(bytes);
+
+    <span class="comment">// Initialize</span>
+    <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; n; i++) { h_a[i] = <span class="number">1.0f</span>; h_b[i] = <span class="number">2.0f</span>; }
+
+    <span class="comment">// 2. Allocate device memory</span>
+    <span class="keyword">float</span> *d_a, *d_b, *d_c;
+    cudaMalloc(&amp;d_a, bytes);
+    cudaMalloc(&amp;d_b, bytes);
+    cudaMalloc(&amp;d_c, bytes);
+
+    <span class="comment">// 3. Copy data to GPU</span>
+    cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice);
+
+    <span class="comment">// 4. Launch kernel</span>
+    <span class="keyword">int</span> block = <span class="number">256</span>;
+    <span class="keyword">int</span> grid = (n + block - <span class="number">1</span>) / block;
+    vector_add&lt;&lt;&lt;grid, block&gt;&gt;&gt;(d_a, d_b, d_c, n);
+
+    <span class="comment">// 5. Wait and copy back</span>
+    cudaDeviceSynchronize();
+    cudaMemcpy(h_c, d_c, bytes, cudaMemcpyDeviceToHost);
+
+    <span class="comment">// 6. Verify</span>
+    <span class="keyword">for</span> (<span class="keyword">int</span> i = <span class="number">0</span>; i &lt; n; i++) {
+        <span class="keyword">if</span> (h_c[i] != <span class="number">3.0f</span>) { printf(<span class="string">"FAIL at %d\n"</span>, i); <span class="keyword">return</span> <span class="number">1</span>; }
+    }
+    printf(<span class="string">"PASS\n"</span>);
+
+    <span class="comment">// 7. Free</span>
+    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+    free(h_a); free(h_b); free(h_c);
+    <span class="keyword">return</span> <span class="number">0</span>;
+}</code></pre>
+
+<h2 id="compile">6. Compiling with <code>nvcc</code></h2>
+
+<pre><code><span class="comment"># Save as vector_add.cu, compile with nvcc:</span>
+nvcc -o vector_add vector_add.cu
+
+<span class="comment"># With optimizations and architecture flag:</span>
+nvcc -O3 -arch=sm_80 -o vector_add vector_add.cu
+
+<span class="comment"># Run</span>
+./vector_add</code></pre>
+
+<div class="note">
+  <strong><code>-arch=sm_XX</code> matters:</strong> Different GPU architectures have different features. <code>sm_80</code> = A100, <code>sm_90</code> = H100, <code>sm_100</code> = B100. Use the architecture that matches your GPU. If you don't specify, nvcc compiles for an older architecture and may miss features.
+</div>
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 01 Summary</h3>
+  <p>A CUDA program: allocate GPU memory (<code>cudaMalloc</code>), copy data to GPU (<code>cudaMemcpy H→D</code>), launch kernel (<code>kernel&lt;&lt;&lt;grid, block&gt;&gt;&gt;</code>), wait (<code>cudaDeviceSynchronize</code>), copy result back (<code>cudaMemcpy D→H</code>), free. The kernel uses <code>threadIdx + blockIdx × blockDim</code> to find its global ID. Always bounds-check. Compile with <code>nvcc</code>.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>What does <code>__global__</code> mean?</li>
+    <li>How does a thread compute its global index?</li>
+    <li>Why do you need <code>if (tid &lt; n)</code> in the kernel?</li>
+    <li>Why do you need <code>cudaDeviceSynchronize()</code> before copying results back?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>You have <code>n=1000</code> elements and <code>blockDim=256</code>. How many blocks do you need?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><code>ceil(1000 / 256) = 4</code> blocks. Using the ceiling division formula: <code>(1000 + 256 - 1) / 256 = 1255 / 256 = 4</code>. Total threads = <code>4 × 256 = 1024</code>. The extra 24 threads (IDs 1000-1023) hit the bounds check (<code>if (tid &lt; n)</code>) and do nothing. This is normal and expected.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="00-gpu-architecture.html">← 00 Arch</a>
+  <a href="02-memory-hierarchy.html" class="next">02 — Memory Hierarchy →</a>
+</div>
+
+</body>
+</html>

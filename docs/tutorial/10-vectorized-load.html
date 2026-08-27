@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 10 — Vectorized Loads (float4)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 10 — Vectorized Loads (float4)</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 10 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:50%"></div></div>
+  <span>11/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="09-thread-tiling.html">09 Thread Tiling</a>
+  <a href="#" class="current">10 Vectorized Load</a>
+  <a href="11-double-buffering.html">11 Double Buffering</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#problem">Problem: one float per load</a></li>
+    <li><a href="#float4">float4 — load 4 floats at once</a></li>
+    <li><a href="#alignment">Alignment requirement</a></li>
+    <li><a href="#in-gemm">Vectorized loads in GEMM</a></li>
+    <li><a href="#measure">Measured improvement</a></li>
+  </ol>
+</div>
+
+
+<h2 id="problem">1. Problem: one float per load instruction</h2>
+<p>Each load instruction loads 4 bytes (one float). But the memory bus is 128 bytes wide. To fill a 128-byte cache line, you need 32 separate load instructions from 32 threads. Even with coalescing, each thread issues one load per element.</p>
+
+<div class="visual">Without vectorization:
+  Thread 0: load 4B   → 1 instruction, 4 bytes
+  Thread 1: load 4B   → 1 instruction, 4 bytes
+  ...
+  Thread 31: load 4B  → 1 instruction, 4 bytes
+  Total: 32 instructions, 128 bytes (coalesced into 1 transaction)
+
+  With float4 vectorized load:
+  Thread 0: load 16B  → 1 instruction, 16 bytes (4 floats!)
+  Thread 1: load 16B  → 1 instruction, 16 bytes
+  ...
+  Thread 7: load 16B  → 1 instruction, 16 bytes
+  Total: 8 instructions, 128 bytes (coalesced into 1 transaction)
+
+  → 4× fewer instructions for the same data!</div>
+
+<h2 id="float4">2. float4 — load 4 floats at once</h2>
+<pre><code><span class="comment">// float4 is a built-in CUDA type: 4 contiguous floats</span>
+<span class="comment">// Reinterpret a float* as float4* and load 4 at once</span>
+
+<span class="keyword">__global__</span> <span class="keyword">void</span> load_vectorized(<span class="keyword">const</span> <span class="keyword">float</span>* in, <span class="keyword">float</span>* out, <span class="keyword">int</span> n) {
+    <span class="keyword">int</span> tid = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="keyword">int</span> idx = tid * <span class="number">4</span>;  <span class="comment">// each thread handles 4 elements</span>
+
+    <span class="keyword">if</span> (idx + <span class="number">3</span> &lt; n) {
+        <span class="comment">// Cast to float4* and load — one instruction, 4 floats</span>
+        <span class="keyword">float4</span> data = *<span class="keyword">reinterpret_cast</span>&lt;<span class="keyword">const</span> <span class="keyword">float4</span>*&gt;(&amp;in[idx]);
+
+        <span class="comment">// Access individual elements</span>
+        out[idx]     = data.x;
+        out[idx + <span class="number">1</span>] = data.y;
+        out[idx + <span class="number">2</span>] = data.z;
+        out[idx + <span class="number">3</span>] = data.w;
+    }
+}</code></pre>
+
+<h2 id="alignment">3. Alignment requirement</h2>
+<div class="warning">
+  <strong>float4 loads require 16-byte alignment.</strong> The address must be a multiple of 16. If not, you get a crash or undefined behavior. <code>cudaMalloc</code> returns 256-byte-aligned pointers, so allocations are fine. But if you're loading from an offset, make sure <code>offset % 4 == 0</code>.
+</div>
+
+<h2 id="in-gemm">4. Vectorized loads in GEMM</h2>
+<p>In the SMEM cooperative load phase, each thread loads one float. With float4, each thread loads 4 floats — 4× fewer instructions, 4× less overhead.</p>
+
+<pre><code><span class="comment">// Before: each thread loads 1 float to SMEM</span>
+As[ty][tx] = A[row * K + kt + threadIdx.x];
+
+<span class="comment">// After: each thread loads 4 floats (float4) to SMEM</span>
+<span class="keyword">float4</span> a4 = *<span class="keyword">reinterpret_cast</span>&lt;<span class="keyword">const</span> <span class="keyword">float4</span>*&gt;(&amp;A[row * K + kt + threadIdx.x * <span class="number">4</span>]);
+As[ty][tx * <span class="number">4</span> + <span class="number">0</span>] = a4.x;
+As[ty][tx * <span class="number">4</span> + <span class="number">1</span>] = a4.y;
+As[ty][tx * <span class="number">4</span> + <span class="number">2</span>] = a4.z;
+As[ty][tx * <span class="number">4</span> + <span class="number">3</span>] = a4.w;</code></pre>
+
+<h2 id="measure">5. Measured improvement</h2>
+<table>
+  <tr><th>Kernel</th><th>TFLOPS</th><th>Improvement</th></tr>
+  <tr><td>Thread-tiled (no vec)</td><td>~8-10</td><td>baseline</td></tr>
+  <tr><td>+ float4 loads</td><td>~10-12</td><td>~20% faster</td></tr>
+</table>
+
+<div class="note">
+  <strong>20% improvement</strong> — not huge, but free. The instruction count drops, which helps the instruction scheduler. This is an easy optimization that every production GEMM kernel uses.
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 10 Summary</h3>
+  <p>float4 loads 4 floats (16 bytes) per instruction instead of 1. Reinterpret <code>float*</code> as <code>float4*</code> and dereference. Requires 16-byte alignment. In GEMM, use for the SMEM cooperative load phase — 4× fewer load instructions, ~20% faster. Every production GEMM kernel uses vectorized loads.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why does float4 give only ~20% improvement instead of 4×?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Because the GEMM kernel is not purely memory-bound — it's a mix of compute (mul-add) and memory. float4 reduces the <em>load instruction count</em> by 4×, but the total memory <em>bytes</em> are the same (the cache line is still 128B). The 20% gain comes from reduced instruction issue overhead, not from more bandwidth. The compute portion (mul-adds in the inner loop) is unchanged.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="09-thread-tiling.html">← 09 Thread Tiling</a>
+  <a href="11-double-buffering.html" class="next">11 Double Buffering →</a>
+</div>
+
+</body>
+</html>

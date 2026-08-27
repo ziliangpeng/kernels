@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 07 — Coalesced GEMM</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 07 — Coalesced GEMM</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 7 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:36%"></div></div>
+  <span>8/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="06-naive-gemm.html">06 Naive GEMM</a>
+  <a href="#" class="current">07 Coalesced GEMM</a>
+  <a href="08-shared-memory-tiling.html">08 Shared Memory Tiling</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#problem">Problem with naive access pattern</a></li>
+    <li><a href="#fix">Fix: ensure coalesced access</a></li>
+    <li><a href="#measure">Measured improvement</a></li>
+    <li><a href="#whats-next">What's still wrong</a></li>
+  </ol>
+</div>
+
+
+<h2 id="problem">1. Problem with naive GEMM's access pattern</h2>
+<p>In the naive kernel, thread (row, col) loads <code>A[row][k]</code> and <code>B[k][col]</code>. Consecutive threads in a warp have consecutive <code>col</code> values (same <code>row</code>). This means:</p>
+<ul>
+  <li>B access: <code>B[k][col], B[k][col+1], ...</code> → consecutive addresses → <strong>coalesced ✓</strong></li>
+  <li>A access: <code>A[row][k]</code> for all threads → same address → <strong>broadcast (OK)</strong></li>
+</ul>
+<p>Actually, the naive kernel's coalescing isn't terrible — the real problem is the <strong>memory amplification</strong>. But there's a subtlety: as k iterates, the A access pattern is strided if threads have different rows.</p>
+
+<h2 id="fix">2. Fix: ensure coalesced access for both A and B</h2>
+<p>The standard fix is to arrange the thread mapping so that consecutive threads access consecutive memory. The most common approach: use 2D blocks where <code>threadIdx.x</code> maps to columns (fastest-changing) and <code>threadIdx.y</code> maps to rows.</p>
+
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> gemm_coalesced(<span class="keyword">const</span> <span class="keyword">float</span>* A, <span class="keyword">const</span> <span class="keyword">float</span>* B, <span class="keyword">float</span>* C,
+                             <span class="keyword">int</span> M, <span class="keyword">int</span> N, <span class="keyword">int</span> K) {
+    <span class="comment">// threadIdx.x → col (consecutive threads → consecutive B columns)</span>
+    <span class="comment">// threadIdx.y → row</span>
+    <span class="keyword">int</span> row = blockIdx.y * blockDim.y + threadIdx.y;
+    <span class="keyword">int</span> col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    <span class="keyword">if</span> (row &lt; M &amp;&amp; col &lt; N) {
+        <span class="keyword">float</span> sum = <span class="number">0.0f</span>;
+        <span class="keyword">for</span> (<span class="keyword">int</span> k = <span class="number">0</span>; k &lt; K; k++) {
+            <span class="comment">// B[k][col] — consecutive col → coalesced ✓</span>
+            <span class="comment">// A[row][k] — same row, same k → broadcast ✓</span>
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}</code></pre>
+
+<h2 id="measure">3. Measured improvement</h2>
+<table>
+  <tr><th>Kernel</th><th>TFLOPS (4096³, H100)</th><th>% peak</th></tr>
+  <tr><td>Naive (bad pattern)</td><td>~0.3</td><td>0.4%</td></tr>
+  <tr><td>Coalesced</td><td>~0.5</td><td>0.7%</td></tr>
+</table>
+
+<div class="note">
+  <strong>The improvement is modest.</strong> Coalescing helps, but the dominant bottleneck is still <strong>memory amplification</strong> — each byte is still loaded thousands of times. Coalescing only ensures each <em>individual</em> load is efficient; it doesn't reduce the number of loads. The real fix is shared memory tiling (next chapter).
+</div>
+
+<h2 id="whats-next">4. What's still wrong</h2>
+<div class="visual">Still wrong with coalesced GEMM:
+
+  The k-loop still goes to global memory K times per thread.
+  Each A[row][k] is loaded by all N threads in that row.
+  Each B[k][col] is loaded by all M threads in that column.
+
+  We need to REUSE data across threads — not just access it efficiently.
+
+  Solution: load a TILE of A and B into shared memory (fast, on-chip),
+  compute a partial result from the tile, then load the next tile.
+  This is "shared memory tiling" — the most important GPU optimization technique.</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 07 Summary</h3>
+  <p>Coalesced GEMM ensures consecutive threads access consecutive memory (threadIdx.x → columns). This makes each individual load efficient, but doesn't reduce the total number of loads — memory amplification is still ~K×. The improvement is modest (~0.3 → ~0.5 TFLOPS). The real fix is shared memory tiling: load a tile of A and B into SMEM, reuse across threads.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why does coalescing only give a modest improvement for GEMM?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Because the dominant bottleneck is <strong>memory amplification</strong>, not access efficiency. Coalescing ensures each load transaction is full (128B used), but each byte is still loaded ~K times (4000× for K=4096). Coalescing fixes the <em>per-transaction</em> efficiency but not the <em>total</em> traffic. Shared memory tiling (next chapter) fixes the total traffic by reusing loaded data.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="06-naive-gemm.html">← 06 Naive GEMM</a>
+  <a href="08-shared-memory-tiling.html" class="next">08 Shared Memory Tiling →</a>
+</div>
+
+</body>
+</html>

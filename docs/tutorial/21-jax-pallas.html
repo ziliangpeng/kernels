@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 21 — JAX/Pallas Basics</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 21 — JAX/Pallas Basics</h1>
+<p class="subtitle">Phase 4 · Triton & Beyond · Chapter 21 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:100%"></div></div>
+  <span>22/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="20-dsa-sparse-mla.html">20 DSA Sparse MLA</a>
+  <a href="#" class="current">21 JAX/Pallas</a>
+  <a href="index.html">Index</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#what">What is Pallas?</a></li>
+    <li><a href="#first">First Pallas kernel</a></li>
+    <li><a href="#lowering">Lowering to Triton</a></li>
+    <li><a href="#when">When to use Pallas vs Triton</a></li>
+  </ol>
+</div>
+
+
+<h2 id="what">1. What is Pallas?</h2>
+<p><strong>Pallas</strong> is JAX's custom kernel DSL. It lets you write GPU kernels in Python with the same mental model as Triton (block-level programming), but with the added benefit of JAX's autodiff, JIT compilation, and XLA integration. Pallas kernels can be differentiated — you can backprop through them.</p>
+
+<table>
+  <tr><th></th><th>Triton</th><th>Pallas</th></tr>
+  <tr><td>Framework</td><td>Standalone</td><td>JAX</td></tr>
+  <tr><td>Autodiff</td><td>No (manual backward)</td><td>Yes (automatic)</td></tr>
+  <tr><td>Backends</td><td>NVIDIA, AMD</td><td>Triton (NVIDIA/AMD), TPU</td></tr>
+  <tr><td>Block abstraction</td><td><code>tl.arange</code></td><td><code>jax.lax</code> + grid</td></tr>
+  <tr><td>Use case</td><td>Production kernels</td><td>Research + TPU + autodiff</td></tr>
+</table>
+
+<h2 id="first">2. First Pallas kernel</h2>
+<pre><code><span class="keyword">import</span> jax
+<span class="keyword">import</span> jax.numpy <span class="keyword">as</span> jnp
+<span class="keyword">from</span> jax.experimental <span class="keyword">import</span> pallas <span class="keyword">as</span> pl
+
+<span class="keyword">def</span> vector_add(x, y):
+    <span class="keyword">def</span> kernel(x_ref, y_ref, z_ref):
+        <span class="comment"># x_ref, y_ref are block references — like Triton pointers</span>
+        z_ref[:] = x_ref[:] + y_ref[:]
+
+    <span class="keyword">return</span> pl.pallas_call(
+        kernel,
+        out_shape=jax.ShapeDtypeStruct(x.shape, x.dtype),
+        grid=(x.shape[<span class="number">0</span>] // <span class="number">1024</span>,),
+        in_specs=[
+            pl.BlockSpec((<span class="number">1024</span>,), lambda i: (i * <span class="number">1024</span>,)),
+            pl.BlockSpec((<span class="number">1024</span>,), lambda i: (i * <span class="number">1024</span>,)),
+        ],
+        out_specs=pl.BlockSpec((<span class="number">1024</span>,), lambda i: (i * <span class="number">1024</span>,)),
+    )(x, y)</code></pre>
+
+<h2 id="lowering">3. Lowering to Triton</h2>
+<p>Pallas with the Triton backend lowers to Triton, which then compiles to GPU code. This means Pallas kernels get the same tensor core auto-emit and autotuning as Triton.</p>
+
+<pre><code><span class="comment"># Pallas → Triton → PTX/GCN</span>
+<span class="comment"># The lowering is automatic:</span>
+<span class="comment">#   pl.BlockSpec → tl.arange + tl.load/store</span>
+<span class="comment">#   jnp operations → tl operations</span>
+<span class="comment">#   grid → program_id loop</span></code></pre>
+
+<h2 id="when">4. When to use Pallas vs Triton</h2>
+<div class="note">
+  <strong>Use Triton</strong> for production kernels (FlashAttention, vLLM, SGLang). It's mature, well-documented, and has the largest ecosystem.
+  <strong>Use Pallas</strong> when you need: (1) autodiff through a custom kernel, (2) TPU support, (3) integration with JAX/XLA pipelines, (4) rapid prototyping with JAX's debugging tools.
+</div>
+
+<div class="key-takeaway">
+  <h3>🎓 You've reached the end of the GPU kernel journey</h3>
+  <p>From <code>threadIdx.x</code> to DSA sparse MLA — 22 chapters covering CUDA fundamentals, the GEMM optimization ladder, ROCm/AMD, Triton, and the path to the frontier of attention kernel development. The next step is practice: compile each GEMM kernel in <code>~/code/cudakernels</code>, profile with Nsight/omniperf, and start writing your own Triton kernels toward DSA.</p>
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 21 Summary</h3>
+  <p>Pallas is JAX's custom kernel DSL with block-level abstraction (like Triton) + automatic autodiff + TPU support. Pallas → Triton → GPU code lowering is automatic. Use Triton for production (FlashAttention, vLLM). Use Pallas when you need autodiff through custom kernels, TPU support, or JAX/XLA integration.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>When would you choose Pallas over Triton?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>When you need <strong>autodiff through a custom kernel</strong> (Triton requires manual backward), <strong>TPU support</strong> (Triton only does GPU), or <strong>JAX/XLA pipeline integration</strong> (Pallas compiles within JAX's jit/grad/vmap). For pure production GPU kernels (FlashAttention, vLLM), Triton is more mature and has a larger ecosystem.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="20-dsa-sparse-mla.html">← 20 DSA Sparse MLA</a>
+  <a href="index.html" class="next">Index →</a>
+</div>
+
+</body>
+</html>

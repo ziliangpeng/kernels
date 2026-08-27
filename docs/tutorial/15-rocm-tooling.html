@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 15 — ROCm Tooling</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 15 — ROCm Tooling</h1>
+<p class="subtitle">Phase 3 · ROCm (HIP) · Chapter 15 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:73%"></div></div>
+  <span>16/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="14-wave64-amd-arch.html">14 Wave64</a>
+  <a href="#" class="current">15 ROCm Tooling</a>
+  <a href="16-mi350x-gfx950.html">16 MI350X</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#rocm-smi">rocm-smi — GPU monitoring</a></li>
+    <li><a href="#rocprof">rocprof — profiling</a></li>
+    <li><a href="#omniperf">omniperf — deep analysis</a></li>
+    <li><a href="#hipify">hipify tools</a></li>
+  </ol>
+</div>
+
+
+<h2 id="rocm-smi">1. rocm-smi — GPU monitoring</h2>
+<pre><code><span class="comment"># Basic GPU info (like nvidia-smi)</span>
+rocm-smi
+
+<span class="comment"># Show only utilization and memory</span>
+rocm-smi --showuse --showmeminfo
+
+<span class="comment"># Output:</span>
+<span class="output"># GPU 0: MI300X
+#   Temperature: 55°C
+#   Power: 280W / 750W
+#   Memory: 45.2GB / 192GB
+#   GPU util: 87%</span></code></pre>
+
+<h2 id="rocprof">2. rocprof — profiling</h2>
+<pre><code><span class="comment"># Profile a HIP application</span>
+rocprof -o profile.txt ./my_kernel
+
+<span class="comment"># With specific counters</span>
+rocprof --stats ./my_kernel
+
+<span class="comment"># Key metrics:</span>
+<span class="comment">#   TOTAL_TIME — kernel duration</span>
+<span class="comment">#   GRBM_COUNT — number of waves executed</span>
+<span class="comment">#   L2_CACHE_HIT_RATE — cache effectiveness</span>
+<span class="comment">#   FETCH_INSTRUCTIONS — instruction count</span></code></pre>
+
+<h2 id="omniperf">3. omniperf — deep analysis</h2>
+<p><code>omniperf</code> is AMD's equivalent of Nsight Compute — a deep, per-kernel analysis tool with roofline modeling.</p>
+<pre><code><span class="comment"># Profile with omniperf</span>
+omniperf profile -n my_kernel -- ./my_app
+
+<span class="comment"># Analyze results</span>
+omniperf analyze --kernel-name gemm_tiled
+
+<span class="comment"># Key outputs:</span>
+<span class="comment">#   Roofline plot (is your kernel memory or compute bound?)</span>
+<span class="comment">#   Occupancy analysis</span>
+<span class="comment">#   Register/SMEM usage</span>
+<span class="comment">#   Wavefront count and divergence</span>
+<span class="comment">#   Memory access patterns (coalescing)</span></code></pre>
+
+<div class="visual">Omniperf roofline analysis:
+
+  Achieved TFLOPS
+  ↑
+  │           ╭─── your kernel is here (compute-bound)
+  │          ╱
+  │         ╱ ← compute ceiling
+  │        ╱
+  │       ╱
+  │      ╱ ╭─── your kernel is here (memory-bound)
+  │     ╱ ╱
+  │    ╱ ╱
+  │   ╱╱ ← memory bandwidth ceiling
+  │  ╱
+  └──────────→ Arithmetic intensity
+
+  Omniperf shows exactly where your kernel sits on the roofline,
+  and which hardware counter is the bottleneck.</div>
+
+<h2 id="hipify">4. hipify tools</h2>
+<pre><code><span class="comment"># hipify-perl — simple text replacement</span>
+hipify-perl input.cu &gt; output.hip
+
+<span class="comment"># hipify-clang — more accurate, uses Clang AST</span>
+hipify-clang input.cu -o output.hip
+
+<span class="comment"># Check what was changed</span>
+hipify-perl input.cu --diff &gt; changes.diff</code></pre>
+
+<div class="note">
+  <strong>Always check the hipify diff.</strong> While 95% is automatic, some changes need manual review — especially warp-level primitives (<code>__shfl_sync</code> → <code>__shfl</code>), and any code that assumes warp size = 32. Run the diff and verify.
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 15 Summary</h3>
+  <p>ROCm tooling: <code>rocm-smi</code> (GPU monitoring, like nvidia-smi), <code>rocprof</code> (profiling with hardware counters), <code>omniperf</code> (deep per-kernel analysis with roofline modeling — AMD's Nsight Compute equivalent), <code>hipify-perl/clang</code> (CUDA→HIP conversion). Always review the hipify diff for warp-size assumptions.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Your HIP kernel is running at 30% of peak FP16. What tool tells you if it's memory-bound or compute-bound?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><code>omniperf</code>. It generates a roofline plot showing exactly where your kernel sits relative to the memory bandwidth ceiling and compute ceiling. If your kernel is below the memory bandwidth line, it's memory-bound (optimize memory access). If it's at the compute ceiling, it's compute-bound (use tensor cores or reduce instruction count). <code>rocprof --stats</code> also gives basic metrics, but <code>omniperf</code> is the deep analysis tool.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="14-wave64-amd-arch.html">← 14 Wave64</a>
+  <a href="16-mi350x-gfx950.html" class="next">16 MI350X →</a>
+</div>
+
+</body>
+</html>

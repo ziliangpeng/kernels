@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 03 — Thread Indexing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 03 — Thread Indexing</h1>
+<p class="subtitle">Phase 1 · CUDA Fundamentals · Chapter 3 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:18%"></div></div>
+  <span>4/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="02-memory-hierarchy.html">02 Memory</a>
+  <a href="#" class="current">03 Indexing</a>
+  <a href="04-memory-coalescing.html">04 Coalescing</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#1d">1D Indexing</a></li>
+    <li><a href="#2d">2D Indexing — Image Processing</a></li>
+    <li><a href="#row-major">Row-major layout</a></li>
+    <li><a href="#3d">3D Indexing</a></li>
+    <li><a href="#flatten">Flattened vs multi-dimensional</a></li>
+  </ol>
+</div>
+
+
+<h2 id="1d">1. 1D Indexing</h2>
+<p>The most common pattern: a 1D array where each thread handles one element.</p>
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> kernel(<span class="keyword">float</span>* out, <span class="keyword">int</span> n) {
+    <span class="comment">// Global 1D thread ID</span>
+    <span class="keyword">int</span> tid = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="keyword">if</span> (tid &lt; n) {
+        out[tid] = tid * <span class="number">2.0f</span>;
+    }
+}</code></pre>
+
+<div class="visual">1D grid, 1D block:
+  Grid: [Block0] [Block1] [Block2] [Block3]
+  Each block: 256 threads
+
+  Block 0, Thread 0   → global tid = 0*256 + 0   = 0
+  Block 0, Thread 255 → global tid = 0*256 + 255 = 255
+  Block 1, Thread 0   → global tid = 1*256 + 0   = 256
+  Block 3, Thread 10  → global tid = 3*256 + 10  = 778</div>
+
+<h2 id="2d">2. 2D Indexing — Image Processing</h2>
+<p>For 2D data (images, matrices), use 2D grids and blocks.</p>
+<pre><code><span class="comment">// 2D grid, 2D block</span>
+dim3 block(<span class="number">16</span>, <span class="number">16</span>);  <span class="comment">// 256 threads per block (16×16)</span>
+dim3 grid((W + <span class="number">15</span>) / <span class="number">16</span>, (H + <span class="number">15</span>) / <span class="number">16</span>);
+
+<span class="keyword">__global__</span> <span class="keyword">void</span> blur(<span class="keyword">float</span>* img, <span class="keyword">int</span> W, <span class="keyword">int</span> H) {
+    <span class="keyword">int</span> x = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="keyword">int</span> y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    <span class="keyword">if</span> (x &lt; W &amp;&amp; y &lt; H) {
+        <span class="comment">// Row-major index: y * W + x</span>
+        <span class="keyword">int</span> idx = y * W + x;
+        img[idx] = blur_pixel(img, x, y, W, H);
+    }
+}</code></pre>
+
+<div class="note">
+  <strong>Row-major layout:</strong> In C/CUDA, a 2D array <code>[H][W]</code> is stored as <code>row * W + col</code>. Element <code>(y, x)</code> is at memory address <code>y * W + x</code>. This is the same as NumPy's default layout.
+</div>
+
+<h2 id="row-major">3. Row-major layout — the critical mental model</h2>
+<div class="visual">Row-major memory layout for a 4×3 matrix:
+
+  Memory:  [0][1][2] [3][4][5] [6][7][8] [9][10][11]
+            ───────   ───────   ───────   ─────────
+            Row 0     Row 1     Row 2     Row 3
+
+  Element (row=2, col=1) → address = 2 * 3 + 1 = 7 → value [8]
+
+  Adjacent columns are adjacent in memory (coalesced access ✓)
+  Adjacent rows are W elements apart (stride access ✗)</div>
+
+<h2 id="3d">4. 3D Indexing</h2>
+<pre><code>dim3 block(<span class="number">8</span>, <span class="number">8</span>, <span class="number">8</span>);  <span class="comment">// 512 threads</span>
+dim3 grid((W+<span class="number">7</span>)/<span class="number">8</span>, (H+<span class="number">7</span>)/<span class="number">8</span>, (D+<span class="number">7</span>)/<span class="number">8</span>);
+
+<span class="keyword">__global__</span> <span class="keyword">void</span> kernel3d(<span class="keyword">float</span>* vol, <span class="keyword">int</span> W, <span class="keyword">int</span> H, <span class="keyword">int</span> D) {
+    <span class="keyword">int</span> x = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="keyword">int</span> y = blockIdx.y * blockDim.y + threadIdx.y;
+    <span class="keyword">int</span> z = blockIdx.z * blockDim.z + threadIdx.z;
+    <span class="keyword">if</span> (x &lt; W &amp;&amp; y &lt; H &amp;&amp; z &lt; D) {
+        <span class="keyword">int</span> idx = z * W * H + y * W + x;  <span class="comment">// row-major 3D</span>
+        vol[idx] = <span class="number">0.0f</span>;
+    }
+}</code></pre>
+
+<h2 id="flatten">5. Flattened vs multi-dimensional</h2>
+<p>In CUDA, you always use <strong>flattened 1D pointers</strong> for memory allocation, even for 2D/3D data. The indexing math converts (x,y,z) → linear address.</p>
+<pre><code><span class="comment">// CUDA doesn't have built-in 2D arrays — you flatten manually:</span>
+<span class="keyword">float</span>* d_img;  <span class="comment">// 1D pointer, but represents W×H image</span>
+cudaMalloc(&amp;d_img, W * H * <span class="keyword">sizeof</span>(<span class="keyword">float</span>));
+
+<span class="comment">// Access element (x, y):</span>
+<span class="keyword">float</span> pixel = d_img[y * W + x];  <span class="comment">// manual row-major indexing</span></code></pre>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 03 Summary</h3>
+  <p>1D indexing: <code>tid = blockIdx.x * blockDim.x + threadIdx.x</code>. 2D: use <code>dim3</code> for grid/block, compute <code>x</code> and <code>y</code> separately, convert to linear index via <code>y * W + x</code> (row-major). 3D: <code>z * W * H + y * W + x</code>. Always bounds-check. CUDA uses flattened 1D pointers — you do the indexing math manually.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>For a matrix of shape (rows=100, cols=200) in row-major layout, what's the linear index of element (row=30, col=50)?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><code>30 * 200 + 50 = 6050</code>. Row-major formula: <code>row * num_cols + col</code>. Adjacent columns are adjacent in memory; adjacent rows are <code>num_cols</code> elements apart.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="02-memory-hierarchy.html">← 02 Memory</a>
+  <a href="04-memory-coalescing.html" class="next">04 Coalescing →</a>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 05 — Occupancy & Performance</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 05 — Occupancy & Performance</h1>
+<p class="subtitle">Phase 1 · CUDA Fundamentals · Chapter 5 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:27%"></div></div>
+  <span>6/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="04-memory-coalescing.html">04 Coalescing</a>
+  <a href="#" class="current">05 Occupancy</a>
+  <a href="06-naive-gemm.html">06 Naive GEMM</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#what">What is occupancy?</a></li>
+    <li><a href="#limits">What limits occupancy?</a></li>
+    <li><a href="#calc">Occupancy calculation example</a></li>
+    <li><a href="#tradeoff">Occupancy vs register pressure tradeoff</a></li>
+    <li><a href="#roofline">The roofline model</a></li>
+  </ol>
+</div>
+
+
+<h2 id="what">1. What is occupancy?</h2>
+<p><strong>Occupancy</strong> = the ratio of active warps per SM to the maximum possible warps per SM. High occupancy means the SM has lots of warps to schedule, which helps hide memory latency.</p>
+
+<pre><code><span class="comment">// Theoretical max warps per SM (H100):</span>
+<span class="comment">//   2048 threads / 32 = 64 warps</span>
+
+<span class="comment">// If your kernel uses 256 threads/block and 2 blocks fit per SM:</span>
+<span class="comment">//   2 blocks × 256 threads = 512 threads = 16 warps</span>
+<span class="comment">//   Occupancy = 16 / 64 = 25%</span>
+
+<span class="comment">// If your kernel uses 128 threads/block and 8 blocks fit:</span>
+<span class="comment">//   8 × 128 = 1024 threads = 32 warps</span>
+<span class="comment">//   Occupancy = 32 / 64 = 50%</span></code></pre>
+
+<h2 id="limits">2. What limits occupancy?</h2>
+<table>
+  <tr><th>Resource</th><th>How it limits</th><th>Mitigation</th></tr>
+  <tr><td>Registers per thread</td><td>More regs → fewer threads fit in SM's register file</td><td>Reduce register usage, use <code>__launch_bounds__</code></td></tr>
+  <tr><td>Shared memory per block</td><td>More SMEM → fewer blocks fit in SM's SMEM</td><td>Reduce tile size, use dynamic SMEM</td></tr>
+  <tr><td>Threads per block</td><td>Max 1024, but large blocks limit concurrent blocks</td><td>Use 128-256 threads per block</td></tr>
+  <tr><td>Blocks per SM</td><td>Hard limit (24-32 on H100)</td><td>Don't launch too many tiny blocks</td></tr>
+</table>
+
+<h2 id="calc">3. Occupancy calculation example</h2>
+<div class="visual">H100 SM resources:
+  Registers: 65,536 per SM
+  Shared memory: 228KB per SM
+  Max threads: 2048 per SM
+  Max blocks: 32 per SM
+
+Kernel: 256 threads/block, 32 registers/thread, 8KB SMEM/block
+
+  Register limit:  65536 / (256 × 32) = 8 blocks → 8 × 256 = 2048 threads ✓
+  SMEM limit:      228KB / 8KB = 28 blocks → but max 32 → 28 blocks
+  Thread limit:    2048 / 256 = 8 blocks
+  Block limit:     32 (hard cap)
+
+  Actual: min(8, 28, 8, 32) = 8 blocks → 8 × 256 = 2048 threads
+  Occupancy: 2048 / 2048 = 100% ✓
+
+Now if kernel uses 64 regs/thread instead:
+  Register limit:  65536 / (256 × 64) = 4 blocks → 4 × 256 = 1024 threads
+  Occupancy: 1024 / 2048 = 50% — register pressure halved occupancy!</div>
+
+<h2 id="tradeoff">4. Occupancy vs register pressure tradeoff</h2>
+<div class="note">
+  <strong>More registers per thread = fewer threads = lower occupancy.</strong> But more registers can mean less spilling and faster per-thread execution. The optimal point isn't always 100% occupancy — sometimes 50% occupancy with more registers is faster. Profile to find the sweet spot.
+</div>
+
+<pre><code><span class="comment">// Control register usage with __launch_bounds__</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> __launch_bounds__(<span class="number">256</span>, <span class="number">8</span>) my_kernel() {
+    <span class="comment">// 256 threads/block, target 8 blocks/SM</span>
+    <span class="comment">// Compiler will limit registers to fit this</span>
+}
+
+<span class="comment">// Check occupancy with CUDA API:</span>
+<span class="keyword">int</span> maxActiveBlocks;
+cudaOccupancyMaxActiveBlocksPerMultiprocessor(&amp;maxActiveBlocks, my_kernel, <span class="number">256</span>, <span class="number">0</span>);
+<span class="keyword">float</span> occupancy = (<span class="keyword">float</span>)maxActiveBlocks * <span class="number">256</span> / <span class="number">2048</span>;</code></pre>
+
+<h2 id="roofline">5. The roofline model</h2>
+<div class="visual">Roofline: where is your kernel bottlenecked?
+
+  Performance (FLOPS)
+  ↑
+  │         compute ceiling (e.g. 67 TFLOPS FP32)
+  │        ╱─────────────────
+  │       ╱
+  │      ╱ ← memory bandwidth ceiling
+  │     ╱    (slope = 3 TB/s = 3e12 B/s)
+  │    ╱
+  │   ╱
+  │  ╱
+  │ ╱
+  └──────────────────→ Arithmetic intensity (FLOPS/byte)
+
+  If your kernel is below the memory ceiling line → memory-bound
+  If your kernel is at the compute ceiling → compute-bound
+  The "knee" is where the two ceilings meet.</div>
+
+<p><strong>Arithmetic intensity</strong> = FLOPS performed / bytes loaded. GEMM has high intensity (each byte is reused many times). Vector add has low intensity (each byte is used once). High-intensity kernels benefit from compute optimization; low-intensity kernels are limited by memory bandwidth.</p>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 05 Summary</h3>
+  <p>Occupancy = active warps / max warps per SM. Limited by registers, shared memory, and block/thread caps. Calculate: <code>min(register_limit, smem_limit, thread_limit, block_limit)</code>. Higher occupancy hides latency better, but more registers per thread (lower occupancy) can be faster if it prevents spilling. Use the roofline model to determine if your kernel is memory-bound or compute-bound.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Your kernel uses 128 threads/block and 40 registers/thread on H100 (65536 regs/SM). How many blocks fit per SM?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><code>65536 / (128 × 40) = 12.8 → 12 blocks</code> (round down). 12 blocks × 128 threads = 1536 threads. Occupancy = 1536 / 2048 = 75%. If you reduce to 32 regs/thread: <code>65536 / (128 × 32) = 16 blocks</code> → 16 × 128 = 2048 → 100% occupancy. But check if the extra register spills hurt performance more than the occupancy helps.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="04-memory-coalescing.html">← 04 Coalescing</a>
+  <a href="06-naive-gemm.html" class="next">06 Naive GEMM →</a>
+</div>
+
+</body>
+</html>

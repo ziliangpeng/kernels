@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 18 — Triton GEMM</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 18 — Triton GEMM</h1>
+<p class="subtitle">Phase 4 · Triton & Beyond · Chapter 18 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:86%"></div></div>
+  <span>19/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="17-triton-basics.html">17 Triton Basics</a>
+  <a href="#" class="current">18 Triton GEMM</a>
+  <a href="19-triton-attention.html">19 Triton Attention</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#idea">Tiled GEMM in Triton</a></li>
+    <li><a href="#kernel">Full kernel</a></li>
+    <li><a href="#vs-cuda">Triton vs CUDA comparison</a></li>
+  </ol>
+</div>
+
+
+<h2 id="idea">1. Tiled GEMM in Triton</h2>
+<p>The same tiled GEMM concept from CUDA chapter 08, but in Triton it's ~30 lines instead of ~80 — no SMEM management, no <code>__syncthreads</code>, no cooperative loading. Triton handles tiling, SMEM, and coalescing automatically.</p>
+
+<div class="visual">Triton GEMM tiling:
+
+  C = A @ B  where A: (M, K), B: (K, N), C: (M, N)
+
+  Grid: (cdiv(M, BLOCK_M), cdiv(N, BLOCK_N))
+  Each program (program_id) computes a BLOCK_M × BLOCK_N tile of C.
+
+  For each tile:
+    1. Compute row/col offsets for this program
+    2. Loop over K in BLOCK_K chunks
+    3. Load A tile (BLOCK_M × BLOCK_K) — tl.load, automatic coalescing
+    4. Load B tile (BLOCK_K × BLOCK_N)
+    5. accumulator += tl.dot(A_tile, B_tile) — auto tensor cores!
+    6. Store accumulator to C tile</div>
+
+<h2 id="kernel">2. Full Triton GEMM kernel</h2>
+<pre><code><span class="keyword">@triton.autotune</span>(
+    configs=[
+        triton.Config({<span class="string">'BM'</span>: <span class="number">64</span>, <span class="string">'BN'</span>: <span class="number">64</span>, <span class="string">'BK'</span>: <span class="number">32</span>}, num_warps=<span class="number">4</span>),
+        triton.Config({<span class="string">'BM'</span>: <span class="number">128</span>, <span class="string">'BN'</span>: <span class="number">128</span>, <span class="string">'BK'</span>: <span class="number">32</span>}, num_warps=<span class="number">8</span>),
+        triton.Config({<span class="string">'BM'</span>: <span class="number">128</span>, <span class="string">'BN'</span>: <span class="number">256</span>, <span class="string">'BK'</span>: <span class="number">64</span>}, num_warps=<span class="number">8</span>),
+    ],
+    key=[<span class="string">'M'</span>, <span class="string">'N'</span>, <span class="string">'K'</span>],
+)
+<span class="keyword">@triton.jit</span>
+<span class="keyword">def</span> matmul_kernel(a_ptr, b_ptr, c_ptr,
+                  M, N, K,
+                  stride_am, stride_ak, stride_bk, stride_bn, stride_cm, stride_cn,
+                  BM: tl.constexpr, BN: tl.constexpr, BK: tl.constexpr):
+    <span class="comment"># Program ID → 2D tile index</span>
+    pid_m = tl.program_id(<span class="number">0</span>)
+    pid_n = tl.program_id(<span class="number">1</span>)
+
+    <span class="comment"># Row/col offsets</span>
+    offs_m = pid_m * BM + tl.arange(<span class="number">0</span>, BM)
+    offs_n = pid_n * BN + tl.arange(<span class="number">0</span>, BN)
+    offs_k = tl.arange(<span class="number">0</span>, BK)
+
+    <span class="comment"># Pointers to first tiles</span>
+    a_ptrs = a_ptr + offs_m[:, <span class="keyword">None</span>] * stride_am + offs_k[<span class="keyword">None</span>, :] * stride_ak
+    b_ptrs = b_ptr + offs_k[:, <span class="keyword">None</span>] * stride_bk + offs_n[<span class="keyword">None</span>, :] * stride_bn
+
+    <span class="comment"># Accumulator</span>
+    acc = tl.zeros((BM, BN), dtype=tl.float32)
+
+    <span class="comment"># K-loop</span>
+    <span class="keyword">for</span> k <span class="keyword">in</span> range(<span class="number">0</span>, tl.cdiv(K, BK)):
+        <span class="comment"># Load tiles (masking for boundaries)</span>
+        a = tl.load(a_ptrs, mask=offs_m[:, <span class="keyword">None</span>] &lt; M, other=<span class="number">0.0</span>)
+        b = tl.load(b_ptrs, mask=offs_n[<span class="keyword">None</span>, :] &lt; N, other=<span class="number">0.0</span>)
+
+        <span class="comment"># Matrix multiply — auto tensor cores!</span>
+        acc += tl.dot(a, b)
+
+        <span class="comment"># Advance pointers</span>
+        a_ptrs += BK * stride_ak
+        b_ptrs += BK * stride_bk
+
+    <span class="comment"># Store result</span>
+    c_ptrs = c_ptr + offs_m[:, <span class="keyword">None</span>] * stride_cm + offs_n[<span class="keyword">None</span>, :] * stride_cn
+    tl.store(c_ptrs, acc, mask=(offs_m[:, <span class="keyword">None</span>] &lt; M) &amp; (offs_n[<span class="keyword">None</span>, :] &lt; N))</code></pre>
+
+<h2 id="vs-cuda">3. Triton vs CUDA comparison</h2>
+<table>
+  <tr><th>Metric</th><th>CUDA (hand-written)</th><th>Triton</th></tr>
+  <tr><td>Lines of code</td><td>~80 (tiled GEMM)</td><td>~30</td></tr>
+  <tr><td>SMEM management</td><td>Manual</td><td>Automatic</td></tr>
+  <tr><td>Tensor cores</td><td>Manual wmma API</td><td>Automatic (tl.dot)</td></tr>
+  <tr><td>Auto-tuning</td><td>No</td><td>Built-in (@triton.autotune)</td></tr>
+  <tr><td>Performance</td><td>~10% peak (hand-written)</td><td>~80-90% peak (with autotune)</td></tr>
+  <tr><td>Platform</td><td>NVIDIA only</td><td>NVIDIA + AMD</td></tr>
+  <tr><td>Debugging</td><td>cuda-gdb</td><td>TRITON_INTERPRET=1 (Python)</td></tr>
+</table>
+
+<div class="note">
+  <strong>Triton achieves ~80-90% of cuBLAS with 30 lines of code</strong> — vs months of CUTLASS engineering. The <code>@triton.autotune</code> decorator tries multiple tile sizes and warp counts automatically, picking the best for each GPU and matrix size. This is why Triton has become the standard for custom ML kernels.
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 18 Summary</h3>
+  <p>Triton GEMM: ~30 lines vs ~80 in CUDA. <code>tl.dot</code> uses tensor cores automatically. <code>@triton.autotune</code> tries multiple tile configs (BM, BN, BK, num_warps) and picks the best. Achieves ~80-90% of cuBLAS — vs ~10% for hand-written CUDA without months of CUTLASS engineering. No manual SMEM, coalescing, or synchronization.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why does Triton achieve higher performance than a hand-written CUDA GEMM kernel, despite being higher-level?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Because <code>@triton.autotune</code> automatically tries multiple configurations (tile sizes BM/BN/BK, warp counts) and picks the best for each GPU + matrix size. A hand-written CUDA kernel uses one fixed config that's optimal for one size but suboptimal for others. Triton also automatically handles SMEM bank conflicts, vectorized loads, and tensor core emit — things that take months to perfect in CUDA. The compiler does what a CUTLASS engineer would, but automatically.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="17-triton-basics.html">← 17 Triton Basics</a>
+  <a href="19-triton-attention.html" class="next">19 Triton Attention →</a>
+</div>
+
+</body>
+</html>

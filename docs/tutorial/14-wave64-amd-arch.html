@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 14 — Wave64 & AMD Architecture</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 14 — Wave64 & AMD Architecture</h1>
+<p class="subtitle">Phase 3 · ROCm (HIP) · Chapter 14 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:68%"></div></div>
+  <span>15/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="13-hip-basics.html">13 HIP Basics</a>
+  <a href="#" class="current">14 Wave64</a>
+  <a href="15-rocm-tooling.html">15 ROCm Tooling</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#wavefront">Wavefront = 64 (not 32)</a></li>
+    <li><a href="#cu">CU vs SM</a></li>
+    <li><a href="#implications">What wave64 changes</a></li>
+    <li><a href="#vgpr">VGPR and SGPR registers</a></li>
+  </ol>
+</div>
+
+
+<h2 id="wavefront">1. Wavefront = 64 (not 32)</h2>
+<p>On NVIDIA, the warp size is 32. On AMD, the <strong>wavefront</strong> size is 64. This is the most important architectural difference — it affects how you write efficient kernels.</p>
+
+<table>
+  <tr><th></th><th>NVIDIA (warp)</th><th>AMD (wavefront)</th></tr>
+  <tr><td>Size</td><td>32 threads</td><td>64 threads</td></tr>
+  <tr><td>Lockstep execution</td><td>Yes</td><td>Yes</td></tr>
+  <tr><td>Divergence cost</td><td>2-way = 50% idle</td><td>2-way = 50% idle (but 64 threads wasted)</td></tr>
+  <tr><td>Shuffle (<code>__shfl</code>)</td><td>Within 32 threads</td><td>Within 64 threads (<code>__shfl</code> with wave size 64)</td></tr>
+</table>
+
+<div class="warning">
+  <strong>Block size matters!</strong> On AMD, <code>blockDim.x</code> should be a multiple of 64 for efficiency. A block of 256 threads = 4 wavefronts (good). A block of 48 threads = 1 wavefront with 16 idle lanes (bad — 25% waste).
+</div>
+
+<h2 id="cu">2. CU vs SM</h2>
+<table>
+  <tr><th>NVIDIA</th><th>AMD</th><th>What it is</th></tr>
+  <tr><td>SM (Streaming Multiprocessor)</td><td>CU (Compute Unit)</td><td>The compute block with registers + SMEM</td></tr>
+  <tr><td>CUDA core</td><td>Stream Processor (SP)</td><td>Individual ALU</td></tr>
+  <tr><td>Tensor core</td><td>Matrix Core</td><td>Matrix multiply unit</td></tr>
+  <tr><td>Shared memory</td><td>Local Data Share (LDS)</td><td>On-chip SRAM</td></tr>
+  <tr><td>HBM</td><td>HBM (same)</td><td>Global memory</td></tr>
+</table>
+
+<h3>MI300X vs H100 comparison</h3>
+<table>
+  <tr><th></th><th>H100 (NVIDIA)</th><th>MI300X (AMD)</th></tr>
+  <tr><td>SMs / CUs</td><td>132</td><td>304</td></tr>
+  <tr><td>FP32 cores</td><td>16,896</td><td>19,456</td></tr>
+  <tr><td>FP16 tensor (TFLOPS)</td><td>989</td><td>655</td></tr>
+  <tr><td>FP8 tensor (TFLOPS)</td><td>1,979</td><td>2,615</td></tr>
+  <tr><td>HBM capacity</td><td>80GB</td><td>192GB</td></tr>
+  <tr><td>HBM bandwidth</td><td>3.35 TB/s</td><td>5.3 TB/s</td></tr>
+</table>
+
+<h2 id="implications">3. What wave64 changes in practice</h2>
+<pre><code><span class="comment">// NVIDIA: warp reduction with 5 steps (log2(32))</span>
+<span class="keyword">for</span> (<span class="keyword">int</span> offset = <span class="number">16</span>; offset &gt; <span class="number">0</span>; offset /= <span class="number">2</span>)
+    val += __shfl_down_sync(<span class="number">0xffffffff</span>, val, offset);
+
+<span class="comment">// AMD: wavefront reduction with 6 steps (log2(64))</span>
+<span class="keyword">for</span> (<span class="keyword">int</span> offset = <span class="number">32</span>; offset &gt; <span class="number">0</span>; offset /= <span class="number">2</span>)
+    val += __shfl_down(val, offset);  <span class="comment">// no mask needed on AMD</span></code></pre>
+
+<h2 id="vgpr">4. VGPR and SGPR registers</h2>
+<p>AMD has two types of registers:</p>
+<ul>
+  <li><strong>VGPR</strong> (Vector General Purpose Register) — per-thread, like CUDA registers</li>
+  <li><strong>SGPR</strong> (Scalar General Purpose Register) — per-wavefront, shared across all 64 threads. Used for values that are the same for all threads (e.g., loop bounds, base pointers).</li>
+</ul>
+<div class="note">
+  <strong>SGPR is unique to AMD.</strong> NVIDIA doesn't have a scalar register file — everything is per-thread. AMD's SGPR can save registers when values are uniform across the wavefront. The compiler handles this automatically, but you can help by making uniform values <code>const</code> or passing as kernel arguments.
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 14 Summary</h3>
+  <p>AMD's wavefront = 64 (vs NVIDIA's warp = 32). Block size should be a multiple of 64. CU (Compute Unit) ≈ SM, Matrix Core ≈ Tensor Core, LDS ≈ Shared Memory. MI300X has 192GB HBM and 5.3 TB/s bandwidth (more than H100). AMD has VGPR (per-thread) and SGPR (per-wavefront scalar) registers — SGPR saves registers for uniform values.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Your CUDA kernel uses <code>blockDim.x = 48</code>. What happens on AMD?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>A wavefront is 64 threads. 48 threads = 1 wavefront with 16 idle lanes (25% waste). The wavefront still executes 64-wide, but 16 lanes are masked off. Fix: use <code>blockDim.x = 64</code> (1 full wavefront) or <code>128</code> (2 wavefronts). Always make block dimensions multiples of 64 on AMD.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="13-hip-basics.html">← 13 HIP Basics</a>
+  <a href="15-rocm-tooling.html" class="next">15 ROCm Tooling →</a>
+</div>
+
+</body>
+</html>

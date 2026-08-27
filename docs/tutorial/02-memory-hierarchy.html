@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 02 — Memory Hierarchy</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>💾 02 — Memory Hierarchy</h1>
+<p class="subtitle">Phase 1 · CUDA Fundamentals · Chapter 2 of 22</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:14%"></div></div>
+  <span>3/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="01-first-kernel.html">01 First Kernel</a>
+  <a href="#" class="current">02 Memory</a>
+  <a href="03-thread-indexing.html">03 Indexing</a>
+  <a href="04-memory-coalescing.html">04 Coalescing</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#overview">The full memory hierarchy</a></li>
+    <li><a href="#global">Global memory — big but slow</a></li>
+    <li><a href="#shared">Shared memory — fast but small</a></li>
+    <li><a href="#registers">Registers — fastest, per-thread</a></li>
+    <li><a href="#l1-l2">L1 / L2 caches</a></li>
+    <li><a href="#latency">Latency & bandwidth comparison</a></li>
+  </ol>
+</div>
+
+<h2 id="overview">1. The full memory hierarchy</h2>
+
+<div class="visual">GPU memory hierarchy (H100):
+
+  ┌──────────────────────────────────────────────────┐
+  │ Registers (per thread)          ~65536 per SM     │  ← 1 cycle
+  │  ┌──────────────────────────────────────────┐    │
+  │  │ Shared Memory / L1 (per block)  ~228KB   │    │  ← 30 cycles
+  │  │  ┌──────────────────────────────────┐    │    │
+  │  │  │ L2 Cache (global)       ~50MB    │    │    │  ← 200 cycles
+  │  │  │  ┌──────────────────────────┐    │    │    │
+  │  │  │  │ Global Memory (HBM) 80GB  │    │    │    │  ← 400+ cycles
+  │  │  │  │  (3 TB/s bandwidth)       │    │    │    │
+  │  │  │  └──────────────────────────┘    │    │    │
+  │  │  └──────────────────────────────────┘    │    │
+  │  └──────────────────────────────────────────┘    │
+  └──────────────────────────────────────────────────┘
+
+  Faster = smaller. Slower = bigger. The game is to keep data
+  in the fast levels as much as possible.</div>
+
+<h2 id="global">2. Global memory — big but slow</h2>
+
+<p>Global memory is the GPU's main memory (HBM — High Bandwidth Memory). It's large (80GB on H100) and has high bandwidth (3 TB/s), but it's <strong>high latency</strong> (~400 cycles). All threads can access it, but it's the slowest memory on the GPU.</p>
+
+<pre><code><span class="comment">// Global memory — accessible by all threads, all blocks</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> kernel(<span class="keyword">float</span>* global_array) {
+    <span class="comment">// This load goes to global memory (unless cached in L2)</span>
+    <span class="keyword">float</span> x = global_array[threadIdx.x];  <span class="comment">// ~400 cycles</span>
+}</code></pre>
+
+<div class="note">
+  <strong>High bandwidth ≠ low latency.</strong> HBM on H100 delivers 3 TB/s — enormous throughput. But each individual load takes ~400 cycles. The GPU hides this latency by running thousands of threads: while one waits for memory, others compute. This is why you need massive parallelism.
+</div>
+
+<h2 id="shared">3. Shared memory — fast but small</h2>
+
+<p>Shared memory (SMEM) is on-chip SRAM, shared among threads in a block. It's ~100× faster than global memory but tiny (~228KB per SM on H100). It's the programmer's responsibility to manage — you explicitly load data from global to shared, use it, then discard.</p>
+
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> kernel(<span class="keyword">float</span>* global_a) {
+    <span class="comment">// Declare shared memory (per block)</span>
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> tile[<span class="number">256</span>];
+
+    <span class="comment">// Thread 0..255 each load one element from global → shared</span>
+    <span class="keyword">int</span> tid = threadIdx.x;
+    tile[tid] = global_a[tid];  <span class="comment">// global → shared (~400 cycles)</span>
+
+    <span class="comment">// MUST synchronize — wait for all loads to finish</span>
+    __syncthreads();
+
+    <span class="comment">// Now all threads can read from shared (~30 cycles)</span>
+    <span class="keyword">float</span> x = tile[<span class="number">255</span> - tid];  <span class="comment">// reverse access, still fast</span>
+}</code></pre>
+
+<div class="warning">
+  <strong><code>__syncthreads()</code> is mandatory after shared memory writes.</strong> Without it, some threads might read shared memory before other threads have finished writing to it — a race condition. <code>__syncthreads()</code> acts as a barrier: all threads in the block wait here until all have arrived.
+</div>
+
+<h3>Bank conflicts</h3>
+<p>Shared memory is divided into 32 <strong>banks</strong>. If all 32 threads in a warp access different banks, all accesses happen in one cycle. If two threads access the same bank, they're serialized — a <strong>bank conflict</strong>.</p>
+
+<div class="visual">Shared memory banks (32 banks, 4 bytes each):
+
+  Bank:  0   1   2   3   4  ...  31
+  Addr: [0] [1] [2] [3] [4] ... [31]
+        [32][33][34][35][36]... [63]
+        ...
+
+  No conflict: 32 threads access addresses [0..31] (one per bank)
+  2-way conflict: threads 0 and 1 both access bank 0 → 2 cycles
+  Broadcast: all threads read bank 0 → 1 cycle (broadcast is free)</div>
+
+<h2 id="registers">4. Registers — fastest, per-thread</h2>
+
+<p>Each thread has its own registers (~255 max per thread on H100). Register access is 1 cycle — the fastest memory. The compiler manages register allocation; you don't explicitly declare registers. But you can influence it.</p>
+
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> kernel() {
+    <span class="comment">// These are stored in registers (if the compiler can)</span>
+    <span class="keyword">float</span> a = <span class="number">1.0f</span>;
+    <span class="keyword">float</span> b = <span class="number">2.0f</span>;
+    <span class="keyword">float</span> c = a + b;  <span class="comment">// all in registers, 1 cycle</span>
+
+    <span class="comment">// If you use too many, they "spill" to local memory (slow!)</span>
+    <span class="keyword">float</span> arr[<span class="number">100</span>];  <span class="comment">// likely spills to local memory</span>
+}</code></pre>
+
+<div class="warning">
+  <strong>Register spilling:</strong> If a kernel uses more registers than the hardware allows (255 per thread on H100), the compiler "spills" the excess to <strong>local memory</strong> — which is actually stored in global memory (slow!). Use <code>nvcc -res-usage</code> to check register usage per kernel.
+</div>
+
+<h2 id="l1-l2">5. L1 / L2 caches</h2>
+
+<table>
+  <tr><th>Cache</th><th>Scope</th><th>Size (H100)</th><th>Managed by</th></tr>
+  <tr><td>L1</td><td>Per-SM</td><td>~256KB (shared with SMEM)</td><td>Hardware (automatic)</td></tr>
+  <tr><td>L2</td><td>Global (all SMs)</td><td>~50MB</td><td>Hardware (automatic)</td></tr>
+</table>
+
+<p>L1 and L2 are <strong>hardware-managed caches</strong> — you don't control them explicitly. Global memory accesses go through L2 (and optionally L1). Repeated accesses to the same address may hit the cache, saving a trip to HBM.</p>
+
+<div class="note">
+  <strong>L1 and Shared Memory share the same physical SRAM.</strong> On H100, you can configure the split: e.g., 128KB SMEM + 128KB L1, or 228KB SMEM + 28KB L1. More SMEM = less L1 cache and vice versa. Use <code>cudaFuncSetAttribute</code> to configure.
+</div>
+
+<h2 id="latency">6. Latency & bandwidth comparison</h2>
+
+<table>
+  <tr><th>Memory</th><th>Latency (cycles)</th><th>Bandwidth</th><th>Size</th><th>Scope</th></tr>
+  <tr><td>Registers</td><td>1</td><td>~13 TB/s</td><td>~256B/thread</td><td>Per-thread</td></tr>
+  <tr><td>Shared memory</td><td>~30</td><td>~19 TB/s</td><td>~228KB/SM</td><td>Per-block</td></tr>
+  <tr><td>L1 cache</td><td>~30</td><td>~19 TB/s</td><td>~228KB/SM</td><td>Per-SM</td></tr>
+  <tr><td>L2 cache</td><td>~200</td><td>~12 TB/s</td><td>~50MB</td><td>Global</td></tr>
+  <tr><td>Global (HBM)</td><td>~400</td><td>~3 TB/s</td><td>80GB</td><td>Global</td></tr>
+</table>
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 02 Summary</h3>
+  <p>Registers (1 cycle, per-thread) → Shared memory (30 cycles, per-block, programmer-managed) → L1 (30 cycles, hardware cache) → L2 (200 cycles, hardware cache) → Global HBM (400 cycles, 80GB, 3 TB/s). The key optimization in GPU kernels: <strong>move data from global to shared memory once, reuse it many times from shared</strong>. Use <code>__syncthreads()</code> after SMEM writes. Watch for bank conflicts and register spilling.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Why is shared memory faster than global memory?</li>
+    <li>What happens if you forget <code>__syncthreads()</code> after writing to shared memory?</li>
+    <li>What is register spilling and why is it bad?</li>
+    <li>How many banks does shared memory have, and what causes a bank conflict?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>You have a 256-element array that all 256 threads in a block need to read from. Where should you put it?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><strong>Shared memory.</strong> Each thread loads one element from global to shared (one global access per element), then <code>__syncthreads()</code>, then all threads read from shared (30 cycles, 19 TB/s). Without shared memory, every thread would go to global memory (400 cycles) — 13× slower. This is the fundamental pattern of GPU optimization: <strong>load once to fast memory, reuse many times</strong>.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="01-first-kernel.html">← 01 First Kernel</a>
+  <a href="03-thread-indexing.html" class="next">03 — Thread Indexing →</a>
+</div>
+
+</body>
+</html>

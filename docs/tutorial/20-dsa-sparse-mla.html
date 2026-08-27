@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 20 — Toward DSA Sparse MLA</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 20 — Toward DSA Sparse MLA</h1>
+<p class="subtitle">Phase 4 · Triton & Beyond · Chapter 20 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:95%"></div></div>
+  <span>21/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="19-triton-attention.html">19 Triton Attention</a>
+  <a href="#" class="current">20 DSA Sparse MLA</a>
+  <a href="21-jax-pallas.html">21 JAX/Pallas</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#dsa">What is DSA?</a></li>
+    <li><a href="#swa">Sliding Window Attention (SWA)</a></li>
+    <li><a href="#csa">Chunked Sparse Attention (CSA)</a></li>
+    <li><a href="#hca">Hierarchical Context Attention (HCA)</a></li>
+    <li><a href="#mla">Multi-head Latent Attention (MLA)</a></li>
+    <li><a href="#kernel">What the kernel needs to do</a></li>
+  </ol>
+</div>
+
+
+<h2 id="dsa">1. What is DSA?</h2>
+<p><strong>DSA</strong> (Dynamic Sparse Attention) is the attention mechanism used in DSV4 (DeepSeek V4). It combines three sparse attention patterns to achieve O(S) complexity while maintaining long-range context. This is the end goal of your GPU kernel learning journey — writing a DSA sparse MLA decode kernel from scratch.</p>
+
+<div class="visual">DSA = SWA + CSA + HCA
+
+  Full attention:     every token attends to every other → O(S²)
+  DSA:                three sparse patterns, each O(S):
+
+  1. SWA (Sliding Window): attend to nearby tokens (window of W)
+  2. CSA (Chunked Sparse): attend to anchor tokens every C positions
+  3. HCA (Hierarchical Context): attend to coarse summary tokens
+
+  Combined: each token attends to O(W + S/C + H) others → O(S) total
+  → enables 128K+ context without O(S²) memory/compute</div>
+
+<h2 id="swa">2. Sliding Window Attention (SWA)</h2>
+<p>Each token attends to the <code>W</code> tokens before it (sliding window). This captures local context efficiently.</p>
+<pre><code><span class="comment"># SWA mask: token i attends to [max(0, i-W), i]</span>
+<span class="keyword">for</span> i <span class="keyword">in</span> range(S):
+    <span class="keyword">for</span> j <span class="keyword">in</span> range(max(<span class="number">0</span>, i - W), i + <span class="number">1</span>):
+        mask[i][j] = <span class="keyword">True</span>
+
+<span class="comment"># In kernel form: each Q row only loads K/V for [i-W, i]</span>
+<span class="comment"># → O(W) K/V loads per token instead of O(S)</span></code></pre>
+
+<h2 id="csa">3. Chunked Sparse Attention (CSA)</h2>
+<p>Divide the sequence into chunks of size C. Each token attends to the <strong>first token of each chunk</strong> (anchor tokens). This gives long-range coverage with O(S/C) attention per token.</p>
+
+<h2 id="hca">4. Hierarchical Context Attention (HCA)</h2>
+<p>Summarize each chunk into a single token (via pooling), then attend to all chunk summaries. This gives global context at reduced cost.</p>
+
+<h2 id="mla">5. Multi-head Latent Attention (MLA)</h2>
+<p>MLA compresses the K and V into a low-rank latent representation, reducing KV cache size. Instead of storing <code>(S, n_heads, d_head)</code> for K and V, it stores <code>(S, d_latent)</code> where <code>d_latent &lt;&lt; n_heads × d_head</code>. The K and V are reconstructed on-the-fly from the latent.</p>
+
+<div class="note">
+  <strong>MLA + DSA is the frontier.</strong> DSV4-Flash uses MLA with DSA. The decode kernel needs to: (1) reconstruct K/V from latent, (2) apply SWA+CSA+HCA sparse masks, (3) compute attention only on the non-zero pattern. Only ~10-15 people can write this kernel from scratch — you're learning toward being one of them.
+</div>
+
+<h2 id="kernel">6. What the kernel needs to do</h2>
+<pre><code><span class="comment"># Pseudocode for DSA sparse MLA decode kernel:</span>
+<span class="keyword">@triton.jit</span>
+<span class="keyword">def</span> dsa_mla_decode(q_ptr, kv_latent_ptr, ...):
+    pid = tl.program_id(<span class="number">0</span>)
+
+    <span class="comment"># 1. Load Q for this head</span>
+    q = tl.load(q_ptr + ...)
+
+    <span class="comment"># 2. Determine sparse pattern for this position</span>
+    swa_start = max(<span class="number">0</span>, pos - W)
+    csa_anchors = range(<span class="number">0</span>, S, C)  <span class="comment"># first token of each chunk</span>
+    hca_summaries = range(<span class="number">0</span>, S, C)  <span class="comment"># pooled tokens</span>
+
+    <span class="comment"># 3. Collect all indices this token attends to</span>
+    sparse_indices = sorted(set(
+        range(swa_start, pos) |       <span class="comment"># SWA</span>
+        csa_anchors |                  <span class="comment"># CSA</span>
+        hca_summaries                  <span class="comment"># HCA</span>
+    ))
+
+    <span class="comment"># 4. Gather K/V at sparse indices (NOT full sequence)</span>
+    k = tl.load(kv_latent_ptr + sparse_indices)  <span class="comment"># reconstruct from latent</span>
+    v = tl.load(kv_latent_ptr + sparse_indices)
+
+    <span class="comment"># 5. Compute attention only on sparse subset</span>
+    scores = tl.dot(q, k.T) * scale
+    <span class="comment"># Apply causal mask + softmax</span>
+    attn = tl.softmax(scores)
+    out = tl.dot(attn, v)
+
+    tl.store(o_ptr + ..., out)</code></pre>
+
+<div class="warning">
+  <strong>The challenge is the gather.</strong> Unlike standard attention where K/V are contiguous, sparse attention requires gathering from non-contiguous indices. This is memory-access-pattern-hard: the indices change per position, and you need to batch them efficiently. This is where Triton's block-level abstraction shines — you can load a block of sparse indices and gather in one <code>tl.load</code> call.
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 20 Summary</h3>
+  <p>DSA = SWA + CSA + HCA, three O(S) sparse attention patterns. SWA attends to W nearby tokens. CSA attends to chunk anchors (every C tokens). HCA attends to chunk summaries. MLA compresses KV into low-rank latent (d_latent << n_heads × d_head). The kernel: determine sparse pattern per position, gather K/V at sparse indices (non-contiguous), compute attention only on the subset. The gather is the hard part — non-contiguous access patterns. Only ~10-15 people can write this from scratch.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why is the DSA sparse MLA kernel harder to write than a standard FlashAttention kernel?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Two reasons: (1) <strong>Sparse gather</strong> — standard FlashAttention loads K/V contiguously (coalesced). DSA must gather K/V at arbitrary sparse indices (SWA + CSA + HCA), which are non-contiguous → uncoalesced, much harder to optimize. (2) <strong>MLA reconstruction</strong> — K/V aren't stored directly, they're reconstructed from a compressed latent, adding a matmul before the attention. You must fuse the latent reconstruction, sparse gather, and attention into one kernel to avoid HBM round-trips. This is why only ~10-15 people can write it.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="19-triton-attention.html">← 19 Triton Attention</a>
+  <a href="21-jax-pallas.html" class="next">21 JAX/Pallas →</a>
+</div>
+
+</body>
+</html>

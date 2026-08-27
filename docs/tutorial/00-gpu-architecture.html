@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 00 — Architecture & Programming Model</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 00 — GPU Architecture & Programming Model</h1>
+<p class="subtitle">Phase 1 · CUDA Fundamentals · Chapter 0 of 22</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:5%"></div></div>
+  <span>1/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="#" class="current">00 Arch</a>
+  <a href="01-first-kernel.html">01 First Kernel</a>
+  <a href="02-memory-hierarchy.html">02 Memory</a>
+  <a href="03-thread-indexing.html">03 Indexing</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#cpu-vs-gpu">CPU vs GPU — why they're different</a></li>
+    <li><a href="#sm">Streaming Multiprocessor (SM)</a></li>
+    <li><a href="#warp">The Warp — the atomic unit of execution</a></li>
+    <li><a href="#hierarchy">Thread → Block → Grid hierarchy</a></li>
+    <li><a href="#simt">SIMT execution model</a></li>
+    <li><a href="#kernel-launch">How a kernel launch works</a></li>
+  </ol>
+</div>
+
+<h2 id="cpu-vs-gpu">1. CPU vs GPU — why they're different</h2>
+
+<p>A CPU is designed for <strong>low latency</strong> — it has a few powerful cores with deep cache hierarchies and branch prediction, optimized to execute sequential code as fast as possible. A GPU is designed for <strong>high throughput</strong> — it has thousands of simple cores that work in parallel, optimized to do the same operation on lots of data simultaneously.</p>
+
+<table>
+  <tr><th></th><th>CPU (e.g. EPYC)</th><th>GPU (e.g. H100)</th></tr>
+  <tr><td>Cores</td><td>~64</td><td>~16,896 (CUDA cores)</td></tr>
+  <tr><td>Cache per core</td><td>~1MB L2</td><td>~256KB L1/shared</td></tr>
+  <tr><td>Memory bandwidth</td><td>~100 GB/s</td><td>~3 TB/s</td></tr>
+  <tr><td>Compute (FP32)</td><td>~5 TFLOPS</td><td>~67 TFLOPS</td></tr>
+  <tr><td>Design goal</td><td>Minimize latency</td><td>Maximize throughput</td></tr>
+</table>
+
+<div class="note">
+  <strong>The key insight:</strong> A GPU achieves high throughput by hiding latency through massive parallelism. While one thread waits for memory, the GPU switches to another thread. You need <strong>thousands of independent threads</strong> to keep the GPU busy. This is why GPU programs are written differently than CPU programs.
+</div>
+
+<h2 id="sm">2. Streaming Multiprocessor (SM)</h2>
+
+<p>An NVIDIA GPU consists of multiple <strong>Streaming Multiprocessors (SMs)</strong>. An H100 has 132 SMs. Each SM is a self-contained compute unit with:</p>
+
+<div class="visual">SM (Streaming Multiprocessor) internal structure:
+
+  ┌──────────────────────────────────────────┐
+  │                   SM                      │
+  │  ┌─────────┐ ┌─────────┐ ┌─────────┐    │
+  │  │ 4× SP   │ │ 4× SFU  │ │ 4× LS  │    │  ← ~128 CUDA cores total
+  │  │(32 FP32)│ │(special)│ │(load/st)│    │
+  │  └─────────┘ └─────────┘ └─────────┘    │
+  │                                           │
+  │  ┌─────────────────────────────────┐     │
+  │  │  Register File (~256KB)         │     │  ← per-thread registers
+  │  └─────────────────────────────────┘     │
+  │  ┌─────────────────────────────────┐     │
+  │  │  Shared Memory / L1 (~228KB)    │     │  ← fast on-chip SRAM
+  │  └─────────────────────────────────┘     │
+  │  ┌─────────────────────────────────┐     │
+  │  │  Tensor Cores (4×)              │     │  ← matrix multiply units
+  │  └─────────────────────────────────┘     │
+  │  ┌─────────────────────────────────┐     │
+  │  │  Warp Scheduler & Dispatch      │     │  ← issues instructions
+  │  └─────────────────────────────────┘     │
+  └──────────────────────────────────────────┘
+
+  Each SM can run multiple thread blocks concurrently.
+  H100: 132 SMs × ~2048 threads/SM = ~270K threads in flight.</div>
+
+<h3>SM resources that limit occupancy</h3>
+<table>
+  <tr><th>Resource</th><th>H100 per SM</th><th>Impact</th></tr>
+  <tr><td>Registers</td><td>65,536 (256KB)</td><td>More regs per thread → fewer threads</td></tr>
+  <tr><td>Shared memory</td><td>~228KB</td><td>More SMEM per block → fewer blocks</td></tr>
+  <tr><td>Max threads per block</td><td>1,024</td><td>Hard limit per block</td></tr>
+  <tr><td>Max thread blocks per SM</td><td>24 (or 32 on H100)</td><td>Hard limit on blocks</td></tr>
+</table>
+
+<h2 id="warp">3. The Warp — the atomic unit of execution</h2>
+
+<p>Threads are grouped into <strong>warps</strong> of 32 threads. A warp is the smallest unit of execution on an NVIDIA GPU — all 32 threads in a warp execute the same instruction at the same time (SIMT).</p>
+
+<div class="visual">Warp = 32 threads, executing in lockstep:
+
+  Thread:  0  1  2  3  4  5  6 ... 31
+           │  │  │  │  │  │  │      │
+           ▼  ▼  ▼  ▼  ▼  ▼  ▼      ▼
+         [  LOAD A  ]  [  MUL  ]  [  STORE  ]
+         ─────────────────────────────────────→ time
+
+  All 32 threads execute the SAME instruction simultaneously.
+  If threads diverge (e.g., different branches in an if-statement),
+  the GPU executes both paths sequentially — "warp divergence."
+
+  Warp size = 32 on NVIDIA. On AMD, "wavefront" = 64.</div>
+
+<div class="warning">
+  <strong>Warp divergence kills performance.</strong> If half the warp takes the <code>if</code> branch and half takes the <code>else</code>, the GPU runs both sequentially — 50% of the warp is idle at any time. Minimize branch divergence within a warp.
+</div>
+
+<h2 id="hierarchy">4. Thread → Block → Grid hierarchy</h2>
+
+<p>NVIDIA's programming model has a three-level hierarchy:</p>
+
+<div class="visual">Thread hierarchy:
+
+  Grid
+  ├── Block (0,0)
+  │   ├── Warp 0: Thread 0..31
+  │   ├── Warp 1: Thread 32..63
+  │   ├── Warp 2: Thread 64..95
+  │   └── Warp 3: Thread 96..127
+  ├── Block (1,0)
+  │   ├── Warp 0..3
+  │   ...
+  ├── Block (0,1)
+  │   ...
+  └── ... (up to billions of blocks)
+
+  Grid:   the entire launch — all blocks
+  Block:  up to 1024 threads, can synchronize via __syncthreads()
+  Warp:   32 threads, execute in lockstep
+  Thread: the individual worker</div>
+
+<h3>Why this hierarchy exists</h3>
+<table>
+  <tr><th>Level</th><th>Can synchronize?</th><th>Can share memory?</th><th>Scalability</th></tr>
+  <tr><td>Grid</td><td>❌ (no global sync)</td><td>❌ (only via global mem)</td><td>Unlimited blocks</td></tr>
+  <tr><td>Block</td><td>✅ (<code>__syncthreads()</code>)</td><td>✅ (shared memory)</td><td>Limited per SM</td></tr>
+  <tr><td>Warp</td><td>✅ (implicit — lockstep)</td><td>✅ (<code>__shfl</code>)</td><td>32 threads</td></tr>
+  <tr><td>Thread</td><td>—</td><td>Registers</td><td>—</td></tr>
+</table>
+
+<div class="note">
+  <strong>Key design principle:</strong> Threads within a block can synchronize and share fast on-chip memory. Threads in different blocks <strong>cannot</strong> synchronize or communicate (except through global memory). This constraint is what makes the GPU scalable — blocks can be scheduled to any SM in any order.
+</div>
+
+<h2 id="simt">5. SIMT execution model</h2>
+
+<p>NVIDIA calls its model <strong>SIMT</strong> (Single Instruction, Multiple Threads). It's like SIMD, but each thread has its own registers and can take different branches (though divergence is costly). The hardware manages the mapping of threads to lanes.</p>
+
+<pre><code><span class="comment">// All threads in a warp execute this line simultaneously</span>
+<span class="comment">// But each thread has its own value of threadIdx.x</span>
+
+<span class="keyword">int</span> tid = threadIdx.x + blockIdx.x * blockDim.x;
+
+<span class="comment">// Each thread loads from a different address</span>
+<span class="comment">// — but the load instruction is the same for all</span>
+c[tid] = a[tid] + b[tid];</code></pre>
+
+<h2 id="kernel-launch">6. How a kernel launch works</h2>
+
+<pre><code><span class="comment">// The triple-chevron syntax launches a kernel on the GPU:</span>
+my_kernel&lt;&lt;&lt;numBlocks, threadsPerBlock&gt;&gt;&gt;(arg1, arg2);
+
+<span class="comment">// Expanded form with more control:</span>
+my_kernel&lt;&lt;&lt;gridDim, blockDim, sharedMem, stream&gt;&gt;&gt;(args);
+
+<span class="comment">// gridDim:     number of blocks (dim3, can be 1D/2D/3D)</span>
+<span class="comment">// blockDim:    threads per block (dim3)</span>
+<span class="comment">// sharedMem:   bytes of shared memory per block (optional, default 0)</span>
+<span class="comment">// stream:      CUDA stream for async execution (optional)</span></code></pre>
+
+<div class="visual">Kernel launch flow:
+
+  CPU side:
+    1. Allocate GPU memory (cudaMalloc)
+    2. Copy input data to GPU (cudaMemcpy H→D)
+    3. Launch kernel: my_kernel&lt;&lt;&lt;grid, block&gt;&gt;&gt;(args)
+       → CPU continues immediately (async!)
+    4. Wait for completion: cudaDeviceSynchronize()
+    5. Copy result back (cudaMemcpy D→H)
+
+  GPU side:
+    1. Hardware schedules blocks onto SMs
+    2. Each block's threads are split into warps
+    3. Warp scheduler issues instructions
+    4. When all blocks finish, kernel is done</div>
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 00 Summary</h3>
+  <p>GPUs trade latency for throughput via massive parallelism. The execution hierarchy is <strong>Grid → Block → Warp → Thread</strong>. A <strong>warp</strong> (32 threads) is the atomic unit — all threads execute the same instruction in lockstep. An <strong>SM</strong> is the physical compute unit with registers, shared memory, and tensor cores. Blocks can synchronize internally (<code>__syncthreads</code>), but different blocks cannot. Kernel launches are async — the CPU continues while the GPU runs.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>What's the difference between a thread, a warp, and a block?</li>
+    <li>How many threads are in a warp on NVIDIA? On AMD?</li>
+    <li>Can two blocks synchronize? Why or why not?</li>
+    <li>What is warp divergence and why is it bad?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>You launch <code>kernel&lt;&lt;&lt;4, 256&gt;&gt;&gt;()</code>. How many threads total?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><strong>1,024 threads</strong> (4 blocks × 256 threads/block). These are split into <code>4 × 256 / 32 = 32 warps</code> total. The GPU schedules these 4 blocks across available SMs — they may all run on one SM, or spread across multiple SMs.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="index.html">← Index</a>
+  <a href="01-first-kernel.html" class="next">01 — First CUDA Kernel →</a>
+</div>
+
+</body>
+</html>

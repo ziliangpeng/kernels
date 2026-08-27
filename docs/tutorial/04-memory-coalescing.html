@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 04 — Memory Coalescing</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 04 — Memory Coalescing</h1>
+<p class="subtitle">Phase 1 · CUDA Fundamentals · Chapter 4 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:23%"></div></div>
+  <span>5/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="03-thread-indexing.html">03 Indexing</a>
+  <a href="#" class="current">04 Coalescing</a>
+  <a href="05-occupancy.html">05 Occupancy</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#what">What is memory coalescing?</a></li>
+    <li><a href="#why">Why it matters — concrete numbers</a></li>
+    <li><a href="#example">Coalesced vs uncoalesced matrix access</a></li>
+    <li><a href="#diagnose">How to diagnose coalescing issues</a></li>
+  </ol>
+</div>
+
+
+<h2 id="what">1. What is memory coalescing?</h2>
+<p>The GPU's memory controller loads data in <strong>128-byte cache lines</strong>. When all 32 threads in a warp access consecutive addresses within the same 128-byte segment, the GPU can satisfy all 32 loads with a single memory transaction. This is a <strong>coalesced access</strong>.</p>
+
+<div class="visual">Coalesced vs uncoalesced access:
+
+  COALESCED (good): 32 threads access consecutive floats (4 bytes each)
+  Thread: 0    1    2    3   ...  31
+  Addr:   100  104  108  112  ...  224
+          ───────── 128 bytes ──────────
+          → 1 memory transaction (128 bytes loaded, all used)
+
+  UNCOALESCED (bad): 32 threads access strided addresses
+  Thread: 0    1    2    3   ...  31
+  Addr:   100  500  900  1300 ...  (stride = 400)
+          ├──┤  ├──┤  ├──┤         Each in a different 128B segment
+          → 32 memory transactions (128B each, only 4B used each → 3.125% efficiency)</div>
+
+<h2 id="why">2. Why it matters — concrete numbers</h2>
+<table>
+  <tr><th>Access pattern</th><th>Transactions</th><th>Bandwidth used</th><th>Effective BW</th></tr>
+  <tr><td>Coalesced (consecutive)</td><td>1</td><td>128B for 128B</td><td>100%</td></tr>
+  <tr><td>Stride-2</td><td>2</td><td>256B for 128B</td><td>50%</td></tr>
+  <tr><td>Stride-32</td><td>32</td><td>4096B for 128B</td><td>3.1%</td></tr>
+  <tr><td>Random (per-thread)</td><td>32</td><td>4096B for 128B</td><td>3.1%</td></tr>
+</table>
+
+<div class="warning">
+  <strong>Uncoalesced access can make your kernel 32× slower.</strong> The GPU still loads the full 128-byte cache line for each thread, even if only 4 bytes are used. If your kernel is memory-bound and you see low bandwidth utilization, coalescing is the first thing to check.
+</div>
+
+<h2 id="example">3. Example: coalesced vs uncoalesced matrix access</h2>
+<pre><code><span class="comment">// COALESCED — each thread reads a column, threads go along a row</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> read_by_row(<span class="keyword">float</span>* mat, <span class="keyword">int</span> W) {
+    <span class="keyword">int</span> row = blockIdx.x;
+    <span class="keyword">int</span> col = threadIdx.x;
+    <span class="keyword">if</span> (col &lt; W) {
+        <span class="keyword">float</span> x = mat[row * W + col];  <span class="comment">// consecutive threads → consecutive addresses ✓</span>
+    }
+}
+
+<span class="comment">// UNCOALESCED — each thread reads a row, threads go along a column</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> read_by_col(<span class="keyword">float</span>* mat, <span class="keyword">int</span> H, <span class="keyword">int</span> W) {
+    <span class="keyword">int</span> col = blockIdx.x;
+    <span class="keyword">int</span> row = threadIdx.x;
+    <span class="keyword">if</span> (row &lt; H) {
+        <span class="keyword">float</span> x = mat[row * W + col];  <span class="comment">// consecutive threads → stride W addresses ✗</span>
+    }
+}</code></pre>
+
+<div class="note">
+  <strong>Rule of thumb:</strong> Make sure consecutive threads (in the same warp) access consecutive memory addresses. The easiest way: have <code>threadIdx.x</code> correspond to the fastest-changing dimension (columns in row-major layout).
+</div>
+
+<h2 id="diagnose">4. How to diagnose coalescing issues</h2>
+<pre><code><span class="comment"># Compile with lineinfo for profiling</span>
+nvcc -O3 -lineinfo -o kernel kernel.cu
+
+<span class="comment"># Profile with Nsight Compute</span>
+nsys profile ./kernel
+ncu --set full ./kernel
+
+<span class="comment"># Key metric to check:</span>
+ncu --metrics l1tex__t_sectors_pipe_lsu_mem_global_op_ld.sum     ./kernel
+
+<span class="comment"># If sectors/request > 1, you have uncoalesced access</span></code></pre>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 04 Summary</h3>
+  <p>The GPU loads memory in 128-byte cache lines. When 32 threads in a warp access consecutive addresses, all 32 loads are served by 1 transaction (coalesced). Strided or random access → up to 32× more transactions → 32× less effective bandwidth. Rule: make <code>threadIdx.x</code> correspond to the fastest-changing memory dimension.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Your kernel reads <code>mat[row * W + col]</code> where <code>row = threadIdx.x</code> and <code>col = blockIdx.x</code>. Is this coalesced?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><strong>No.</strong> Consecutive threads (threadIdx.x = 0, 1, 2...) have different <code>row</code> values, so they access <code>mat[0*W+col]</code>, <code>mat[1*W+col]</code>, <code>mat[2*W+col]</code>... — addresses separated by <code>W * sizeof(float)</code> bytes. Each thread's access falls in a different 128-byte cache line → 32 transactions instead of 1. Fix: swap so <code>col = threadIdx.x</code> (consecutive threads → consecutive columns → consecutive addresses).</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="03-thread-indexing.html">← 03 Indexing</a>
+  <a href="05-occupancy.html" class="next">05 Occupancy →</a>
+</div>
+
+</body>
+</html>

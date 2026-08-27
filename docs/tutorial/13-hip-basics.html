@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 13 — HIP Basics & CUDA→HIP Porting</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 13 — HIP Basics & CUDA→HIP Porting</h1>
+<p class="subtitle">Phase 3 · ROCm (HIP) · Chapter 13 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:64%"></div></div>
+  <span>14/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="12-tensor-cores.html">12 Tensor Cores</a>
+  <a href="#" class="current">13 HIP Basics</a>
+  <a href="14-wave64-amd-arch.html">14 Wave64</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#what">What is HIP?</a></li>
+    <li><a href="#hipify">hipify — automatic conversion</a></li>
+    <li><a href="#api">CUDA → HIP API mapping</a></li>
+    <li><a href="#compile">Compiling with hipcc</a></li>
+  </ol>
+</div>
+
+
+<h2 id="what">1. What is HIP?</h2>
+<p><strong>HIP</strong> (Heterogeneous-Compute Interface for Portability) is AMD's CUDA equivalent. It's a C++ programming model for AMD GPUs, with nearly identical syntax to CUDA. The key insight: <strong>HIP is designed to be a drop-in replacement for CUDA</strong> — most CUDA code can be converted automatically.</p>
+
+<table>
+  <tr><th>CUDA</th><th>HIP</th><th>Notes</th></tr>
+  <tr><td><code>cudaMalloc</code></td><td><code>hipMalloc</code></td><td>Just rename</td></tr>
+  <tr><td><code>cudaMemcpy</code></td><td><code>hipMemcpy</code></td><td>Same args</td></tr>
+  <tr><td><code>__global__</code></td><td><code>__global__</code></td><td>Same</td></tr>
+  <tr><td><code>__shared__</code></td><td><code>__shared__</code></td><td>Same</td></tr>
+  <tr><td><code>threadIdx</code></td><td><code>threadIdx</code></td><td>Same</td></tr>
+  <tr><td><code>nvcc</code></td><td><code>hipcc</code></td><td>Different compiler</td></tr>
+  <tr><td><code>float4</code></td><td><code>float4</code></td><td>Same</td></tr>
+  <tr><td>warp size = 32</td><td>wavefront = 64</td><td><strong>Key difference!</strong></td></tr>
+</table>
+
+<h2 id="hipify">2. hipify — automatic conversion</h2>
+<pre><code><span class="comment"># hipify-perl converts CUDA → HIP automatically</span>
+hipify-perl vector_add.cu &gt; vector_add.hip
+
+<span class="comment"># Or use hipify-clang for more accurate conversion</span>
+hipify-clang vector_add.cu -o vector_add.hip
+
+<span class="comment"># The output is nearly identical — just cuda→hip renames</span></code></pre>
+
+<div class="note">
+  <strong>~95% of CUDA code converts automatically.</strong> The main manual changes are: warp size (32→64), some intrinsics (<code>__shfl</code> variants), and architecture-specific features. The vector_add kernel from chapter 01 needs zero changes.
+</div>
+
+<h2 id="api">3. CUDA → HIP API mapping</h2>
+<pre><code><span class="comment">// CUDA</span>                              <span class="comment">// HIP</span>
+cudaMalloc(&amp;d_a, bytes);        →   hipMalloc(&amp;d_a, bytes);
+cudaMemcpy(d, h, n, H2D);      →   hipMemcpy(d, h, n, hipMemcpyHostToDevice);
+cudaDeviceSynchronize();        →   hipDeviceSynchronize();
+cudaFree(d_a);                  →   hipFree(d_a);
+cudaGetLastError();             →   hipGetLastError();
+
+<span class="comment">// Kernel launch — IDENTICAL syntax</span>
+my_kernel&lt;&lt;&lt;grid, block&gt;&gt;&gt;(args);   <span class="comment">// works in both CUDA and HIP</span></code></pre>
+
+<h2 id="compile">4. Compiling with hipcc</h2>
+<pre><code><span class="comment"># Compile HIP code</span>
+hipcc -o vector_add vector_add.hip
+
+<span class="comment"># With architecture flag for MI300X (gfx942)</span>
+hipcc -O3 --offload-arch=gfx942 -o vector_add vector_add.hip
+
+<span class="comment"># For MI350X (gfx950)</span>
+hipcc -O3 --offload-arch=gfx950 -o vector_add vector_add.hip</code></pre>
+
+<div class="warning">
+  <strong>Architecture flags matter.</strong> <code>gfx942</code> = MI300X/MI325X, <code>gfx950</code> = MI350X/MI355X. The wrong flag means the code won't run or will fall back to generic compilation (missing native FP8/MXFP4 support).
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 13 Summary</h3>
+  <p>HIP is AMD's CUDA equivalent with nearly identical syntax. <code>hipify-perl</code> converts CUDA→HIP automatically (~95% of code). Key API renames: <code>cuda*→hip*</code>, <code>nvcc→hipcc</code>. Kernel launch syntax (<code>&lt;&lt;&lt;grid,block&gt;&gt;&gt;</code>) is identical. Main difference: wavefront size = 64 (vs warp = 32). Architecture flags: <code>gfx942</code> (MI300X), <code>gfx950</code> (MI350X).</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>You have a CUDA kernel using <code>threadIdx.x</code> and <code>__syncthreads()</code>. What changes are needed for HIP?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><strong>None.</strong> <code>threadIdx</code> and <code>__syncthreads()</code> work identically in HIP. Just run <code>hipify-perl</code> to rename <code>cuda*</code> to <code>hip*</code>, then compile with <code>hipcc</code>. The only thing to watch out for is the warp size difference (32 vs 64) if you use warp-level primitives like <code>__shfl_sync</code>.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="12-tensor-cores.html">← 12 Tensor Cores</a>
+  <a href="14-wave64-amd-arch.html" class="next">14 Wave64 →</a>
+</div>
+
+</body>
+</html>

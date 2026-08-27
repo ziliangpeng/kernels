@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 06 — Naive GEMM</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 06 — Naive GEMM</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 6 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:32%"></div></div>
+  <span>7/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="05-occupancy.html">05 Occupancy</a>
+  <a href="#" class="current">06 Naive GEMM</a>
+  <a href="07-coalesced-gemm.html">07 Coalesced GEMM</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#problem">The problem: matrix multiplication</a></li>
+    <li><a href="#naive">Naive kernel — one thread per output</a></li>
+    <li><a href="#bottleneck">Bottleneck analysis</a></li>
+    <li><a href="#whats-next">What's wrong and how to fix it</a></li>
+  </ol>
+</div>
+
+
+<h2 id="problem">1. The problem: matrix multiplication</h2>
+<p>GEMM (General Matrix Multiply) is <strong>C = A × B</strong> where A is M×K, B is K×N, C is M×N. It's the most important kernel in deep learning — every Linear layer is a GEMM. Optimizing GEMM is the canonical GPU programming exercise.</p>
+
+<div class="visual">GEMM: C = A × B
+
+  A (M×K)    B (K×N)    C (M×N)
+  ┌─────┐    ┌─────┐    ┌─────┐
+  │a a a│ ×  │b b b│ =  │c c c│
+  │a a a│    │b b b│    │c c c│
+  │a a a│    │b b b│    │c c c│
+  └─────┘    └─────┘    └─────┘
+
+  C[i][j] = Σ A[i][k] * B[k][j]  for k=0..K-1
+
+  Each output element needs K multiply-adds.
+  Total: M*N*K FLOPs (2× that if counting mul+add separately)</div>
+
+<h2 id="naive">2. Naive kernel — one thread per output</h2>
+<p>The simplest approach: each thread computes one element of C by iterating over K.</p>
+
+<pre><code><span class="comment">// Naive GEMM: C = A × B</span>
+<span class="comment">// A: M×K (row-major), B: K×N (row-major), C: M×N (row-major)</span>
+<span class="keyword">__global__</span> <span class="keyword">void</span> gemm_naive(<span class="keyword">const</span> <span class="keyword">float</span>* A, <span class="keyword">const</span> <span class="keyword">float</span>* B, <span class="keyword">float</span>* C,
+                           <span class="keyword">int</span> M, <span class="keyword">int</span> N, <span class="keyword">int</span> K) {
+    <span class="comment">// Each thread computes C[row][col]</span>
+    <span class="keyword">int</span> row = blockIdx.y * blockDim.y + threadIdx.y;
+    <span class="keyword">int</span> col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    <span class="keyword">if</span> (row &lt; M &amp;&amp; col &lt; N) {
+        <span class="keyword">float</span> sum = <span class="number">0.0f</span>;
+        <span class="keyword">for</span> (<span class="keyword">int</span> k = <span class="number">0</span>; k &lt; K; k++) {
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+
+<span class="comment">// Launch config</span>
+dim3 block(<span class="number">16</span>, <span class="number">16</span>);
+dim3 grid((N + <span class="number">15</span>) / <span class="number">16</span>, (M + <span class="number">15</span>) / <span class="number">16</span>);
+gemm_naive&lt;&lt;&lt;grid, block&gt;&gt;&gt;(d_A, d_B, d_C, M, N, K);</code></pre>
+
+<h2 id="bottleneck">3. Bottleneck analysis</h2>
+<div class="warning">
+  <strong>This kernel is extremely slow. Let's see why.</strong>
+</div>
+
+<p>For <code>M=N=K=4096</code>:</p>
+<ul>
+  <li>Each thread does K=4096 iterations, each loading 2 floats (A and B) = 8 bytes per iteration</li>
+  <li>Each output element loads <strong>2 × K × 4 = 32KB</strong> from global memory</li>
+  <li>Total global memory loaded: <code>M × N × 2 × K × 4 = 4096³ × 8 = 549 GB</code></li>
+  <li>But the actual data is only <code>(M×K + K×N) × 4 = 2 × 4096² × 4 = 134 MB</code></li>
+  <li><strong>Each byte is loaded ~4000 times!</strong> This is a 4000× amplification.</li>
+</ul>
+
+<div class="visual">Naive GEMM memory traffic:
+
+  Thread computing C[0][0] loads:
+    A[0][0..4095]  → 4096 floats from row 0 of A
+    B[0..4095][0]  → 4096 floats from col 0 of B
+
+  Thread computing C[0][1] loads:
+    A[0][0..4095]  → SAME data, loaded AGAIN
+    B[0..4095][1]  → different column
+
+  Thread computing C[1][0] loads:
+    A[1][0..4095]  → different row
+    B[0..4095][0]  → SAME data, loaded AGAIN
+
+  → Massive redundancy. Each A row is loaded N times, each B column M times.</div>
+
+<table>
+  <tr><th>Metric</th><th>Naive GEMM</th><th>cuBLAS (optimized)</th></tr>
+  <tr><td>TFLOPS (FP32, 4096³)</td><td>~0.5</td><td>~67 (H100)</td></tr>
+  <tr><td>% of peak</td><td>~0.7%</td><td>~100%</td></tr>
+  <tr><td>Memory amplification</td><td>~K× (4000×)</td><td>~1×</td></tr>
+</table>
+
+<h2 id="whats-next">4. What's wrong and how to fix it</h2>
+<div class="note">
+  <strong>The problem:</strong> Every thread independently loads A and B from global memory. There's massive redundancy — the same A row is loaded by all N threads in that row, and the same B column is loaded by all M threads in that column.
+</div>
+<p>The fix is <strong>shared memory tiling</strong> (chapter 08): load a tile of A and B into shared memory once, then all threads in the block reuse it from fast SMEM instead of going to global memory. But first, chapter 07 fixes a simpler issue — the access pattern.</p>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 06 Summary</h3>
+  <p>Naive GEMM: one thread per output element, looping over K. Each thread loads 2×K floats from global memory — massive redundancy (each A row loaded N times, each B column loaded M times). Memory amplification ~K×. Result: ~0.5 TFLOPS vs 67 TFLOPS peak on H100. The fix is shared memory tiling to reuse loaded data.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>For M=N=K=4096 FP32 GEMM, how much data does the naive kernel load from global memory?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><code>M × N × 2 × K × 4 bytes = 4096 × 4096 × 2 × 4096 × 4 = 549 GB</code>. The actual matrices are only <code>(M×K + K×N) × 4 = 134 MB</code>. So each byte is loaded ~4000 times. This is why naive GEMM achieves &lt;1% of peak — it's drowning in redundant memory traffic. Shared memory tiling (chapter 08) reduces this to ~1× amplification.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="05-occupancy.html">← 05 Occupancy</a>
+  <a href="07-coalesced-gemm.html" class="next">07 Coalesced GEMM →</a>
+</div>
+
+</body>
+</html>

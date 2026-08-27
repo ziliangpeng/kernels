@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 09 — Thread Tiling (warpTile)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 09 — Thread Tiling (warpTile)</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 9 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:45%"></div></div>
+  <span>10/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="08-shared-memory-tiling.html">08 Shared Memory Tiling</a>
+  <a href="#" class="current">09 Thread Tiling</a>
+  <a href="10-vectorized-load.html">10 Vectorized Load</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#problem">Problem with SMEM-tiled GEMM</a></li>
+    <li><a href="#idea">Thread tiling — each thread computes a sub-tile</a></li>
+    <li><a href="#kernel">Thread-tiled GEMM kernel</a></li>
+    <li><a href="#benefit">Why this helps</a></li>
+  </ol>
+</div>
+
+
+<h2 id="problem">1. Problem with SMEM-tiled GEMM</h2>
+<p>In the SMEM-tiled kernel (ch08), each thread computes <strong>one output element</strong>. For each output, it reads TILE elements from SMEM As and TILE from SMEM Bs — that's 2×TILE SMEM reads per output. SMEM is fast (~30 cycles), but each read is still a separate instruction.</p>
+
+<div class="visual">SMEM-tiled: 1 thread → 1 output element
+
+  Thread (ty, tx) computes C[row][col]:
+    for k in 0..TILE:
+      sum += As[ty][k] * Bs[k][tx]   ← 2 SMEM reads per iteration
+
+  Each thread does TILE iterations = 2×TILE SMEM reads for 1 output.
+  With TILE=16: 32 SMEM reads for 1 output.
+  SMEM bandwidth is shared across the whole block — this is the bottleneck.</div>
+
+<h2 id="idea">2. Thread tiling — each thread computes a sub-tile</h2>
+<p>Instead of 1 thread → 1 output, make <strong>1 thread → TM×TN output sub-tile</strong>. The thread loads data from SMEM into registers, then reuses it for multiple outputs. This reduces SMEM reads per output.</p>
+
+<div class="visual">Thread tiling: 1 thread → TM×TN outputs
+
+  Thread computes a TM×TN sub-tile of C:
+    ┌────────┐
+    │c c c c │  TM=2, TN=4 → 8 outputs per thread
+    │c c c c │
+    └────────┘
+
+  For each k:
+    Load A[ty*TM : ty*TM+TM][k] into registers (TM values)
+    Load B[k][tx*TN : tx*TN+TN] into registers (TN values)
+    Compute TM×TN outer products in registers → accumulate to C
+
+  SMEM reads: TM + TN per k (not 2)
+  Outputs: TM × TN per k
+  Ratio: (TM+TN) / (TM×TN) — for TM=TN=4: 8/16 = 0.5 (vs 2.0 before)</div>
+
+<h2 id="kernel">3. Thread-tiled GEMM kernel</h2>
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> gemm_thread_tiled(<span class="keyword">const</span> <span class="keyword">float</span>* A, <span class="keyword">const</span> <span class="keyword">float</span>* B,
+                                    <span class="keyword">float</span>* C, <span class="keyword">int</span> M, <span class="keyword">int</span> N, <span class="keyword">int</span> K) {
+    <span class="keyword">constexpr int</span> BM = <span class="number">64</span>, BN = <span class="number">64</span>, BK = <span class="number">16</span>;
+    <span class="keyword">constexpr int</span> TM = <span class="number">4</span>, TN = <span class="number">4</span>;  <span class="comment">// each thread computes 4×4 outputs</span>
+
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> As[BM][BK];
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> Bs[BK][BN];
+
+    <span class="keyword">int</span> tx = threadIdx.x, ty = threadIdx.y;
+    <span class="keyword">int</span> row = blockIdx.y * BM + ty * TM;
+    <span class="keyword">int</span> col = blockIdx.x * BN + tx * TN;
+
+    <span class="keyword">float</span> regC[TM][TN] = {{<span class="number">0.0f</span>}};  <span class="comment">// register accumulators</span>
+    <span class="keyword">float</span> regA[TM], regB[TN];  <span class="comment">// register cache for one k-slice</span>
+
+    <span class="keyword">for</span> (<span class="keyword">int</span> kt = <span class="number">0</span>; kt &lt; K; kt += BK) {
+        <span class="comment">// Cooperative load to SMEM (same as before)</span>
+        <span class="comment">// ... load As[BM][BK] and Bs[BK][BN] ...</span>
+
+        __syncthreads();
+
+        <span class="comment">// Compute from SMEM into registers</span>
+        <span class="keyword">for</span> (<span class="keyword">int</span> k = <span class="number">0</span>; k &lt; BK; k++) {
+            <span class="comment">// Load A slice into registers (TM values)</span>
+            <span class="keyword">for</span> (<span class="keyword">int</span> m = <span class="number">0</span>; m &lt; TM; m++)
+                regA[m] = As[ty * TM + m][k];
+
+            <span class="comment">// Load B slice into registers (TN values)</span>
+            <span class="keyword">for</span> (<span class="keyword">int</span> n = <span class="number">0</span>; n &lt; TN; n++)
+                regB[n] = Bs[k][tx * TN + n];
+
+            <span class="comment">// Outer product accumulate to regC</span>
+            <span class="keyword">for</span> (<span class="keyword">int</span> m = <span class="number">0</span>; m &lt; TM; m++)
+                <span class="keyword">for</span> (<span class="keyword">int</span> n = <span class="number">0</span>; n &lt; TN; n++)
+                    regC[m][n] += regA[m] * regB[n];
+        }
+        __syncthreads();
+    }
+
+    <span class="comment">// Write results to global memory</span>
+    <span class="keyword">for</span> (<span class="keyword">int</span> m = <span class="number">0</span>; m &lt; TM; m++)
+        <span class="keyword">for</span> (<span class="keyword">int</span> n = <span class="number">0</span>; n &lt; TN; n++)
+            C[(row + m) * N + col + n] = regC[m][n];
+}</code></pre>
+
+<h2 id="benefit">4. Why this helps</h2>
+<table>
+  <tr><th>Kernel</th><th>SMEM reads per output</th><th>TFLOPS</th></tr>
+  <tr><td>SMEM-tiled (1 output/thread)</td><td>2×TILE = 32</td><td>~5</td></tr>
+  <tr><td>Thread-tiled (TM=4, TN=4 → 16 outputs/thread)</td><td>(4+4)/16 = 0.5</td><td>~8-10</td></tr>
+</table>
+
+<div class="note">
+  <strong>The key win:</strong> data loaded from SMEM into registers is reused across TM×TN outputs via outer products. This reduces SMEM bandwidth pressure by ~(TM×TN)/(TM+TN)×. With TM=TN=4, that's 8× less SMEM traffic. Registers are ~30× faster than SMEM and per-thread (no bank conflicts).
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 09 Summary</h3>
+  <p>Thread tiling: each thread computes a TM×TN sub-tile of C instead of 1 element. Load A/B slices from SMEM into registers, compute outer products in registers. SMEM reads per output drops from 2×TILE to (TM+TN)/(TM×TN) — with TM=TN=4, that's 8× reduction. Registers are per-thread (no bank conflicts) and 30× faster than SMEM. Achieves ~8-10 TFLOPS.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>With TM=4, TN=4, how many SMEM reads does each thread do per k-iteration, and how many outputs does it produce?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Per k-iteration: <strong>TM + TN = 8 SMEM reads</strong> (4 for A slice + 4 for B slice). These produce <strong>TM × TN = 16 output updates</strong> (via outer product). So the ratio is 8/16 = 0.5 SMEM reads per output update — vs 2.0 for 1-output-per-thread. That's a 4× reduction in SMEM bandwidth per output, which is why thread tiling gives ~2× speedup.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="08-shared-memory-tiling.html">← 08 Shared Memory Tiling</a>
+  <a href="10-vectorized-load.html" class="next">10 Vectorized Load →</a>
+</div>
+
+</body>
+</html>

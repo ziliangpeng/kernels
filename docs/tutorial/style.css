@@ -1,0 +1,357 @@
+/* ═══════════════════════════════════════════════════════════════
+   PyTorch Tutorial — Shared Stylesheet
+   Dark theme · GitHub-dark inspired · optimized for code-heavy
+   tutorial content.
+   ═══════════════════════════════════════════════════════════════ */
+
+:root {
+  --bg: #0d1117;
+  --card: #161b22;
+  --card-hover: #1c2128;
+  --border: #30363d;
+  --text: #e6edf3;
+  --dim: #8b949e;
+  --accent: #58a6ff;
+  --accent2: #f0883e;
+  --green: #3fb950;
+  --red: #f85149;
+  --purple: #bc8cff;
+  --yellow: #d29922;
+  --code-bg: #1c2128;
+  --code-border: #30363d;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "SF Pro Text", "Helvetica Neue", sans-serif;
+  line-height: 1.7;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 40px 24px 80px;
+}
+
+/* ── Headings ────────────────────────────────────────────────── */
+
+h1 {
+  font-size: 1.9em;
+  margin-bottom: 6px;
+  background: linear-gradient(135deg, var(--accent), var(--purple));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+h2 {
+  font-size: 1.35em;
+  margin-top: 36px;
+  margin-bottom: 12px;
+  color: var(--accent);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}
+
+h3 {
+  font-size: 1.1em;
+  margin-top: 24px;
+  margin-bottom: 8px;
+  color: var(--accent2);
+}
+
+p { margin-bottom: 12px; }
+
+.subtitle { color: var(--dim); font-size: 0.92em; margin-bottom: 28px; }
+
+ul, ol { margin: 8px 0 14px 24px; }
+li { margin-bottom: 4px; }
+
+/* ── Navigation ──────────────────────────────────────────────── */
+
+.nav {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+.nav a {
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--dim);
+  padding: 5px 12px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 0.82em;
+  transition: all 0.2s;
+}
+.nav a.current {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.nav a:hover { border-color: var(--accent); color: var(--accent); }
+.nav a.current:hover { color: var(--bg); }
+
+/* ── Footer nav (prev / next) ────────────────────────────────── */
+
+.footer-nav {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  gap: 16px;
+}
+.footer-nav a {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 0.9em;
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  transition: all 0.2s;
+}
+.footer-nav a:hover {
+  border-color: var(--accent);
+  background: var(--card-hover);
+}
+.footer-nav .next { margin-left: auto; }
+
+/* ── Code ────────────────────────────────────────────────────── */
+
+code {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  font-size: 0.88em;
+  color: var(--purple);
+}
+
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  margin: 12px 0 18px;
+  font-size: 0.85em;
+  line-height: 1.6;
+}
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font-size: 1em;
+}
+
+/* Manual syntax highlighting spans */
+.comment { color: var(--dim); font-style: italic; }
+.keyword { color: var(--purple); }
+.string  { color: var(--green); }
+.number  { color: var(--accent2); }
+.output  { color: var(--accent); }
+.func    { color: var(--yellow); }
+
+/* ── Callout boxes ───────────────────────────────────────────── */
+
+.note {
+  background: rgba(88, 166, 255, 0.07);
+  border-left: 3px solid var(--accent);
+  padding: 12px 16px;
+  margin: 16px 0;
+  border-radius: 0 6px 6px 0;
+}
+.note strong { color: var(--accent); }
+
+.warning {
+  background: rgba(248, 81, 73, 0.07);
+  border-left: 3px solid var(--red);
+  padding: 12px 16px;
+  margin: 16px 0;
+  border-radius: 0 6px 6px 0;
+}
+.warning strong { color: var(--red); }
+
+.checkpoint {
+  background: rgba(63, 185, 80, 0.07);
+  border-left: 3px solid var(--green);
+  padding: 12px 16px;
+  margin: 24px 0;
+  border-radius: 0 6px 6px 0;
+}
+.checkpoint strong { color: var(--green); }
+
+.key-takeaway {
+  background: rgba(240, 136, 62, 0.07);
+  border: 1px solid var(--accent2);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin: 24px 0;
+}
+.key-takeaway h3 { color: var(--accent2); margin-top: 0; }
+
+.quiz {
+  background: rgba(188, 140, 255, 0.06);
+  border: 1px solid var(--purple);
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin: 24px 0;
+}
+.quiz h3 { color: var(--purple); margin-top: 0; }
+.quiz .answer { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.quiz button {
+  background: var(--purple);
+  color: var(--bg);
+  border: none;
+  padding: 5px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.82em;
+  margin-top: 8px;
+  font-weight: 600;
+}
+.quiz button:hover { opacity: 0.85; }
+
+/* ── Tables ──────────────────────────────────────────────────── */
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 14px 0;
+  font-size: 0.88em;
+}
+th, td {
+  border: 1px solid var(--border);
+  padding: 8px 12px;
+  text-align: left;
+}
+th {
+  background: var(--card);
+  color: var(--accent);
+  font-weight: 600;
+}
+td code { font-size: 0.85em; }
+
+/* ── TOC ─────────────────────────────────────────────────────── */
+
+.toc {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 22px;
+  margin-bottom: 28px;
+}
+.toc h2 { border: none; margin-top: 0; font-size: 1.1em; }
+.toc ol { padding-left: 20px; }
+.toc li { margin-bottom: 5px; }
+.toc a { color: var(--accent); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+
+/* ── Visual ASCII blocks ─────────────────────────────────────── */
+
+.visual {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px;
+  margin: 14px 0;
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 0.82em;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text);
+}
+
+/* ── Progress bar ────────────────────────────────────────────── */
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 28px;
+  font-size: 0.82em;
+  color: var(--dim);
+}
+.progress-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--green);
+  transition: width 0.3s;
+}
+
+/* ── Index page specific ─────────────────────────────────────── */
+
+.curriculum-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin: 24px 0;
+}
+.phase {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px;
+}
+.phase h3 {
+  margin-top: 0;
+  margin-bottom: 12px;
+  font-size: 1em;
+}
+.phase .phase-title {
+  color: var(--accent2);
+  font-size: 0.85em;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.chapter-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.chapter-list li {
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.chapter-list li:last-child { border-bottom: none; }
+.chapter-list a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 500;
+}
+.chapter-list a:hover { text-decoration: underline; }
+.chapter-list .ch-num {
+  color: var(--dim);
+  font-family: "SF Mono", monospace;
+  font-size: 0.85em;
+  min-width: 36px;
+}
+.chapter-list .ch-desc {
+  color: var(--dim);
+  font-size: 0.85em;
+}
+
+footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--dim);
+  font-size: 0.82em;
+  text-align: center;
+}

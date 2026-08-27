@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 19 — Triton Attention Kernel</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 19 — Triton Attention Kernel</h1>
+<p class="subtitle">Phase 4 · Triton & Beyond · Chapter 19 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:91%"></div></div>
+  <span>20/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="18-triton-gemm.html">18 Triton GEMM</a>
+  <a href="#" class="current">19 Triton Attention</a>
+  <a href="20-dsa-sparse-mla.html">20 DSA Sparse MLA</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#flash">FlashAttention concept</a></li>
+    <li><a href="#kernel">Triton attention kernel</a></li>
+    <li><a href="#why-fast">Why it's fast — tiling Q</a></li>
+  </ol>
+</div>
+
+
+<h2 id="flash">1. FlashAttention concept</h2>
+<p>Standard attention computes <code>softmax(QK^T / √d) @ V</code> by materializing the full <code>S × S</code> attention matrix in HBM. FlashAttention <strong>tiles the computation</strong> so the full matrix never lives in HBM — only in SMEM/registers. This is both faster (less HBM traffic) and uses less memory (O(S) instead of O(S²)).</p>
+
+<div class="visual">Standard vs FlashAttention:
+
+  Standard:
+    1. Compute full S = Q @ K^T     → (B, H, S, S) in HBM  ← O(S²) memory
+    2. Apply mask + softmax          → (B, H, S, S) in HBM
+    3. Compute O = S @ V             → (B, H, S, D) in HBM
+    → Writes S×S matrix to HBM 3 times → bandwidth bottleneck
+
+  FlashAttention (tiled):
+    For each Q tile (Br rows):
+      Load Q_tile to SMEM
+      For each K,V tile (Bc cols):
+        Load K_tile, V_tile to SMEM
+        Compute partial S = Q_tile @ K_tile^T   (in SMEM/registers)
+        Apply mask, accumulate softmax statistics
+        Accumulate O += softmax(S) @ V_tile
+      Store O_tile to HBM
+    → S×S matrix NEVER written to HBM → O(S) memory, much faster</div>
+
+<h2 id="kernel">2. Triton attention kernel</h2>
+<pre><code><span class="keyword">@triton.jit</span>
+<span class="keyword">def</span> attention_kernel(q_ptr, k_ptr, v_ptr, o_ptr,
+                    scale, stride_qh, stride_kh, stride_vh, stride_oh,
+                    Sq: tl.constexpr, Sk: tl.constexpr, D: tl.constexpr,
+                    Bc: tl.constexpr, Br: tl.constexpr):
+    pid = tl.program_id(<span class="number">0</span>)
+    q_off = pid * Br
+
+    <span class="comment"># Initialize output and running softmax stats</span>
+    m_i = tl.full([Br], -float(<span class="string">'inf'</span>), dtype=tl.float32)  <span class="comment"># running max</span>
+    l_i = tl.zeros([Br], dtype=tl.float32)                     <span class="comment"># running sum</span>
+    acc = tl.zeros([Br, D], dtype=tl.float32)
+
+    <span class="comment"># Load Q tile once (reused across all K,V tiles)</span>
+    q = tl.load(q_ptr + q_off * stride_qh + tl.arange(<span class="number">0</span>, Br)[:, <span class="keyword">None</span>] * stride_qh
+                + tl.arange(<span class="number">0</span>, D)[<span class="keyword">None</span>, :])
+
+    <span class="comment"># Loop over K,V tiles</span>
+    <span class="keyword">for</span> kv_off <span class="keyword">in</span> range(<span class="number">0</span>, Sk, Bc):
+        k = tl.load(...)  <span class="comment"># load K tile (Bc, D)</span>
+        v = tl.load(...)  <span class="comment"># load V tile (Bc, D)</span>
+
+        <span class="comment"># Compute attention scores: Q @ K^T</span>
+        s = tl.dot(q, k.T) * scale  <span class="comment"># (Br, Bc) — auto tensor cores</span>
+
+        <span class="comment"># Online softmax: update running max and sum</span>
+        m_new = tl.maximum(m_i, tl.max(s, axis=<span class="number">1</span>))
+        alpha = tl.exp(m_i - m_new)
+        p = tl.exp(s - m_new[:, <span class="keyword">None</span>])
+        l_i = l_i * alpha + tl.sum(p, axis=<span class="number">1</span>)
+        <span class="comment"># Rescale accumulator</span>
+        acc = acc * alpha[:, <span class="keyword">None</span>] + tl.dot(p.to(v.dtype), v)
+        m_i = m_new
+
+    <span class="comment"># Final normalization</span>
+    acc = acc / l_i[:, <span class="keyword">None</span>]
+    tl.store(o_ptr + ..., acc)</code></pre>
+
+<h2 id="why-fast">3. Why it's fast — tiling Q</h2>
+<div class="note">
+  <strong>The key insight:</strong> Q is loaded once per row-tile and reused across all K/V tiles. The S×S attention matrix is never materialized in HBM — it exists only in SMEM/registers as partial scores. This reduces HBM traffic from O(S²) to O(S × D), making attention O(S) in memory instead of O(S²).
+</div>
+<p>The online softmax (updating running max and sum incrementally) is the trick that makes this possible — you don't need the full row to compute softmax, you can accumulate it tile by tile.</p>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 19 Summary</h3>
+  <p>FlashAttention in Triton: tile Q (load once, reuse across K/V tiles), compute partial scores in SMEM, use online softmax (running max + sum) to avoid materializing the full S×S matrix. HBM traffic drops from O(S²) to O(S×D). <code>tl.dot</code> uses tensor cores for the QK^T and PV matmuls. This is the kernel pattern used by vLLM, SGLang, and FlashAttention-2/3.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why does FlashAttention use O(S) memory instead of O(S²)?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Standard attention materializes the full <code>S×S</code> score matrix <code>QK^T</code> in HBM — O(S²) memory. FlashAttention tiles the computation: it loads a Q row-tile (Br rows), then iterates over K/V column-tiles, computing partial scores <em>in SMEM/registers</em> — the full S×S matrix is never written to HBM. Only the final output O (shape S×D) is written. The online softmax trick (running max + running sum) allows computing softmax incrementally without the full row. Memory: O(Br × Bc) in SMEM + O(S × D) in HBM = O(S).</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="18-triton-gemm.html">← 18 Triton GEMM</a>
+  <a href="20-dsa-sparse-mla.html" class="next">20 DSA Sparse MLA →</a>
+</div>
+
+</body>
+</html>

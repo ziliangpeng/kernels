@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 08 — Shared Memory Tiling</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 08 — Shared Memory Tiling</h1>
+<p class="subtitle">Phase 2 · GEMM Optimization Ladder · Chapter 8 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:41%"></div></div>
+  <span>9/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="07-coalesced-gemm.html">07 Coalesced GEMM</a>
+  <a href="#" class="current">08 Shared Memory Tiling</a>
+  <a href="09-thread-tiling.html">09 Thread Tiling</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#idea">The key idea: tile and reuse</a></li>
+    <li><a href="#kernel">Tiled GEMM kernel</a></li>
+    <li><a href="#analysis">Why this is faster — memory traffic analysis</a></li>
+    <li><a href="#syncthreads">The critical __syncthreads() pattern</a></li>
+    <li><a href="#bottleneck">What's still slow</a></li>
+  </ol>
+</div>
+
+
+<h2 id="idea">1. The key idea: tile and reuse</h2>
+<p>Instead of each thread independently loading from global memory, <strong>load a tile of A and B into shared memory once</strong>, then all threads in the block compute from the fast SMEM. This eliminates the redundancy.</p>
+
+<div class="visual">Shared memory tiling concept:
+
+  Divide A and B into tiles of size TILE×TILE.
+  For each output tile C[i][j], iterate over K in TILE-sized chunks:
+
+  For kt = 0, TILE, 2*TILE, ..., K-TILE:
+    1. Load A[i][kt:kt+TILE] tile into SMEM  (cooperative load)
+    2. Load B[kt:kt+TILE][j] tile into SMEM  (cooperative load)
+    3. __syncthreads()
+    4. Each thread computes partial sum from SMEM tiles
+    5. __syncthreads()  (before overwriting SMEM for next tile)
+
+  Each A/B tile is loaded ONCE from global memory, reused by
+  TILE×TILE threads in the block → amplification reduced ~TILE×.</div>
+
+<h2 id="kernel">2. Tiled GEMM kernel</h2>
+<pre><code><span class="keyword">__global__</span> <span class="keyword">void</span> gemm_tiled(<span class="keyword">const</span> <span class="keyword">float</span>* A, <span class="keyword">const</span> <span class="keyword">float</span>* B, <span class="keyword">float</span>* C,
+                           <span class="keyword">int</span> M, <span class="keyword">int</span> N, <span class="keyword">int</span> K) {
+    <span class="keyword">constexpr int</span> TILE = <span class="number">16</span>;
+
+    <span class="comment">// Shared memory tiles</span>
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> As[TILE][TILE];
+    <span class="keyword">__shared__</span> <span class="keyword">float</span> Bs[TILE][TILE];
+
+    <span class="keyword">int</span> row = blockIdx.y * blockDim.y + threadIdx.y;
+    <span class="keyword">int</span> col = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="keyword">float</span> sum = <span class="number">0.0f</span>;
+
+    <span class="comment">// Iterate over K in TILE-sized chunks</span>
+    <span class="keyword">for</span> (<span class="keyword">int</span> kt = <span class="number">0</span>; kt &lt; K; kt += TILE) {
+        <span class="comment">// Cooperative load: each thread loads one element of each tile</span>
+        <span class="keyword">if</span> (row &lt; M &amp;&amp; kt + threadIdx.x &lt; K)
+            As[threadIdx.y][threadIdx.x] = A[row * K + kt + threadIdx.x];
+        <span class="keyword">if</span> (kt + threadIdx.y &lt; K &amp;&amp; col &lt; N)
+            Bs[threadIdx.y][threadIdx.x] = B[(kt + threadIdx.y) * N + col];
+
+        <span class="comment">// Wait for all threads to finish loading</span>
+        __syncthreads();
+
+        <span class="comment">// Compute partial sum from SMEM tiles</span>
+        <span class="keyword">for</span> (<span class="keyword">int</span> k = <span class="number">0</span>; k &lt; TILE; k++) {
+            sum += As[threadIdx.y][k] * Bs[k][threadIdx.x];
+        }
+
+        <span class="comment">// Wait for all threads to finish computing before overwriting SMEM</span>
+        __syncthreads();
+    }
+
+    <span class="keyword">if</span> (row &lt; M &amp;&amp; col &lt; N) {
+        C[row * N + col] = sum;
+    }
+}</code></pre>
+
+<h2 id="analysis">3. Why this is faster — memory traffic analysis</h2>
+<table>
+  <tr><th>Kernel</th><th>Global loads per output</th><th>Amplification</th><th>TFLOPS</th></tr>
+  <tr><td>Naive</td><td>2 × K</td><td>~K× (4000×)</td><td>~0.5</td></tr>
+  <tr><td>Tiled (TILE=16)</td><td>2 × K / 16</td><td>~K/16× (250×)</td><td>~3</td></tr>
+  <tr><td>Tiled (TILE=32)</td><td>2 × K / 32</td><td>~K/32× (128×)</td><td>~5</td></tr>
+</table>
+
+<div class="note">
+  <strong>Each tile is loaded once and reused by TILE² threads.</strong> With TILE=16, each A and B element is loaded 16× fewer times from global memory. The SMEM tiles are small (16×16×4 = 1KB each) and fast (30 cycles vs 400 for global).
+</div>
+
+<h2 id="syncthreads">4. The critical __syncthreads() pattern</h2>
+<div class="warning">
+  <strong>Two <code>__syncthreads()</code> per tile iteration:</strong>
+  <ol>
+    <li>After loading SMEM — before computing (ensure all data is ready)</li>
+    <li>After computing — before loading next tile (ensure all threads are done reading before overwriting)</li>
+  </ol>
+  Forgetting either one causes a <strong>race condition</strong> — some threads read stale or partially-overwritten data. This is the #1 bug in tiled kernels.
+</div>
+
+<h2 id="bottleneck">5. What's still slow</h2>
+<div class="visual">Tiled GEMM bottleneck: each thread does 16 mul-adds per tile,
+  but each mul-add is a separate instruction. The thread is doing
+  scalar work — no vectorization, no tensor cores.
+
+  Next optimizations:
+  - Thread tiling (ch09): each thread computes a small sub-tile,
+    keeping more data in registers → fewer SMEM accesses
+  - Vectorized loads (ch10): load float4 (4 floats) per instruction
+  - Double buffering (ch11): overlap next tile load with current compute
+  - Tensor cores (ch12): use hardware matrix multiply units (15× faster)</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 08 Summary</h3>
+  <p>Shared memory tiling: load a TILE×TILE block of A and B into SMEM cooperatively, <code>__syncthreads()</code>, compute partial sums from SMEM, <code>__syncthreads()</code>, repeat for next tile. Each tile is loaded once from global memory, reused by TILE² threads → amplification reduced ~TILE×. Two <code>__syncthreads()</code> per iteration are mandatory (after load, after compute). Achieves ~3-5 TFLOPS.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why do you need two __syncthreads() per tile iteration in tiled GEMM?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p><strong>First <code>__syncthreads()</code></strong> (after load): ensures all threads have finished writing to SMEM before any thread reads. Without it, a fast thread might read a tile element before a slow thread has written it. <strong>Second <code>__syncthreads()</code></strong> (after compute): ensures all threads have finished reading SMEM before the next iteration overwrites it. Without it, a slow thread might read from the next tile's data while a fast thread is already loading it. Both are mandatory to prevent race conditions.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="07-coalesced-gemm.html">← 07 Coalesced GEMM</a>
+  <a href="09-thread-tiling.html" class="next">09 Thread Tiling →</a>
+</div>
+
+</body>
+</html>

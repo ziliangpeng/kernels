@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU 16 — MI350X (GFX950) Specifics</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 16 — MI350X (GFX950) Specifics</h1>
+<p class="subtitle">Phase 3 · ROCm (HIP) · Chapter 16 of 21</p>
+
+<div class="progress">
+  <span>Progress</span>
+  <div class="progress-bar"><div class="progress-fill" style="width:77%"></div></div>
+  <span>17/22</span>
+</div>
+
+<div class="nav">
+  <a href="index.html">Index</a>
+  <a href="15-rocm-tooling.html">15 ROCm Tooling</a>
+  <a href="#" class="current">16 MI350X</a>
+  <a href="17-triton-basics.html">17 Triton Basics</a>
+</div>
+
+<div class="toc">
+  <h2>📚 This chapter</h2>
+  <ol>
+    <li><a href="#gfx950">What's new in GFX950</a></li>
+    <li><a href="#mxfp4">MXFP4 — 4-bit floating point</a></li>
+    <li><a href="#mxfp8">MXFP8 — 8-bit with block scaling</a></li>
+    <li><a href="#matrix">Matrix instructions (MFMA)</a></li>
+    <li><a href="#aiter">AITER — AMD's Triton kernel library</a></li>
+  </ol>
+</div>
+
+
+<h2 id="gfx950">1. What's new in GFX950</h2>
+<p><strong>GFX950</strong> is the architecture code for MI350X/MI355X, released in 2026. Key improvements over MI300X (gfx942):</p>
+<table>
+  <tr><th>Feature</th><th>MI300X (gfx942)</th><th>MI350X (gfx950)</th></tr>
+  <tr><td>FP8 native</td><td>Yes</td><td>Yes (improved)</td></tr>
+  <tr><td>MXFP4 (4-bit)</td><td>No</td><td><strong>Yes — native</strong></td></tr>
+  <tr><td>MXFP8 (block-scaled)</td><td>No</td><td><strong>Yes — native</strong></td></tr>
+  <tr><td>HBM3e bandwidth</td><td>5.3 TB/s</td><td>8.0 TB/s</td></tr>
+  <tr><td>HBM capacity</td><td>192GB</td><td>288GB</td></tr>
+  <tr><td>FP4 tensor TFLOPS</td><td>—</td><td>5,228</td></tr>
+</table>
+
+<h2 id="mxfp4">2. MXFP4 — 4-bit floating point</h2>
+<p><strong>MXFP4</strong> is OCP Microscaling FP4 format: 4-bit floats with a shared 8-bit exponent per block of 32 elements. This allows 2× the throughput of FP8 and 4× of FP16.</p>
+<div class="visual">MXFP4 layout:
+  Each element: 4 bits (1 sign + 2 mantissa, exponent shared per block)
+  Block scale: 8-bit exponent per 32 elements
+
+  [e8] [4b][4b][4b]...[4b]   ← 32 elements share one exponent
+   ↑    └── 32 × 4-bit values = 16 bytes
+   └── 1 byte shared exponent
+
+  Total: 17 bytes for 32 values (vs 128 bytes for FP32) = 7.5× compression</div>
+
+<div class="note">
+  <strong>MXFP4 is the frontier of LLM inference quantization.</strong> DSV4-Flash, Kimi K3, and other frontier models use MXFP4 for weights. Native GFX950 support means no dequant overhead — the matrix cores handle MXFP4 directly.
+</div>
+
+<h2 id="mxfp8">3. MXFP8 — 8-bit with block scaling</h2>
+<p><strong>MXFP8</strong> is like FP8 but with per-block scaling factors (every 32 elements share a scale). This gives better precision than per-tensor scaling while keeping the bandwidth savings.</p>
+
+<h2 id="matrix">4. Matrix instructions (MFMA)</h2>
+<pre><code><span class="comment">// GFX950 MFMA instructions (AMD's tensor cores)</span>
+<span class="comment">// MFMA_F32_16x16x32_F4 — 16×16 output, 32-deep, FP4 inputs</span>
+<span class="comment">// Throughput: 2× FP8, 4× FP16</span>
+
+<span class="comment">// Using via HIP C++ intrinsics:</span>
+<span class="keyword">__device__</span> <span class="keyword">void</span> mfma_f32_16x16x32_f4(
+    <span class="keyword">float</span> result[4],     <span class="comment">// 16×16 / 64 lanes = 4 per thread</span>
+    <span class="keyword">uint32_t</span> a,          <span class="comment">// packed FP4 (8 values per 32-bit reg)</span>
+    <span class="keyword">uint32_t</span> b,
+    <span class="keyword">float</span> c[4]
+);</code></pre>
+
+<h2 id="aiter">5. AITER — AMD's Triton kernel library</h2>
+<p><strong>AITER</strong> (AMD Instant Triton Engine Runtime) is a collection of high-performance Triton kernels for LLM workloads on MI300X/MI325X/MI350X. It's AMD's answer to FlashAttention + FlashInfer.</p>
+<pre><code><span class="comment"># Install AITER</span>
+pip install aiter
+
+<span class="comment"># Key kernels:</span>
+<span class="comment">#   - Attention (MLA, GQA, Gated MLA)</span>
+<span class="comment">#   - MoE (grouped GEMM, dispatch, combine)</span>
+<span class="comment">#   - Normalization (RMSNorm, LayerNorm)</span>
+<span class="comment">#   - Quantization (FP8/INT4 dequant)</span>
+<span class="comment">#   - Rotary embedding</span>
+
+<span class="comment"># Used by vLLM and SGLang on AMD</span></code></pre>
+
+<div class="warning">
+  <strong>AITER on GFX950 is the frontier.</strong> The DSA sparse MLA kernel you're learning toward (chapter 20) runs on AITER. Non-determinism in AITER on MI350X causes CJK character repetition — a known production issue. Understanding AITER internals is key to debugging production AMD inference.
+</div>
+
+
+<div class="key-takeaway">
+  <h3>🎯 Chapter 16 Summary</h3>
+  <p>GFX950 (MI350X) adds native MXFP4 (4-bit, 2× FP8 throughput), MXFP8 (block-scaled FP8), 8 TB/s HBM3e, 288GB HBM. MFMA matrix instructions handle MXFP4/FP8 natively. AITER is AMD's Triton kernel library for LLM workloads (attention, MoE, norm, quantization) — used by vLLM/SGLang. AITER non-determinism on MI350X causes CJK repetition bugs in production.</p>
+</div>
+
+<div class="checkpoint">
+  <strong>✅ Checkpoint</strong>
+  <ol style="margin: 8px 0 0 20px;">
+    <li>Review the key concepts above — can you explain each one?</li>
+  </ol>
+</div>
+
+<div class="quiz">
+  <h3>🧪 Quick Check</h3>
+  <p>Why does MXFP4 give 2× throughput over FP8 on GFX950?</p>
+  <button onclick="document.getElementById('q1').style.display='block'">Show answer</button>
+  <div class="answer" id="q1">
+    <p>Because MXFP4 elements are 4 bits vs 8 bits for FP8. The matrix core processes a fixed number of <em>bits</em> per instruction. With 4-bit elements, it can process 2× more values per instruction compared to 8-bit. The shared exponent (1 per 32 elements) adds minimal overhead — 8 bits / 32 elements = 0.25 bits per element. So effective precision is 4.25 bits but throughput is 2× FP8.</p>
+  </div>
+</div>
+
+<div class="footer-nav">
+  <a href="15-rocm-tooling.html">← 15 ROCm Tooling</a>
+  <a href="17-triton-basics.html" class="next">17 Triton Basics →</a>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPU Kernel Tutorial — Zero to Expert</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>🔥 GPU Kernel Programming — Zero to Expert</h1>
+<p class="subtitle">A structured 22-chapter curriculum · CUDA → ROCm → Triton → JAX · ending at DSA sparse MLA</p>
+
+<div class="note">
+  <strong>How to use this tutorial:</strong> Read chapters in order. Every page has real code — type it out, don't copy-paste. The GEMM optimization ladder (chapters 06-12) is the heart of the curriculum: each step solves a bottleneck from the previous one. By chapter 20, you'll understand the path to writing a DSA sparse MLA decode kernel from scratch.
+</div>
+
+<div class="toc">
+  <h2>🎯 Learning Philosophy</h2>
+  <ol>
+    <li><strong>Problem before solution.</strong> Before each optimization, explain what bottleneck the previous step has — with concrete numbers (GB/s, TFLOPS, latency).</li>
+    <li><strong>Always show code.</strong> Every concept comes with a real kernel. No abstract tables without code.</li>
+    <li><strong>Start from absolute basics.</strong> Don't assume knowledge of <code>threadIdx</code>, <code>blockIdx</code>, or memory hierarchy. No concept is too basic.</li>
+    <li><strong>Confirm at each step.</strong> After each concept, stop. Don't proceed until understanding is confirmed.</li>
+    <li><strong>Build to DSA.</strong> Everything points toward the end goal: writing a DSA sparse MLA decode kernel.</li>
+  </ol>
+</div>
+
+<h2>📖 Curriculum</h2>
+
+<div class="curriculum-grid">
+
+  <div class="phase">
+    <div class="phase-title">Phase 1 · CUDA Fundamentals</div>
+    <h3>GPU architecture, memory hierarchy, first kernels</h3>
+    <ul class="chapter-list">
+      <li><span class="ch-num">00</span><a href="00-gpu-architecture.html">GPU Architecture & Programming Model</a><span class="ch-desc">— SM, warp, thread/block/grid, SIMT</span></li>
+      <li><span class="ch-num">01</span><a href="01-first-kernel.html">First CUDA Kernel — Vector Add</a><span class="ch-desc">— &lt;&lt;&lt;grid, block&gt;&gt;&gt;, threadIdx, compile with nvcc</span></li>
+      <li><span class="ch-num">02</span><a href="02-memory-hierarchy.html">Memory Hierarchy</a><span class="ch-desc">— global, shared, local, registers, L1/L2</span></li>
+      <li><span class="ch-num">03</span><a href="03-thread-indexing.html">Thread Hierarchy & Indexing</a><span class="ch-desc">— 1D/2D/3D indexing patterns, row-major layout</span></li>
+      <li><span class="ch-num">04</span><a href="04-memory-coalescing.html">Memory Coalescing</a><span class="ch-desc">— why access patterns matter, 128-byte cache lines</span></li>
+      <li><span class="ch-num">05</span><a href="05-occupancy.html">Occupancy & Performance</a><span class="ch-desc">— register pressure, shared memory limits, roofs</span></li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <div class="phase-title">Phase 2 · CUDA GEMM Optimization Ladder</div>
+    <h3>The core journey: naive → tensor cores, step by step</h3>
+    <ul class="chapter-list">
+      <li><span class="ch-num">06</span><a href="06-naive-gemm.html">Naive GEMM</a><span class="ch-desc">— one thread per output, the starting point</span></li>
+      <li><span class="ch-num">07</span><a href="07-coalesced-gemm.html">Coalesced GEMM</a><span class="ch-desc">— fix the memory access pattern</span></li>
+      <li><span class="ch-num">08</span><a href="08-shared-memory-tiling.html">Shared Memory Tiling</a><span class="ch-desc">— load tiles to SMEM, reuse across threads</span></li>
+      <li><span class="ch-num">09</span><a href="09-thread-tiling.html">Thread Tiling (warpTile)</a><span class="ch-desc">— each thread computes a small sub-tile</span></li>
+      <li><span class="ch-num">10</span><a href="10-vectorized-load.html">Vectorized Loads (float4)</a><span class="ch-desc">— load 4 floats per instruction</span></li>
+      <li><span class="ch-num">11</span><a href="11-double-buffering.html">Double Buffering</a><span class="ch-desc">— overlap compute and memory with ping-pong SMEM</span></li>
+      <li><span class="ch-num">12</span><a href="12-tensor-cores.html">Tensor Cores (wmma)</a><span class="ch-desc">— leverage hardware matrix multiply units</span></li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <div class="phase-title">Phase 3 · ROCm (HIP)</div>
+    <h3>Porting to AMD — the other GPU ecosystem</h3>
+    <ul class="chapter-list">
+      <li><span class="ch-num">13</span><a href="13-hip-basics.html">HIP Basics & CUDA→HIP Porting</a><span class="ch-desc">— hipify, hipcc, API mapping</span></li>
+      <li><span class="ch-num">14</span><a href="14-wave64-amd-arch.html">Wave64 & AMD Architecture</a><span class="ch-desc">— wavefront vs warp, CU vs SM</span></li>
+      <li><span class="ch-num">15</span><a href="15-rocm-tooling.html">ROCm Tooling</a><span class="ch-desc">— rocprof, omniperf, rocm-smi</span></li>
+      <li><span class="ch-num">16</span><a href="16-mi350x-gfx950.html">MI350X (GFX950) Specifics</a><span class="ch-desc">— MXFP4/MXFP8, matrix instructions, AITER</span></li>
+    </ul>
+  </div>
+
+  <div class="phase">
+    <div class="phase-title">Phase 4 · Triton & Beyond</div>
+    <h3>Python-level GPU programming, attention, DSA, Pallas</h3>
+    <ul class="chapter-list">
+      <li><span class="ch-num">17</span><a href="17-triton-basics.html">Triton Basics</a><span class="ch-desc">— @triton.jit, tl.program_id, block pointers</span></li>
+      <li><span class="ch-num">18</span><a href="18-triton-gemm.html">Triton GEMM</a><span class="ch-desc">— tiled matmul in Triton</span></li>
+      <li><span class="ch-num">19</span><a href="19-triton-attention.html">Triton Attention Kernel</a><span class="ch-desc">— FlashAttention-style tiled attention</span></li>
+      <li><span class="ch-num">20</span><a href="20-dsa-sparse-mla.html">Toward DSA Sparse MLA</a><span class="ch-desc">— SWA+CSA+HCA, the end goal</span></li>
+      <li><span class="ch-num">21</span><a href="21-jax-pallas.html">JAX/Pallas Basics</a><span class="ch-desc">— Pallas basics, lowering to Triton</span></li>
+    </ul>
+  </div>
+
+</div>
+
+<h2>🗺️ Prerequisites</h2>
+
+<p>You need a machine with an NVIDIA GPU (for CUDA chapters) or AMD GPU (for ROCm chapters), plus the respective toolkit. For Triton, any GPU works. The easiest setup:</p>
+
+<pre><code><span class="comment"># CUDA (NVIDIA)</span>
+sudo apt install nvidia-cuda-toolkit
+nvcc --version
+
+<span class="comment"># ROCm (AMD)</span>
+sudo apt install rocm-dev
+hipcc --version
+
+<span class="comment"># Triton (any GPU)</span>
+pip install triton
+
+<span class="comment"># Practice environment — use a GPU pod/container</span>
+<span class="comment"># c.ai: amd4 dev pod for MI350X, pi1 for H100</span></code></pre>
+
+<div class="note">
+  <strong>Recommended companion:</strong> The <code>~/code/cudakernels</code> repo has all GEMM kernel implementations. Open it alongside the tutorial and compile/run each kernel as you read.
+</div>
+
+<div class="checkpoint">
+  <strong>Ready to start?</strong> Head to <a href="00-gpu-architecture.html">Chapter 00 — GPU Architecture →</a>
+</div>
+
+<footer>
+  Ziliang's GPU Kernel Learning Journey · 22 chapters · Roadmap: <code>~/code/projectrevolution/projects/2026-07-15-gpu-kernel-learning-roadmap/ROADMAP.md</code>
+</footer>
+
+</body>
+</html>
