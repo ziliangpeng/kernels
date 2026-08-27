@@ -13,6 +13,9 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 ### Op Determinism
 - [op-determinism.md](op-determinism.md) — Softmax, reduction, RMSNorm, LayerNorm determinism
 
+### Precision tradeoffs
+- [training-vs-inference-bf16.md](training-vs-inference-bf16.md) — Why training uses BF16 but inference prefers FP16
+
 ### Hardware
 - [hardware-h100.md](hardware-h100.md) — NVIDIA H100 Tensor Core, cuBLAS, TF32
 - [hardware-mi325x.md](hardware-mi325x.md) — AMD MI325X MFMA, rocBLAS
