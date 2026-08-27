@@ -27,11 +27,13 @@ DTYPE_MAP = {
 }
 
 def checksum(tensor):
+    # BF16 not supported by numpy, cast to FP32 first
+    if tensor.dtype == torch.bfloat16:
+        tensor = tensor.float()
     return hashlib.md5(tensor.detach().cpu().contiguous().numpy().tobytes()).hexdigest()
 
 def max_abs_diff(a, b):
     return (a.float() - b.float()).abs().max().item()
-
 def seeded_tensor(*shape, dtype=torch.float32, seed=42):
     g = torch.Generator(device="cuda")
     g.manual_seed(seed)
