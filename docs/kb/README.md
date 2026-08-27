@@ -15,6 +15,8 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 
 ### Precision tradeoffs
 - [training-vs-inference-bf16.md](training-vs-inference-bf16.md) — Why training uses BF16 but inference prefers FP16
+- [training-fp32-master-weights.md](training-fp32-master-weights.md) — Why FP32 master weights are mandatory (not convention)
+- [fp8-fp4-training.md](fp8-fp4-training.md) — FP8 and NVFP4 training: how it works, microscaling, why 4-bit might work
 
 ### Hardware
 - [hardware-h100.md](hardware-h100.md) — NVIDIA H100 Tensor Core, cuBLAS, TF32
