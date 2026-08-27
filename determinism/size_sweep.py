@@ -38,16 +38,15 @@ def seeded_tensor(*shape, dtype=torch.float32, seed=42):
     return torch.randn(*shape, device="cuda", dtype=dtype, generator=g)
 
 # Test configurations: (label, M, K, N)
-# M=1 = decode (GEMV path), M=128 = prefill (tiled path)
 SHAPES = [
-    ("decode-small",    1, 1024,  1024),
-    ("decode-med",      1, 4096,  4096),
-    ("decode-large",    1, 16384, 4096),
-    ("decode-wide",     1, 4096,  16384),
-    ("prefill-small",   128, 1024,  1024),
-    ("prefill-med",     128, 4096,  4096),
-    ("prefill-large",   128, 16384, 4096),
-    ("prefill-wide",    128, 4096,  16384),
+    ("M1_K1k_N1k",     1, 1024,  1024),
+    ("M1_K4k_N4k",     1, 4096,  4096),
+    ("M1_K16k_N4k",    1, 16384, 4096),
+    ("M1_K4k_N16k",    1, 4096,  16384),
+    ("M128_K1k_N1k",   128, 1024,  1024),
+    ("M128_K4k_N4k",   128, 4096,  4096),
+    ("M128_K16k_N4k",  128, 16384, 4096),
+    ("M128_K4k_N16k",  128, 4096,  16384),
 ]
 
 BATCH_SIZES = [1, 2, 4, 8, 16, 32, 64, 128]
