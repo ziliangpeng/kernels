@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GEMM Mastery Roadmap</title>
+<link rel="stylesheet" href="style.css">
+<style>
+/* page-specific additions */
+.roadmap-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin: 24px 0; }
+.dim-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 20px; }
+.dim-card h3 { margin-top: 0; }
+.dim-num { color: var(--accent2); font-family: "SF Mono", monospace; font-size: 0.85em; }
+.dim-tag { display: inline-block; background: var(--code-bg); border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 0.8em; color: var(--purple); margin: 2px; }
+.milestone { background: rgba(63,185,80,0.07); border-left: 3px solid var(--green); padding: 12px 16px; margin: 16px 0; border-radius: 0 6px 6px 0; }
+.milestone strong { color: var(--green); }
+.ladder-table td { font-size: 0.85em; }
+.ladder-table .tflops { color: var(--accent2); font-family: "SF Mono", monospace; font-weight: 600; }
+.ladder-table .gain { color: var(--green); font-family: "SF Mono", monospace; }
+.phase-done { color: var(--green); }
+.phase-next { color: var(--accent2); }
+.phase-todo { color: var(--dim); }
+.checkbox { font-family: "SF Mono", monospace; }
+</style>
+</head>
+<body>
+
+<h1>🔥 GEMM Mastery — From Beginner to Expert</h1>
+<p class="subtitle">A structured roadmap to deeply understanding matrix multiplication on GPUs · 6 dimensions · 5 phases · grounded in first-hand benchmarks</p>
+
+<div class="note">
+<strong>Why this page exists:</strong> GEMM looks like one operation — <code>C = A × B</code> — but there are dozens of named variants (SGEMM, split-K, WMMA, stream-K, GEMV, grouped GEMM...). This roadmap organizes them into a clear framework so you always know <em>which dimension</em> a new term belongs to, and <em>what to learn next</em>.
+</div>
+
+<h2>🧭 The 6-Dimension Framework</h2>
+
+<p>Every GEMM variant you'll ever encounter is a point in this 6-dimensional space. When you hear a new term, ask: <em>which dimension?</em></p>
+
+<div class="roadmap-grid">
+
+<div class="dim-card">
+<h3><span class="dim-num">D1</span> · Memory Hierarchy Ladder</h3>
+<p>The most important dimension. Each rung moves data reuse one level closer to the compute unit:</p>
+<p>
+<span class="dim-tag">naive</span>
+<span class="dim-tag">coalesced</span>
+<span class="dim-tag">SMEM tiling</span>
+<span class="dim-tag">1D blocktile</span>
+<span class="dim-tag">2D blocktile</span>
+<span class="dim-tag">vectorized load</span>
+<span class="dim-tag">warp-tiled</span>
+<span class="dim-tag">tensor core (WMMA/MMA)</span>
+</p>
+<p>Same GEMM, different level of the memory hierarchy doing the reuse. This is the ladder you've been climbing in the SGEMM project.</p>
+</div>
+
+<div class="dim-card">
+<h3><span class="dim-num">D2</span> · K-Axis Splitting</h3>
+<p>When M×N is too small to fill all SMs, you split along K to find more parallelism:</p>
+<p>
+<span class="dim-tag">split-K</span>
+<span class="dim-tag">stream-K</span>
+<span class="dim-tag">persistent kernel</span>
+</p>
+<p>Critical for decode-shape FFN (small M) and skinny GEMMs.</p>
+</div>
+
+<div class="dim-card">
+<h3><span class="dim-num">D3</span> · Shape Regime</h3>
+<p>Different M/N/K ratios need fundamentally different kernel strategies:</p>
+<p>
+<span class="dim-tag">GEMV (M=1)</span>
+<span class="dim-tag">skinny GEMM (M&lt;64)</span>
+<span class="dim-tag">large/square GEMM</span>
+<span class="dim-tag">batched GEMM</span>
+<span class="dim-tag">grouped GEMM (MoE)</span>
+</p>
+</div>
+
+<div class="dim-card">
+<h3><span class="dim-num">D4</span> · Precision</h3>
+<p>BLAS naming convention — same algorithm, different dtype:</p>
+<p>
+<span class="dim-tag">SGEMM (FP32)</span>
+<span class="dim-tag">DGEMM (FP64)</span>
+<span class="dim-tag">HGEMM (FP16)</span>
+<span class="dim-tag">BGEMM (BF16)</span>
+<span class="dim-tag">FP8 GEMM (e4m3/e5m2)</span>
+<span class="dim-tag">INT8 GEMM</span>
+</p>
+<p>FP8 adds a sub-dimension: <em>scaling mode</em> — tensorwise, rowwise, blockwise (1×128), each with different accuracy/perf trade-offs.</p>
+</div>
+
+<div class="dim-card">
+<h3><span class="dim-num">D5</span> · Hardware Instruction Layer</h3>
+<p>Which silicon unit does the math, and at what abstraction level:</p>
+<p>
+<span class="dim-tag">CUDA cores (FFMA)</span>
+<span class="dim-tag">WMMA (Volta–Ampere)</span>
+<span class="dim-tag">mma.sync (Ampere+)</span>
+<span class="dim-tag">WGMMA (Hopper)</span>
+<span class="dim-tag">TMA (Hopper DMA)</span>
+<span class="dim-tag">MFMA (AMD RDNA/CDNA)</span>
+<span class="dim-tag">AITER (AMD GFX950)</span>
+</p>
+<p>Same operation, progressively lower-level control: WMMA = easy but rigid → mma.sync = fast but manual fragment layout → WGMMA = warpgroup-level, pairs with TMA.</p>
+</div>
+
+<div class="dim-card">
+<h3><span class="dim-num">D6</span> · Implementation Stack</h3>
+<p>Who writes the kernel — you, a compiler, or a library:</p>
+<p>
+<span class="dim-tag">hand-written CUDA/HIP</span>
+<span class="dim-tag">CUTLASS (C++ templates)</span>
+<span class="dim-tag">Triton (compiler auto-tiles)</span>
+<span class="dim-tag">cuBLAS / hipBLAS (black box)</span>
+<span class="dim-tag">TinyGrad</span>
+</p>
+<p>CUTLASS makes D1×D2×D5 composable via templates. Triton hides D2 entirely (compiler decides). cuBLAS dispatches to hundreds of internal kernels by shape.</p>
+</div>
+
+</div>
+
+<div class="key-takeaway">
+<h3>Key Insight</h3>
+<p>All GEMM variants answer the same question: <strong>"How do M×N×K arithmetic and data movement map onto the grid/block/warp/thread/tensor-core hardware structure?"</strong> Every term is a coordinate in this space. You don't need to memorize terms — you need the framework.</p>
+</div>
+<h2>📊 Your First-Hand Ladder Results (H100, FP32, N=4096)</h2>
+
+<p>You've already climbed 6 rungs of D1. Here are your measured results, with cuBLAS FP32 as baseline:</p>
+
+<table class="ladder-table">
+<tr><th>Step</th><th>Kernel</th><th class="tflops">TFLOPS</th><th>% cuBLAS</th><th class="gain">Gain</th><th>Key change</th><th>Status</th></tr>
+<tr><td>1</td><td>Naive (16×16)</td><td class="tflops">5.3</td><td>10.2%</td><td>—</td><td>one output per thread, no reuse</td><td class="phase-done">✅ done</td></tr>
+<tr><td>2</td><td>Coalesced (1D)</td><td class="tflops">5.7</td><td>10.9%</td><td class="gain">+7%</td><td>warp = one row, broadcast B</td><td class="phase-done">✅ done</td></tr>
+<tr><td>3</td><td>SMEM tiling (32×32)</td><td class="tflops">9.0</td><td>17.2%</td><td class="gain">+59%</td><td>block-level tile reuse in SMEM</td><td class="phase-done">✅ done</td></tr>
+<tr><td>4</td><td>1D blocktile (TM=8)</td><td class="tflops">17.6</td><td>33.7%</td><td class="gain">+96%</td><td>register reuse of B</td><td class="phase-done">✅ done</td></tr>
+<tr><td>4a</td><td>1D blocktile autotuned</td><td class="tflops">19.3</td><td>36.9%</td><td class="gain">+9%</td><td>best (BM,BK,TM)=(64,4,16)</td><td class="phase-done">✅ done</td></tr>
+<tr><td>5</td><td>2D blocktile (TM=TN=8)</td><td class="tflops">22.4</td><td>42.9%</td><td class="gain">+27%</td><td>outer product, reuse A and B</td><td class="phase-done">✅ done</td></tr>
+<tr><td>5a</td><td>2D blocktile autotuned</td><td class="tflops">34.0</td><td>65.2%</td><td class="gain">+53%</td><td>best (128,128,16,16,8)</td><td class="phase-done">✅ done</td></tr>
+<tr><td>6</td><td>Vectorized (float4+transpose)</td><td class="tflops">34.8</td><td>66.7%</td><td class="gain">+47%</td><td>float4 GMEM + SMEM A-transpose</td><td class="phase-done">✅ done</td></tr>
+<tr><td>7</td><td>Warp-tiled</td><td>?</td><td>?</td><td>?</td><td>warp-level coordination, bridge to tensor core</td><td class="phase-next">⬜ next</td></tr>
+<tr><td>8</td><td>Tensor Core (WMMA)</td><td>?</td><td>?</td><td>?</td><td>hardware matrix units, 16×16 fragment</td><td class="phase-todo">⬜ future</td></tr>
+<tr><td>9</td><td>Double buffering</td><td>?</td><td>?</td><td>?</td><td>overlap compute and memory with ping-pong SMEM</td><td class="phase-todo">⬜ future</td></tr>
+<tr><td>—</td><td><strong>cuBLAS FP32 baseline</strong></td><td class="tflops">52.2</td><td>100%</td><td>—</td><td>NVIDIA's tuned library</td><td>—</td></tr>
+</table>
+
+<div class="milestone">
+<strong>Milestone:</strong> naive → best hand-tuned = <strong>6.6× speedup</strong>, reaching ~67% of cuBLAS FP32. The remaining gap is Tensor Core — WMMA kernel exists (<code>matmul_wmma.cu</code>) but not yet benchmarked.
+</div>
+
+<div class="note">
+<strong>Lesson from first-hand data:</strong> Autotune finds the best within an algorithm's ceiling; only a new algorithm raises the ceiling. 1D autotuned (19.3T) can never reach 2D baseline (22.4T) — the ceiling is set by register reuse factor, not tuning.
+</div>
+<h2>🗺️ 5-Phase Mastery Roadmap</h2>
+
+<p>Each phase targets a specific set of dimensions. Don't skip ahead — later phases build on intuitions from earlier ones.</p>
+
+<div class="phase">
+<div class="phase-title">Phase 1 · Finish the FP32 Ladder <span class="dim-num">[D1]</span></div>
+<h3>Complete what you started: warp-tiled → tensor core → double buffer</h3>
+<ul class="chapter-list">
+<li><span class="checkbox">✅</span> Steps 1–6: naive → vectorized <span class="ch-desc">— done, 6.6× over naive, 67% cuBLAS</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 7: Warp-tiled GEMM</strong> <span class="ch-desc">— assign each warp a sub-tile of the block tile. Introduces warp-level coordination via shuffle or SMEM. This is the bridge between 2D blocktile and tensor core.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 8: Tensor Core GEMM (WMMA)</strong> <span class="ch-desc">— use <code>nvcuda::wmma</code> to do 16×16 matrix multiply in hardware. Target: match or beat cuBLAS FP32. Kernel already exists at <code>matmul/matmul_wmma.cu</code> — benchmark it.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 9: Double buffering</strong> <span class="ch-desc">— ping-pong SMEM buffers to overlap next-tile load with current-tile compute. Hides memory latency.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 10: Autotune the full ladder</strong> <span class="ch-desc">— sweep all tile sizes for steps 7–9. Document the Pareto frontier. Compare against your H100 first-hand results.</span></li>
+</ul>
+<div class="milestone"><strong>Exit criterion:</strong> hand-written FP32 GEMM reaches ≥90% of cuBLAS FP32 on a 4096² shape.</div>
+</div>
+
+<div class="phase">
+<div class="phase-title">Phase 2 · Low Precision & Hardware Instructions <span class="dim-num">[D4 + D5]</span></div>
+<h3>FP16/BF16 → FP8 → mma.sync → cross-vendor (AMD MFMA)</h3>
+<ul class="chapter-list">
+<li><span class="checkbox">⬜</span> <strong>FP16/BF16 GEMM with tensor core</strong> <span class="ch-desc">— switch dtype, use WMMA FP16 fragment. Study accumulator precision (FP32 accum). Read your KB note: <code>docs/kb/gemm-fp16-vs-bf16.md</code>.</span></li>
+<li><span class="checkbox">⬜</span> <strong>FP8 GEMM (e4m3)</strong> <span class="ch-desc">— the frontier. Scaling modes: tensorwise → rowwise → blockwise (1×128). Read your KB notes: <code>docs/kb/fp8-gemm-*.md</code> (5 files). Benchmark on H100 (DeepGEMM) and MI325X (aiter).</span></li>
+<li><span class="checkbox">⬜</span> <strong>mma.sync (PTX-level)</strong> <span class="ch-desc">— drop down from WMMA to raw <code>mma.sync</code> instructions. Manually manage fragment layout. This is what CUTLASS uses internally.</span></li>
+<li><span class="checkbox">⬜</span> <strong>AMD MFMA</strong> <span class="ch-desc">— port GEMM to HIP. Use MFMA instructions on MI325X (GFX950). Compare instruction shape: NVIDIA 16×16 vs AMD 16×16/32×32/4×64. Read <code>docs/kb/hardware-mi325x.md</code>.</span></li>
+</ul>
+<div class="milestone"><strong>Exit criterion:</strong> can write a correct FP8 GEMM on both H100 and MI325X, and explain the scaling-mode trade-offs from first-hand data.</div>
+</div>
+
+<div class="phase">
+<div class="phase-title">Phase 3 · Shape-Dependent GEMM <span class="dim-num">[D3 + D2]</span></div>
+<h3>GEMV → skinny GEMM → split-K → stream-K → batched/grouped</h3>
+<ul class="chapter-list">
+<li><span class="checkbox">⬜</span> <strong>GEMV (M=1)</strong> <span class="ch-desc">— the decode case. Pure memory-bound. Each weight read once. Optimize for bandwidth, not FLOPS. This is ROADMAP 1.5.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Skinny GEMM sweep (M=1,8,32,128,512,2048)</strong> <span class="ch-desc">— benchmark same kernel across shapes. Find crossover points: when does split-K help? When does small-tile win? This is ROADMAP 2.2.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Split-K GEMM</strong> <span class="ch-desc">— split K into S chunks, S blocks compute partial C, atomic add or 2nd-kernel reduce. Measure: when does the parallelism gain outweigh the reduction overhead?</span></li>
+<li><span class="checkbox">⬜</span> <strong>Stream-K GEMM</strong> <span class="ch-desc">— scheduler-driven K-chunk assignment. Read the CUTLASS stream-K paper/code. Understand how it fixes split-K's quantization waste.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Batched & Grouped GEMM</strong> <span class="ch-desc">— strided batched (same shape, N independent GEMMs) and grouped (variable shapes, MoE dispatch). This is ROADMAP 2.4.</span></li>
+</ul>
+<div class="milestone"><strong>Exit criterion:</strong> can pick the right K-splitting strategy for any M/N/K shape and justify it with data.</div>
+</div>
+
+<div class="phase">
+<div class="phase-title">Phase 4 · CUTLASS & Library Internals <span class="dim-num">[D6]</span></div>
+<h3>Read the source of production GEMM libraries</h3>
+<ul class="chapter-list">
+<li><span class="checkbox">⬜</span> <strong>CUTLASS architecture</strong> <span class="ch-desc">— understand the template combinator: <code>ThreadblockShape × WarpShape × InstructionShape × Epilogue</code>. Map each template parameter to D1/D2/D5.</span></li>
+<li><span class="checkbox">⬜</span> <strong>CUTLASS stream-K implementation</strong> <span class="ch-desc">— read the actual stream-K scheduler in CUTLASS. Trace how work is dynamically assigned.</span></li>
+<li><span class="checkbox">⬜</span> <strong>cuBLAS dispatch logic</strong> <span class="ch-desc">— understand how cuBLAS picks among hundreds of internal kernels by shape/dtype. Use Nsight to see which kernel cuBLAS actually calls.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Triton GEMM internals</strong> <span class="ch-desc">— read Triton's <code>tl.dot</code> lowering. Understand how the compiler auto-tiles and auto-pipelines. Compare to your hand-written tiles.</span></li>
+</ul>
+<div class="milestone"><strong>Exit criterion:</strong> can read a CUTLASS kernel definition and predict its tile/pipeline/split strategy without running it.</div>
+</div>
+
+<div class="phase">
+<div class="phase-title">Phase 5 · Advanced & Specialized GEMM <span class="dim-num">[D1+D2+D5]</span></div>
+<h3>Hopper WGMMA · fused epilogue · quantized · persistent</h3>
+<ul class="chapter-list">
+<li><span class="checkbox">⬜</span> <strong>Hopper: WGMMA + TMA</strong> <span class="ch-desc">— warpgroup-level MMA (4 warps cooperate). TMA does async DMA to SMEM without thread involvement. The cutting edge of NVIDIA GEMM.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Fused GEMM (GEMM+SiLU, GEMM+bias)</strong> <span class="ch-desc">— epilogue fusion. ROADMAP 2.3. Understand why fusing saves a memory round-trip.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Quantized GEMM (INT8, weight-only)</strong> <span class="ch-desc">— dequantize in-kernel, mixed precision. Relevance: LLM serving with INT4/INT8 weights.</span></li>
+<li><span class="checkbox">⬜</span> <strong>GEMM for attention (QK^T, SV)</strong> <span class="ch-desc">— how GEMM shapes change in attention vs FFN. Bridge to FlashAttention (ROADMAP Phase 3).</span></li>
+<li><span class="checkbox">⬜</span> <strong>Persistent kernel + software scheduling</strong> <span class="ch-desc">— launch exactly #SMs blocks, each processes multiple tiles. Avoids launch overhead, enables fine-grained work stealing.</span></li>
+</ul>
+<div class="milestone"><strong>Exit criterion:</strong> can design a GEMM kernel for a novel hardware target or unusual shape from first principles, and predict its performance.</div>
+</div>
+<h2>📖 Glossary — Every Term Mapped to a Dimension</h2>
+
+<p>When you encounter a GEMM term, find it here to see which dimension it belongs to:</p>
+
+<table>
+<tr><th>Term</th><th>Dim</th><th>One-line definition</th></tr>
+<tr><td><code>SGEMM</code></td><td>D4</td><td>Single-precision (FP32) GEMM — the BLAS name</td></tr>
+<tr><td><code>DGEMM</code></td><td>D4</td><td>Double-precision (FP64) GEMM</td></tr>
+<tr><td><code>HGEMM</code></td><td>D4</td><td>Half-precision (FP16) GEMM</td></tr>
+<tr><td><code>BGEMM</code></td><td>D4</td><td>BF16 GEMM</td></tr>
+<tr><td><code>GEMV</code></td><td>D3</td><td>Matrix-vector multiply (M=1), memory-bound</td></tr>
+<tr><td><code>naive GEMM</code></td><td>D1</td><td>One thread per output element, no reuse</td></tr>
+<tr><td><code>coalesced GEMM</code></td><td>D1</td><td>Fix warp-to-memory mapping for coalesced access</td></tr>
+<tr><td><code>SMEM tiling</code></td><td>D1</td><td>Load a tile of A+B into shared memory, reuse across block</td></tr>
+<tr><td><code>1D blocktile</code></td><td>D1</td><td>Each thread computes multiple outputs; register reuse of B</td></tr>
+<tr><td><code>2D blocktile</code></td><td>D1</td><td>Outer product: register reuse of both A and B (TM×TN)</td></tr>
+<tr><td><code>vectorized load</code></td><td>D1</td><td>Use float4/float2 to load 4/2 elements per instruction</td></tr>
+<tr><td><code>warp-tiled</code></td><td>D1</td><td>Each warp owns a sub-tile; warp-level coordination</td></tr>
+<tr><td><code>double buffering</code></td><td>D1</td><td>Ping-pong SMEM: load next tile while computing current</td></tr>
+<tr><td><code>WMMA</code></td><td>D5</td><td>Warp Matrix Multiply Accumulate — Volta-era tensor core API (<code>nvcuda::wmma</code>)</td></tr>
+<tr><td><code>mma.sync</code></td><td>D5</td><td>PTX-level tensor core instruction, more control than WMMA</td></tr>
+<tr><td><code>WGMMA</code></td><td>D5</td><td>Warpgroup MMA — Hopper, 4 warps cooperate</td></tr>
+<tr><td><code>TMA</code></td><td>D5</td><td>Tensor Memory Accelerator — Hopper async DMA to SMEM</td></tr>
+<tr><td><code>MFMA</code></td><td>D5</td><td>Matrix Fused Multiply-Add — AMD's tensor core equivalent</td></tr>
+<tr><td><code>AITER</code></td><td>D5</td><td>AMD GFX950 (MI350X) matrix instruction library</td></tr>
+<tr><td><code>split-K</code></td><td>D2</td><td>Split K into S chunks, each block computes partial C, then reduce</td></tr>
+<tr><td><code>stream-K</code></td><td>D2</td><td>Dynamic K-chunk scheduling; fixes split-K quantization waste</td></tr>
+<tr><td><code>persistent kernel</code></td><td>D2</td><td>Launch #SMs blocks, each processes multiple tiles until done</td></tr>
+<tr><td><code>batched GEMM</code></td><td>D3</td><td>N independent GEMMs of same shape, one launch</td></tr>
+<tr><td><code>grouped GEMM</code></td><td>D3</td><td>Variable-shape GEMMs packed into one launch (MoE)</td></tr>
+<tr><td><code>CUTLASS</code></td><td>D6</td><td>NVIDIA's open-source C++ template GEMM framework</td></tr>
+<tr><td><code>cuBLAS</code></td><td>D6</td><td>NVIDIA's closed-source BLAS library</td></tr>
+<tr><td><code>tensorwise scaling</code></td><td>D4</td><td>FP8: one scale factor for entire tensor</td></tr>
+<tr><td><code>rowwise scaling</code></td><td>D4</td><td>FP8: one scale factor per row</td></tr>
+<tr><td><code>blockwise (1×128) scaling</code></td><td>D4</td><td>FP8: one scale per 1×128 block ( finest granularity )</td></tr>
+<tr><td><code>epilogue fusion</code></td><td>D1</td><td>Fuse bias/activation into GEMM epilogue, save a memory round-trip</td></tr>
+<tr><td><code>bank conflict</code></td><td>D1</td><td>SMEM access pattern where multiple threads hit same bank → serialization</td></tr>
+<tr><td><code>cp.async</code></td><td>D1</td><td>Async global→SMEM copy (Ampere+), enables pipelining without double buffer</td></tr>
+<tr><td><code>occupancy</code></td><td>D1</td><td>Ratio of resident warps to max warps per SM — affected by registers/SMEM</td></tr>
+<tr><td><code>arithmetic intensity</code></td><td>D1</td><td>FLOPs per byte loaded — determines compute-bound vs memory-bound</td></tr>
+<tr><td><code>roofline</code></td><td>D1</td><td>Visual model: peak FLOPS vs bandwidth limit, by arithmetic intensity</td></tr>
+</table>
+
+<div class="note">
+<strong>Not on this list?</strong> Every GEMM term maps to one of the 6 dimensions. If you can't place it, it's likely a synonym or a combination. Example: <code>"ping-pong scheduling"</code> = double buffering (D1). <code>"hopper GEMM"</code> = WGMMA + TMA (D5).
+</div>
+<div class="key-takeaway">
+<h3>How to use this roadmap</h3>
+<ol>
+<li><strong>You are here:</strong> Phase 1, step 7 (warp-tiled). 6 of 10 steps done.</li>
+<li><strong>Read dimensions first.</strong> When you encounter a new term, place it in D1–D6 before diving into implementation.</li>
+<li><strong>Always benchmark.</strong> Every step should produce a TFLOPS number and a "% of cuBLAS" comparison. No theory without measurement.</li>
+<li><strong>Write the kernel yourself.</strong> Reading CUTLASS source is Phase 4. In Phases 1–3, write from scratch — the intuitions only come from doing.</li>
+<li><strong>One step at a time.</strong> Don't jump to FP8 until FP32 ladder is done. Don't do split-K until you've felt the occupancy limit yourself.</li>
+</ol>
+</div>
+
+<h3>Linked Resources</h3>
+<ul>
+<li><a href="index.html">← Back to main tutorial index</a></li>
+<li><a href="../ROADMAP.md">Kernel learning ROADMAP.md</a> — the full 7-phase roadmap (this page is a deep-dive on Phase 1.4)</li>
+<li>First-hand SGEMM data: <code>docs/kb/sgemm-ladder-h100.md</code></li>
+<li>Full experiment worklog: <code>matmul/worklog.md</code> (750 lines, step-by-step derivation)</li>
+<li>FP8 GEMM notes: <code>docs/kb/fp8-gemm-*.md</code> (5 files: hardware, accuracy, chaining, scaling modes)</li>
+<li>Determinism study: <code>docs/kb/gemm-determinism.md</code>, <code>determinism/</code></li>
+</ul>
+
+<footer>
+GEMM Mastery Roadmap · kernels repo · updated 2026-08-27<br>
+Part of the <a href="index.html">GPU Kernel Programming Tutorial</a> series
+</footer>
+
+</body>
+</html>
