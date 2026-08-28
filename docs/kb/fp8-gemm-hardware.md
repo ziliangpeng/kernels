@@ -44,6 +44,26 @@ Output: FP32 accumulator register
 
 This is NOT "expand to FP16 then do FP16 multiply." The hardware directly decodes the FP8 format and does a native multiply into the FP32 accumulator.
 
+### Accumulator precision nuance (Sol review — deeper than "FP32")
+
+"FP32 accumulator" describes the API/architectural contract, not the silicon. Three distinct things:
+
+1. **Exposed accumulator type** (what `mma.sync` says: `.f32`)
+2. **Internal partial accumulator precision** — Hopper FP8 native accumulation uses an internal precision *wider than FP16 but narrower than FP32*
+3. **Promotion cadence** — non-fast-accum mode periodically promotes partials to full precision; fast-accum mode skips the promotion (faster, less accurate)
+
+PTX also has FP8 MMA variants with **FP16 accumulator** (`mma...f16.e4m3.e5m2.f16`). So the full space:
+
+| Mode | Accumulator | Notes |
+|---|---|---|
+| fast accumulation (ON) | narrower internal partials, no periodic promotion | fastest, less accurate |
+| fast accumulation (OFF) | periodic promotion to higher precision | default |
+| FP16 accumulator MMA | FP16 | exists in PTX ISA |
+
+When analyzing FP8 numerics, don't just ask "FP16 or FP32 accumulator?" — also ask: is fast-accum on? What's the promotion interval? What precision does split-K reduction use? Is rounding per-product or per-group?
+
+Sources: NVIDIA PTX ISA, CUDA Tile IR stability docs (https://docs.nvidia.com/cuda/tile-ir/latest/sections/stability.html), Hopper Architecture whitepaper, Meta PyTorch Conference talk, Sol review.
+
 H100 FP8 Tensor Core tile: 16×16×32 (K dimension = 32, double BF16's 16, because FP8 elements are half the size — same register holds 2× more).
 
 ## FP8 GEMM throughput (H100)

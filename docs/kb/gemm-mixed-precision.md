@@ -25,6 +25,18 @@ Main error source is **summation order across K**, not individual multiply. Diff
 K=4096 with FP16 accumulator: ULP at sum~5000 is ~0.5, 4096 additions → error ~2048. Completely unacceptable.
 K=4096 with FP32 accumulator: ULP at sum~64 is ~0.000008, error negligible.
 
+### "Nobody uses FP16 accumulation" is wrong (Sol review correction)
+
+FP16 accumulation is hardware-supported and real: Tensor Core C/D operands can be FP16 **or** FP32 (NVIDIA mixed-precision guide), and PTX has FP16-accumulator MMA variants. The accurate statement:
+
+> FP16/BF16 GEMM *usually* uses FP32 logical accumulation, but FP16 accumulation is a real hardware mode; BF16 accumulation is rarer (precision, not range).
+
+FP32 accumulate is the *standard choice* for large-K/training/stability reasons beyond the 65,504 range: FP16's 11-bit significand means small products stop being added once partial sums grow, cancellation error is large, and mid-stream overflow can occur even when the final answer fits.
+
+Also: even `computeType=FP32` cuBLAS may merge split-K partials at *lower* precision. NVIDIA exposes `CUBLAS_MATH_DISALLOW_REDUCED_PRECISION_REDUCTION` to force reduction at accumulator/compute type — official docs note FP16-output split-K reduction can produce intermediate overflows that full-FP32 dot-product accumulation wouldn't. So "API says FP32" ≠ "every reduction stage is FP32".
+
+When FP16 accumulation IS reasonable (Sol): tiny K (4/8/16), strictly bounded operands, output only needs FP16 quality, bandwidth/register pressure dominates, fused microkernel with measured error budget. But "FP16 accumulator is always faster" is false too — FP32 accumulation is usually the native high-throughput Tensor Core path; FP16's main benefit is halving accumulator register pressure (only matters when occupancy is register-limited). Benchmark it.
+
 ## FP8 exception
 
 H100 supports FP8 GEMM with **FP16 accumulator** (not FP32) in "fast accumulation" mode. Internal partial accumulator may be even narrower than FP16. This is the one case where sub-FP32 accumulation is used in practice. Trades accuracy for ~2× throughput. Only for inference, not training.

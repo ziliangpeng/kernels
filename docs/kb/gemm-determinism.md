@@ -15,6 +15,8 @@ Root cause: standard cuBLAS/rocBLAS GEMM has no `atomicAdd`. Each output cell `C
 
 Same input produces different output under different batch sizes (M or B dimension). The library appears to select different algorithms for different M/B values → different accumulation order → different rounding → different results.
 
+**Terminology (Sol review):** this is more precisely **cross-shape/cross-batch numerical invariance**, not "determinism" — traditional determinism means same input + same shape + same execution conditions → bit-identical on re-run. Run-to-run determinism (measured below) is a separate property, and it holds.
+
 **Note:** "Algorithm switching" is our most reasonable hypothesis but is NOT directly verified. We have not queried cuBLASLt/rocBLAS solution IDs or disassembled kernels. The manual-loop experiment (below) strongly supports this hypothesis but does not constitute proof. The most valuable next experiment is recording the actual backend, kernel name, and solution ID per shape.
 
 ### H100 (cuBLAS)
@@ -72,6 +74,8 @@ H100 and MI325X produce **completely different checksums** for the same input + 
 3. Even with Tensor Core, cuBLAS/rocBLAS can still vary CTA tile, warp tile, split-K, edge-tile handling, and epilogue
 
 **To prove:** Query algorithm IDs per shape, disassemble kernels (SASS for H100, ISA for MI325X), force single algorithm and verify cross-batch diff disappears.
+
+**Direct-proof microbenchmark checklist (Sol):** record cuBLASLt heuristic algorithm ID / tile / split-K per M; rocBLAS or hipBLASLt solution index; check H100 SASS for `HMMA`/`WGMMA`/TF32 variants and MI325X ISA for `V_MFMA_*`; force fixed algorithm → does cross-M diff vanish? Disable TF32 → does the FP32 pattern change? Force full-precision reduction → does FP16 diff change? If fixed-algorithm still shows FP32 more shape-sensitive, the cause is instruction-level reduction topology; if the diff vanishes, it's library heuristic/global tiling, not the datatype.
 
 ## Test scripts
 
