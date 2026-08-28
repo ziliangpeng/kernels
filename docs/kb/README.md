@@ -22,6 +22,7 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 - [fp4-training-progress.md](fp4-training-progress.md) — NVFP4 training status: who's doing it, what's proven, what's missing (2026-08)
 - [fp8-gemm-hardware.md](fp8-gemm-hardware.md) — FP8 GEMM on H100: Tensor Core native, CUDA core emulation, memory path
 - [fp8-gemm-chaining.md](fp8-gemm-chaining.md) — FP8 activation chaining between layers: scaling, epilogue fusion, framework behavior
+- [fp8-gemm-accuracy-scaling-modes.md](fp8-gemm-accuracy-scaling-modes.md) — FP8 accuracy vs FP32 (3.75%), full scaling-mode support matrix, DeepGEMM/aiter blockwise recipes, why 4% per-GEMM noise ≈ lossless task accuracy
 
 ### Hardware
 - [hardware-h100.md](hardware-h100.md) — NVIDIA H100 Tensor Core, cuBLAS, TF32
