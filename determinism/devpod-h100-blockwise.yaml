@@ -1,0 +1,41 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ziliang-xp-priority
+value: 2000
+preemptionPolicy: PreemptLowerPriority
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ziliang-fp8-blockwise
+  namespace: vllm-model-server
+  labels:
+    owner: ziliang
+    purpose: fp8-blockwise-scaling-test
+spec:
+  restartPolicy: Never
+  priorityClassName: ziliang-xp-priority
+  tolerations:
+    - {effect: NoSchedule, key: sku, operator: Equal, value: gpu}
+    - {effect: NoSchedule, key: nvidia.com/gpu, operator: Exists}
+    - {effect: NoSchedule, key: partition, operator: Equal, value: model-server}
+    - {effect: NoExecute, key: node.kubernetes.io/not-ready, operator: Exists, tolerationSeconds: 300}
+    - {effect: NoExecute, key: node.kubernetes.io/unreachable, operator: Exists, tolerationSeconds: 300}
+  containers:
+    - name: cuda
+      image: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
+      command: ["/bin/bash", "-c", "sleep infinity"]
+      resources:
+        limits:
+          nvidia.com/gpu: "1"
+          memory: 100G
+        requests:
+          nvidia.com/gpu: "1"
+          cpu: "8"
+          memory: 100G
+      volumeMounts:
+        - {name: dshm, mountPath: /dev/shm}
+  volumes:
+    - name: dshm
+      emptyDir: {medium: Memory, sizeLimit: 16Gi}
