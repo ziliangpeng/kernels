@@ -90,14 +90,25 @@ Key concept: **granularity trade-off**. Fine-grained (one kernel per op, use lib
 
 ## Progression recommendation
 
-1. **Finish GEMM ladder** (D1 complete: warp-tile → tensor core → double buffer)
-2. **GEMV** (natural extension — same matmul but M=1, teaches roofline)
-3. **Flash Attention** (online softmax already practiced in batch_softmax/, extends to tiling)
-4. **Paged Attention** (adds indirect indexing on top of Flash Attention)
-5. **SWA** (adds receptive field math on top of paged attention)
-6. **DSA Sparse MLA** (composes all of the above)
+**Original progression (now revised per GPT-5.6 Sol review, 2026-08-28):**
 
-Each frontier builds on the previous. Don't skip to DSA without understanding Flash Attention and paged KV first.
+1. **Finish GEMM ladder** (D1 complete: warp-tile → double buffer → light WMMA benchmark)
+2. **GEMV** (natural extension — same matmul but M=1, teaches roofline)
+3. **Warp reduction & online softmax** (Sol-flagged missing frontier — the bridge from primitives to attention)
+4. **Dense decode attention** (contiguous KV → fused → GQA/MQA)
+5. **Paged attention** (adds indirect indexing on top of decode attention)
+6. **Dense MLA decode** (latent KV layout, decoupled RoPE)
+7. **Sparse selection → DSA sparse MLA** (top-k gather, sparse softmax, fused end-to-end)
+
+**Sol's key corrections to the original ordering:**
+
+- The original (GEMM → GEMV → Flash Attention → paged → SWA → DSA) had two problems: Flash Attention as a full production-quality detour delays the decode path, and SWA was incorrectly placed as a DSA prerequisite.
+- **Flash Attention: learn the algorithm (online softmax recurrence, tiled QK/PV, stable rescaling), don't chase FA-2/3 production performance.** It's mostly prefill material; the decode path matters for DSA.
+- **SWA moves to a side branch** — it's a different attention sparsity pattern, not a DSA prerequisite. Valuable receptive-field math, but doesn't block the main line.
+- **Missing frontiers now added**: warp-level reduction/shuffle, prefix scan, top-k/selection, gather/scatter with cache-line analysis, ragged batching, GQA/MQA→MLA data-structure evolution, multi-CTA reduction, load balancing for uneven selected-token counts, numerical stability under masked/sparse softmax, graph-safe workspace/allocator behaviour.
+- **Explicitly deprioritized for the DSA goal**: DGEMM, exhaustive SGEMM autotuning, full cuBLAS dispatch reverse-engineering, all CUTLASS template features as a gate, Hopper WGMMA/TMA before attention exists (learn them when they fix a real bottleneck in your MLA kernel).
+
+Each frontier builds on the previous. Don't skip to DSA without understanding dense decode attention and paged KV first.
 
 ## Related
 - `gemm-variant-taxonomy.md` — the 6-dimension GEMM framework

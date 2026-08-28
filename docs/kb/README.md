@@ -5,7 +5,7 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 ## Index
 
 ### GEMM
-- [gemm-variant-taxonomy.md](gemm-variant-taxonomy.md) — The 6-dimension framework: memory ladder (D1), K-splitting (D2), shape (D3), precision (D4), hardware instructions (D5), implementation stack (D6)
+- [gemm-variant-taxonomy.md](gemm-variant-taxonomy.md) — The 6-dimension framework (D1 data movement / D2 K-split / D3 shape / D4 precision / D5 compute primitive / D6 stack), Sol-reviewed: dims are lookup aid not exact partition
 - [gemm-determinism.md](gemm-determinism.md) — Run-to-run and cross-batch determinism on H100 vs MI325X
 - [gemm-batch-invariance.md](gemm-batch-invariance.md) — Batch non-invariance: causes, measurement, solutions
 - [gemm-mixed-precision.md](gemm-mixed-precision.md) — FP16/BF16/FP8 internal pipeline and accumulator precision
@@ -14,7 +14,7 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 - [sgemm-ladder-h100.md](sgemm-ladder-h100.md) — Hand-written SGEMM ladder on H100: 5.3→34.8 TFLOPS, autotune lessons
 
 ### Beyond GEMM
-- [beyond-gemm-kernel-landscape.md](beyond-gemm-kernel-landscape.md) — 7 kernel frontiers: Flash Attention, paged KV, GEMV, SWA, DSA MLA, allocators, fusion
+- [beyond-gemm-kernel-landscape.md](beyond-gemm-kernel-landscape.md) — 7 kernel frontiers (Flash Attention, paged KV, GEMV, SWA, DSA MLA, allocators, fusion) + Sol-revised progression: dense decode attention before low precision; SWA moved to side branch
 - [paged-attention-tradeoff.md](paged-attention-tradeoff.md) — Non-contiguous KV: coalescing loss vs memory savings (10-15× batch), why the trade is always worth it
 
 ### Op Determinism

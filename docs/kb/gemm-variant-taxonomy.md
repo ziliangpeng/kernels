@@ -2,9 +2,11 @@
 
 All GEMM variants answer one question: **"How do M×N×K arithmetic and data movement map onto the grid/block/warp/thread/tensor-core hardware structure?"** Every named variant is a coordinate in this 6-dimensional space.
 
-## D1 — Memory Hierarchy Ladder
+> **Note (GPT-5.6 Sol review, 2026-08-28):** this taxonomy is a good first glossary but the dimensions are NOT fully orthogonal. D1 and D5 overlap (tensor core is both a memory-hierarchy rung and a hardware instruction). Treat the taxonomy as a lookup aid, not an exact partition: when classifying a term, pick the dimension that describes its *primary* mechanism.
 
-The most important dimension. Each rung moves data reuse one level closer to the compute unit. Same GEMM, different memory layer doing the reuse.
+## D1 — Data Movement & Reuse Strategy (orthogonal fix: reuse strategy only)
+
+The most important dimension. Each rung moves data reuse one level closer to the compute unit. **Per Sol review: D1 should describe only data movement / reuse strategy — which memory level holds data and who reuses it.** The compute primitive used at that level belongs to D5.
 
 | Rung | Term | Key idea |
 |---|---|---|
@@ -16,11 +18,15 @@ The most important dimension. Each rung moves data reuse one level closer to the
 | 6 | vectorized load | float4 GMEM loads, reduce instruction count |
 | 7 | warp-tiled | warp-level sub-tile coordination |
 | 8 | double buffering | ping-pong SMEM, overlap compute and load |
-| 9 | tensor core (WMMA) | hardware matrix units, 16×16 fragment |
+| 9 | tensor core fragment | data held in TC fragment layout for reuse |
+
+(For rung 9, the *reuse strategy* is "data stays in tensor core fragment registers across K steps" — D1. The instruction that does the math — WMMA/mma.sync/WGMMA — is D5.)
 
 First-hand data on H100 FP32: naive 5.3T → vectorized 34.8T (6.6×), reaching 67% of cuBLAS. See `sgemm-ladder-h100.md`.
 
 Key lesson: autotune finds the best within an algorithm's ceiling; only a new algorithm raises the ceiling.
+
+Per GPT-5.6 Sol review (2026-08-28): **67% is enough to move on** — the 67%→90% gap is mostly architecture-specific tile/pipeline polishing, while the transferable skills (reduction dependency, irregular access, variable work) live in decode attention. Warp-tiled + double-buffered should each still be done by hand once.
 
 ## D2 — K-Axis Splitting
 
@@ -52,9 +58,9 @@ BLAS naming convention — same algorithm, different dtype.
 - **FP8 GEMM** (e4m3/e5m2): adds sub-dimension of scaling mode — tensorwise, rowwise, blockwise (1×128). Each has different accuracy/perf trade-offs. See `fp8-gemm-accuracy-scaling-modes.md`.
 - **INT8 GEMM**: quantized weights, dequant in-kernel
 
-## D5 — Hardware Instruction Layer
+## D5 — Compute Primitive / Hardware Instruction Layer
 
-Which silicon unit does the math, at what abstraction level.
+Which silicon unit does the math, at what abstraction level. **Per Sol review: D5 = the compute primitive ONLY (what instruction multiplies-and-accumulates); the data movement around it belongs to D1.**
 
 | API | Era | Control level |
 |---|---|---|

@@ -152,72 +152,87 @@
 <div class="note">
 <strong>Lesson from first-hand data:</strong> Autotune finds the best within an algorithm's ceiling; only a new algorithm raises the ceiling. 1D autotuned (19.3T) can never reach 2D baseline (22.4T) — the ceiling is set by register reuse factor, not tuning.
 </div>
-<h2>🗺️ 5-Phase Mastery Roadmap</h2>
+<h2>🗺️ Mastery Roadmap — Revised per GPT-5.6 Sol Review</h2>
 
 <p>Each phase targets a specific set of dimensions. Don't skip ahead — later phases build on intuitions from earlier ones.</p>
 
+<div class="warning">
+<strong>Sol review (2026-08-28):</strong> the original roadmap was too GEMM-centric. Reordered: dense decode attention now comes BEFORE low precision / CUTLASS internals; the 90% cuBLAS exit gate is removed (67% is enough to move on); WGMMA/TMA is deferred until an attention/MLA kernel exists to justify it.
+</div>
+
 <div class="phase">
 <div class="phase-title">Phase 1 · Finish the FP32 Ladder <span class="dim-num">[D1]</span></div>
-<h3>Complete what you started: warp-tiled → tensor core → double buffer</h3>
+<h3>Complete what you started: warp-tiled → double buffering → (optional) WMMA</h3>
 <ul class="chapter-list">
 <li><span class="checkbox">✅</span> Steps 1–6: naive → vectorized <span class="ch-desc">— done, 6.6× over naive, 67% cuBLAS</span></li>
-<li><span class="checkbox">⬜</span> <strong>Step 7: Warp-tiled GEMM</strong> <span class="ch-desc">— assign each warp a sub-tile of the block tile. Introduces warp-level coordination via shuffle or SMEM. This is the bridge between 2D blocktile and tensor core.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Step 8: Tensor Core GEMM (WMMA)</strong> <span class="ch-desc">— use <code>nvcuda::wmma</code> to do 16×16 matrix multiply in hardware. Target: match or beat cuBLAS FP32. Kernel already exists at <code>matmul/matmul_wmma.cu</code> — benchmark it.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Step 9: Double buffering</strong> <span class="ch-desc">— ping-pong SMEM buffers to overlap next-tile load with current-tile compute. Hides memory latency.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Step 10: Autotune the full ladder</strong> <span class="ch-desc">— sweep all tile sizes for steps 7–9. Document the Pareto frontier. Compare against your H100 first-hand results.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 7: Warp-tiled GEMM</strong> <span class="ch-desc">— assign each warp a sub-tile of the block tile. Introduces warp-level coordination via shuffle or SMEM.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 8: Double buffering</strong> <span class="ch-desc">— ping-pong SMEM buffers to overlap next-tile load with current-tile compute. Sol: do this to prove you understand pipelining.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Step 9: WMMA benchmark (light)</strong> <span class="ch-desc">— kernel already exists (<code>matmul/matmul_wmma.cu</code>). Benchmark it, compare, move on. Do NOT deep-dive tensor core yet — that comes back in Phase 4 with real justification.</span></li>
 </ul>
-<div class="milestone"><strong>Exit criterion:</strong> hand-written FP32 GEMM reaches ≥90% of cuBLAS FP32 on a 4096² shape.</div>
+<div class="milestone"><strong>Exit criterion (Sol-revised):</strong> large square SGEMM at 70–80% of cuBLAS under same math mode · warp-tiled + double-buffered each done by hand once · can use profiler to prove whether bandwidth-bound or compute-bound · correctness on non-divisible shapes and different strides/alignments. <strong>90% single-shape target is removed — chasing it teaches architecture-specific tile hunting, not transferable skill.</strong></div>
 </div>
 
 <div class="phase">
-<div class="phase-title">Phase 2 · Low Precision & Hardware Instructions <span class="dim-num">[D4 + D5]</span></div>
-<h3>FP16/BF16 → FP8 → mma.sync → cross-vendor (AMD MFMA)</h3>
+<div class="phase-title">Phase 2 · Dense Decode Primitives <span class="dim-num">[D3 + new]</span></div>
+<h3>The bridge to attention: GEMV → reduction → online softmax → dense decode attention</h3>
 <ul class="chapter-list">
-<li><span class="checkbox">⬜</span> <strong>FP16/BF16 GEMM with tensor core</strong> <span class="ch-desc">— switch dtype, use WMMA FP16 fragment. Study accumulator precision (FP32 accum). Read your KB note: <code>docs/kb/gemm-fp16-vs-bf16.md</code>.</span></li>
-<li><span class="checkbox">⬜</span> <strong>FP8 GEMM (e4m3)</strong> <span class="ch-desc">— the frontier. Scaling modes: tensorwise → rowwise → blockwise (1×128). Read your KB notes: <code>docs/kb/fp8-gemm-*.md</code> (5 files). Benchmark on H100 (DeepGEMM) and MI325X (aiter).</span></li>
-<li><span class="checkbox">⬜</span> <strong>mma.sync (PTX-level)</strong> <span class="ch-desc">— drop down from WMMA to raw <code>mma.sync</code> instructions. Manually manage fragment layout. This is what CUTLASS uses internally.</span></li>
-<li><span class="checkbox">⬜</span> <strong>AMD MFMA</strong> <span class="ch-desc">— port GEMM to HIP. Use MFMA instructions on MI325X (GFX950). Compare instruction shape: NVIDIA 16×16 vs AMD 16×16/32×32/4×64. Read <code>docs/kb/hardware-mi325x.md</code>.</span></li>
+<li><span class="checkbox">⬜</span> <strong>GEMV (M=1)</strong> <span class="ch-desc">— pure memory-bound, bandwidth saturation. This is ROADMAP 1.5.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Warp-level reduction & shuffle</strong> <span class="ch-desc">— Sol: a missing frontier in the original roadmap. Reduction dependency is a core decode-attention concept.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Online softmax</strong> <span class="ch-desc">— running max + running sum, stable rescaling. You have 8 variants in <code>batch_softmax/</code>; now connect it to attention.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Contiguous KV decode attention</strong> <span class="ch-desc">— naive single-token attention with contiguous KV cache. QK dot products + PV accumulation.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Fused dense decode attention</strong> <span class="ch-desc">— fuse QK, softmax, PV into one kernel. GQA/MQA support.</span></li>
+<li><span class="checkbox">⬜</span> <strong>RMSNorm + RoPE</strong> <span class="ch-desc">— the decode-block companions. You'll need them for the full forward pass anyway (ROADMAP Phase 6).</span></li>
 </ul>
-<div class="milestone"><strong>Exit criterion:</strong> can write a correct FP8 GEMM on both H100 and MI325X, and explain the scaling-mode trade-offs from first-hand data.</div>
+<div class="milestone"><strong>Exit criterion:</strong> a correct fused decode attention kernel, benchmarked across batch sizes, with profiler evidence of the memory-bound bottleneck.</div>
 </div>
 
 <div class="phase">
-<div class="phase-title">Phase 3 · Shape-Dependent GEMM <span class="dim-num">[D3 + D2]</span></div>
-<h3>GEMV → skinny GEMM → split-K → stream-K → batched/grouped</h3>
+<div class="phase-title">Phase 3 · Irregular & Paged Kernels <span class="dim-num">[D2 + D3]</span></div>
+<h3>Where the real DSA preparation begins</h3>
 <ul class="chapter-list">
-<li><span class="checkbox">⬜</span> <strong>GEMV (M=1)</strong> <span class="ch-desc">— the decode case. Pure memory-bound. Each weight read once. Optimize for bandwidth, not FLOPS. This is ROADMAP 1.5.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Skinny GEMM sweep (M=1,8,32,128,512,2048)</strong> <span class="ch-desc">— benchmark same kernel across shapes. Find crossover points: when does split-K help? When does small-tile win? This is ROADMAP 2.2.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Split-K GEMM</strong> <span class="ch-desc">— split K into S chunks, S blocks compute partial C, atomic add or 2nd-kernel reduce. Measure: when does the parallelism gain outweigh the reduction overhead?</span></li>
-<li><span class="checkbox">⬜</span> <strong>Stream-K GEMM</strong> <span class="ch-desc">— scheduler-driven K-chunk assignment. Read the CUTLASS stream-K paper/code. Understand how it fixes split-K's quantization waste.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Batched & Grouped GEMM</strong> <span class="ch-desc">— strided batched (same shape, N independent GEMMs) and grouped (variable shapes, MoE dispatch). This is ROADMAP 2.4.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Paged KV decode attention</strong> <span class="ch-desc">— indirect indexing, block table lookup, ragged sequence lengths. See <code>docs/kb/paged-attention-tradeoff.md</code>.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Gather/scatter & pointer indirection</strong> <span class="ch-desc">— cache-line behaviour under indirect access. Sol-flagged missing frontier.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Top-k / index selection</strong> <span class="ch-desc">— selection primitives, segmented reduction. The sparse-routing foundation.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Split-K & multi-CTA reduction</strong> <span class="ch-desc">— split-K GEMM as a case study; then general multi-CTA reduction patterns.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Flash Attention (algorithm level)</strong> <span class="ch-desc">— learn the online softmax recurrence, tiled QK/PV, stable rescaling, score-matrix avoidance. Do NOT chase FlashAttention-2/3 production performance here — that's a side quest. Mostly prefill material; decode path is what matters for DSA.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Persistent kernel + load balancing</strong> <span class="ch-desc">— uneven selected-token counts, work stealing, variable work per block.</span></li>
 </ul>
-<div class="milestone"><strong>Exit criterion:</strong> can pick the right K-splitting strategy for any M/N/K shape and justify it with data.</div>
+<div class="milestone"><strong>Exit criterion:</strong> paged decode attention correct on ragged batches; can reason about load balance when work per block is uneven.</div>
 </div>
 
 <div class="phase">
-<div class="phase-title">Phase 4 · CUTLASS & Library Internals <span class="dim-num">[D6]</span></div>
-<h3>Read the source of production GEMM libraries</h3>
+<div class="phase-title">Phase 4 · Tensor Core & Low Precision (need-driven) <span class="dim-num">[D4 + D5]</span></div>
+<h3>Now WGMMA/TMA has a real consumer: your attention/MLA kernel</h3>
 <ul class="chapter-list">
-<li><span class="checkbox">⬜</span> <strong>CUTLASS architecture</strong> <span class="ch-desc">— understand the template combinator: <code>ThreadblockShape × WarpShape × InstructionShape × Epilogue</code>. Map each template parameter to D1/D2/D5.</span></li>
-<li><span class="checkbox">⬜</span> <strong>CUTLASS stream-K implementation</strong> <span class="ch-desc">— read the actual stream-K scheduler in CUTLASS. Trace how work is dynamically assigned.</span></li>
-<li><span class="checkbox">⬜</span> <strong>cuBLAS dispatch logic</strong> <span class="ch-desc">— understand how cuBLAS picks among hundreds of internal kernels by shape/dtype. Use Nsight to see which kernel cuBLAS actually calls.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Triton GEMM internals</strong> <span class="ch-desc">— read Triton's <code>tl.dot</code> lowering. Understand how the compiler auto-tiles and auto-pipelines. Compare to your hand-written tiles.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Dense MLA decode reference</strong> <span class="ch-desc">— latent KV layout, decoupled RoPE component. The GQA→MQA→MLA data-structure evolution.</span></li>
+<li><span class="checkbox">⬜</span> <strong>FP16/BF16 with mma.sync</strong> <span class="ch-desc">— drop below WMMA to raw PTX; manual fragment layout. Depth first on ONE architecture before porting.</span></li>
+<li><span class="checkbox">⬜</span> <strong>FP8 GEMM with scaling modes</strong> <span class="ch-desc">— tensorwise → rowwise → blockwise (1×128). KB: <code>docs/kb/fp8-gemm-*.md</code>. Quantized KV + scale metadata reading in-kernel.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Hopper WGMMA + TMA</strong> <span class="ch-desc">— only now, as tools to fix real bottlenecks in your MLA kernel. Not isolated instruction exercises.</span></li>
+<li><span class="checkbox">⬜</span> <strong>AMD port (optional)</strong> <span class="ch-desc">— after one architecture is deep, port to MI325X MFMA/AITER.</span></li>
 </ul>
-<div class="milestone"><strong>Exit criterion:</strong> can read a CUTLASS kernel definition and predict its tile/pipeline/split strategy without running it.</div>
+<div class="milestone"><strong>Exit criterion:</strong> correct FP8/quantized KV attention kernel on one architecture, with scaling-mode accuracy data from first-hand measurement.</div>
 </div>
 
 <div class="phase">
-<div class="phase-title">Phase 5 · Advanced & Specialized GEMM <span class="dim-num">[D1+D2+D5]</span></div>
-<h3>Hopper WGMMA · fused epilogue · quantized · persistent</h3>
+<div class="phase-title">Phase 5 · Sparse MLA & DSA <span class="dim-num">[composite]</span></div>
+<h3>The end goal: assemble everything</h3>
 <ul class="chapter-list">
-<li><span class="checkbox">⬜</span> <strong>Hopper: WGMMA + TMA</strong> <span class="ch-desc">— warpgroup-level MMA (4 warps cooperate). TMA does async DMA to SMEM without thread involvement. The cutting edge of NVIDIA GEMM.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Fused GEMM (GEMM+SiLU, GEMM+bias)</strong> <span class="ch-desc">— epilogue fusion. ROADMAP 2.3. Understand why fusing saves a memory round-trip.</span></li>
-<li><span class="checkbox">⬜</span> <strong>Quantized GEMM (INT8, weight-only)</strong> <span class="ch-desc">— dequantize in-kernel, mixed precision. Relevance: LLM serving with INT4/INT8 weights.</span></li>
-<li><span class="checkbox">⬜</span> <strong>GEMM for attention (QK^T, SV)</strong> <span class="ch-desc">— how GEMM shapes change in attention vs FFN. Bridge to FlashAttention (ROADMAP Phase 3).</span></li>
-<li><span class="checkbox">⬜</span> <strong>Persistent kernel + software scheduling</strong> <span class="ch-desc">— launch exactly #SMs blocks, each processes multiple tiles. Avoids launch overhead, enables fine-grained work stealing.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Extract DSA reference spec</strong> <span class="ch-desc">— Sol: kernel design is fully determined by latent dim, RoPE split, page size, selection granularity, index format, KV dtype, batch distribution. Extract data layout + math reference from the exact target implementation FIRST.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Sparse selection + gather</strong> <span class="ch-desc">— top-k token selection, sparse QK, index generation ↔ consumer kernel interface.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Stable sparse softmax</strong> <span class="ch-desc">— masked/sparse softmax stability, split-work reduction, zero selected blocks, duplicate indices, partial pages, tail dims, long context.</span></li>
+<li><span class="checkbox">⬜</span> <strong>Fused end-to-end DSA decode kernel</strong> <span class="ch-desc">— CUDA graph safety, workspace/allocator behaviour, end-to-end correctness oracle (not just per-op comparison).</span></li>
+<li><span class="checkbox">⬜</span> <strong>Profiler-driven optimization</strong> <span class="ch-desc">— HBM transactions, L2 hit rate, stall reasons, occupancy, wave utilization.</span></li>
 </ul>
-<div class="milestone"><strong>Exit criterion:</strong> can design a GEMM kernel for a novel hardware target or unusual shape from first principles, and predict its performance.</div>
+<div class="milestone"><strong>Exit criterion:</strong> a correct, profiler-validated DSA sparse MLA decode kernel written from scratch. The goal that started this journey.</div>
 </div>
+
+<h3>Side branches (learn when needed, don't block the main line)</h3>
+<ul>
+<li><strong>SWA / sliding window attention</strong> — Sol: it's a different sparsity pattern, NOT a DSA prerequisite. Receptive-field math is valuable but belongs on a side branch. (ROADMAP Phase 5 stays as-is, decoupled.)</li>
+<li><strong>CUTLASS / Triton internals</strong> — read on demand when a phase needs them (e.g. stream-K reading inside Phase 3), not as a standalone gate.</li>
+<li><strong>Grouped / batched GEMM, MoE dispatch</strong> — return when you work on MoE serving (ROADMAP 2.4).</li>
+<li><strong>DGEMM, exhaustive SGEMM autotuning, full cuBLAS dispatch reverse-engineering</strong> — explicitly deprioritized per Sol.</li>
+</ul>
 <h2>📖 Glossary — Every Term Mapped to a Dimension</h2>
 
 <p>When you encounter a GEMM term, find it here to see which dimension it belongs to:</p>
