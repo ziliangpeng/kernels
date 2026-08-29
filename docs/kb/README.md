@@ -16,6 +16,8 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 ### Beyond GEMM
 - [beyond-gemm-kernel-landscape.md](beyond-gemm-kernel-landscape.md) — 7 kernel frontiers (Flash Attention, paged KV, GEMV, SWA, DSA MLA, allocators, fusion) + Sol-revised progression: dense decode attention before low precision; SWA moved to side branch
 - [paged-attention-tradeoff.md](paged-attention-tradeoff.md) — Non-contiguous KV: coalescing loss vs memory savings (10-15× batch), why the trade is always worth it
+- [unified-attention-mi325x.md](unified-attention-mi325x.md) — Unified attention (single kernel for mixed prefill+decode): aiter unified vs vLLM TRITON_ATTN on MI325X, 45-case correctness-gated matrix (aiter 45/45 wins, 1.42×–18.31×), skew amplification (bimodal 8×), context sweep, e2e cross-framework synthesis (vLLM +132% vs sglang parity — baseline weakness decides), page_size=1 trap, full benchmark methodology
+- [unified-attention-matrix-v4.csv](unified-attention-matrix-v4.csv) — raw 45-case kernel timing data (aiter vs vllm, fp8 KV)
 
 ### Op Determinism
 - [op-determinism.md](op-determinism.md) — Softmax, reduction, RMSNorm, LayerNorm determinism
