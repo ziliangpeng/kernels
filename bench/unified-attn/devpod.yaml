@@ -1,0 +1,33 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ziliang-unifiedattn-bench
+  namespace: vllm-model-server
+  labels:
+    owner: ziliang
+    purpose: unified-attention-kernel-benchmark
+spec:
+  restartPolicy: Never
+  tolerations:
+    - {effect: NoSchedule, key: sku, operator: Equal, value: gpu}
+    - {effect: NoSchedule, key: amd.com/gpu, operator: Exists}
+    - {effect: NoSchedule, key: partition, operator: Equal, value: model-server}
+    - {effect: NoSchedule, key: gpu-type, operator: Equal, value: mi325x}
+    - {effect: NoExecute, key: node.kubernetes.io/not-ready, operator: Exists, tolerationSeconds: 300}
+    - {effect: NoExecute, key: node.kubernetes.io/unreachable, operator: Exists, tolerationSeconds: 300}
+  containers:
+    - name: bench
+      image: vllm/vllm-openai-rocm:nightly
+      command: ["/bin/bash", "-c", "sleep infinity"]
+      env:
+        - {name: SAFETENSORS_FAST_GPU, value: "1"}
+        - {name: VLLM_USE_V1, value: "1"}
+        - {name: HIP_FORCE_DEV_KERNARG, value: "1"}
+      resources:
+        limits:
+          amd.com/gpu: 1
+          memory: 100G
+        requests:
+          amd.com/gpu: 1
+          cpu: "16"
+          memory: 100G

@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ziliang-sglang-attn-bench
+  namespace: vllm-model-server
+  labels:
+    owner: ziliang
+    purpose: sglang-unified-attn-e2e-bench
+spec:
+  restartPolicy: Never
+  tolerations:
+    - {effect: NoSchedule, key: sku, operator: Equal, value: gpu}
+    - {effect: NoSchedule, key: amd.com/gpu, operator: Exists}
+    - {effect: NoSchedule, key: partition, operator: Equal, value: model-server}
+    - {effect: NoSchedule, key: gpu-type, operator: Equal, value: mi325x}
+    - {effect: NoExecute, key: node.kubernetes.io/not-ready, operator: Exists, tolerationSeconds: 300}
+    - {effect: NoExecute, key: node.kubernetes.io/unreachable, operator: Exists, tolerationSeconds: 300}
+  containers:
+    - name: sglang-container
+      image: lmsysorg/sglang:v0.5.17-rocm720-mi30x  # public SGLang ROCm image
+      command: ["/bin/bash", "-c", "sleep infinity"]
+      env:
+        - {name: HF_HUB_OFFLINE, value: "0"}
+      resources:
+        limits:
+          amd.com/gpu: 1
+          memory: 100G
+        requests:
+          amd.com/gpu: 1
+          cpu: "16"
+          memory: 100G
+      volumeMounts:
+        - {name: do-nfs-volume, mountPath: /huggingface/cache/hub, readOnly: true}
+  volumes:
+    - name: do-nfs-volume
+      persistentVolumeClaim: {claimName: do-nfs-pvc, readOnly: true}
