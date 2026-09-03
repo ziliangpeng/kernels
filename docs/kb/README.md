@@ -10,6 +10,7 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 - [gemm-batch-invariance.md](gemm-batch-invariance.md) — Batch non-invariance: causes, measurement, solutions
 - [gemm-mixed-precision.md](gemm-mixed-precision.md) — FP16/BF16/FP8 internal pipeline and accumulator precision
 - [gemm-fp16-vs-bf16.md](gemm-fp16-vs-bf16.md) — FP16 vs BF16 cross-batch diff: systematic comparison (batch + non-batch)
+- [aiter-gemm-tuner-errratio.md](aiter-gemm-tuner-errratio.md) — AITER GEMM tuner anatomy: errRatio = fraction of elements failing isclose(rtol=1e-2), reference = dequant→FP32 matmul, splitK rounding-order effects, CSV as lookup+audit trail
 - [gemm-fp32-vs-lowprec-accuracy.md](gemm-fp32-vs-lowprec-accuracy.md) — FP32 reference vs FP16/BF16: 0.036% vs 0.288%, bf16 is 8× worse, error independent of M/K
 - [sgemm-ladder-h100.md](sgemm-ladder-h100.md) — Hand-written SGEMM ladder on H100: 5.3→34.8 TFLOPS, autotune lessons
 
