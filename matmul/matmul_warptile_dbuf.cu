@@ -108,25 +108,28 @@ __device__ void loadTileCpAsync(const float *A, const float *B, int N,
     }
 
     // ----- B tile: BK x BN, into Bs[buf][k][n] -----
-    // Fast path: 16B cp.async.cg, 128 threads / 32 float4-columns = 4 passes.
+    // NOTE: B was pre-advanced by blockCol * BN_DB at kernel start; column
+    // indices below are TILE-LOCAL. Fast path: 16B cp.async.cg,
+    // 128 threads / 32 float4-columns = 4 passes.
     const int innerRowB4 = threadIdx.x / (BN_DB / 4);   // 0..3
     const int innerColB4 = threadIdx.x % (BN_DB / 4);   // 0..31
     constexpr int ROW_STRIDE_B4 = NUM_THREADS_DB / (BN_DB / 4);  // 4
     #pragma unroll
     for (int pass = 0; pass < BK_DB / ROW_STRIDE_B4; ++pass) {
-        const int row = innerRowB4 + pass * ROW_STRIDE_B4;
-        const int colBase = blockCol * BN_DB + innerColB4 * 4;
-        const float *src = &B[(tileIdx + row) * N + colBase];
+        const int row = innerRowB4 + pass * ROW_STRIDE_B4;   // k index, 0..15
+        const int colLocal = innerColB4 * 4;                 // n within tile
+        const int colGlobal = blockCol * BN_DB + colLocal;
+        const float *src = &B[(tileIdx + row) * N + colLocal];
         const bool rowOk = (tileIdx + row) < N;
-        if (rowOk && colBase + 3 < N &&
+        if (rowOk && colGlobal + 3 < N &&
             (reinterpret_cast<uintptr_t>(src) & 15) == 0) {
-            cp_async_16(&(*Bs)[buf][row][innerColB4 * 4], src, 16);
+            cp_async_16(&(*Bs)[buf][row][colLocal], src, 16);
         } else {
             // Boundary / unaligned path: per-element 4B copies.
             #pragma unroll
             for (int e = 0; e < 4; ++e) {
-                const bool ok = rowOk && (colBase + e) < N;
-                cp_async_4(&(*Bs)[buf][row][innerColB4 * 4 + e],
+                const bool ok = rowOk && (colGlobal + e) < N;
+                cp_async_4(&(*Bs)[buf][row][colLocal + e],
                            ok ? &src[e] : B, ok ? 4 : 0);
             }
         }
