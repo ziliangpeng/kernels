@@ -21,6 +21,7 @@
 #include "matmul_wmma_bf16.h"
 #include "matmul_cublas_bf16.h"
 #include "matrix_init.h"
+#include "dbuf_config.h"
 
 // ============================================================================
 // BENCHMARK MODE: Data Structures and Constants
@@ -806,6 +807,10 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
 // ============================================================================
 
 int main(int argc, char *argv[]) {
+    // warptile_dbuf autotune flags (--dbuf-BM=... etc.) are consumed first;
+    // the rest of argv flows to the normal benchmark parser.
+    argc = parseDbufFlags(argc, argv);
+
     // Default parameters
     int N = 512;
     int blockDim = 16;
