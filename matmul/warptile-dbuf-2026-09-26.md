@@ -2,7 +2,8 @@
 
 **Date**: 2026-09-26
 **Kernel**: `matmul/matmul_warptile_dbuf.cu` (method `warptile_dbuf`)
-**GPU**: H100 80GB HBM3 (gcp5, SM90, 132 SMs @ 1.98 GHz) — gcp5-h100-0-28
+**GPU**: H100 80GB HBM3 (gcp5, SM90, 132 SMs @ 1.98 GHz) — gcp5-h100-0-28 (A/B),
+gcp5-h100-0-2 job 219149 (autotune sweep)
 **Baseline**: same-session `warptile`, `vectorized`, `cublas` from the same build
 **Shape**: N=4096 square FP32 GEMM, 100-iteration batched timing (repo standard)
 
@@ -53,6 +54,37 @@ Correctness matrix (all vs CPU double-precision reference, threshold 1e-4):
 | 1000 | OOB boundary tiles + K-tail (cp.async src-size zero-fill) | 2.1e-06 | PASS |
 | 2048 | aligned, full tiles | 3.4e-06 | PASS |
 | 4096 | aligned, full tiles (scale) | 4.6e-06 | PASS |
+
+## Autotune results (2026-09-26, in-process sweep of 1360 valid configs)
+
+Full data: [`dbuf-sweep-gcp5-h100-2026-09-26.csv`](dbuf-sweep-gcp5-h100-2026-09-26.csv)
+(same cluster/node/session as the A/B above; per-config warmup 3 + 100-iter
+batched event timing; zero launch failures).
+
+| Config | BM | BN | BK | WM | WN | WNITER | TM | TN | NT | TFLOPS |
+|---|---|---|---|---|---|---|---|---|---|---:|
+| **autotune winner** | 128 | 256 | 8 | 64 | 64 | 2 | 8 | 4 | 256 | **37.60** |
+| runner-up cluster | 128 | 256 | 8 | 32 | 128 | 2 | 8 | 4 | 256 | 37.58 |
+| original default | 128 | 128 | 16 | 64 | 64 | 2 | 8 | 4 | 128 | 32.49 |
+
+- **+15.7% over the original default config** (32.49 → 37.60T), verified
+  3-run ±0.01% (37606/37606/37609) and correctness PASS (rel err 1.4e-06).
+- 37.60T = **72.4% of same-session cuBLAS FP32 (51.97T)** — new FP32-ladder
+  record for this repo, beating vectorized-autotuned's 34.8T (pi1) / 32.74T
+  (same-session).
+- Top-10 (of 1360) is a single family: BM=128, BN=256, NT=256, BK∈{8,16},
+  WM/WN ∈ {64/64, 32/128, 128/32} — H100 wants a WIDE block tile with
+  256 threads; the warp geometry inside barely matters (all within 0.7T).
+- Dimension trends (top 5%): BN 256 dominant, BK 8-16 (32 collapses), TM 8,
+  TN 4 — the asymmetric thread tile again (TM=16/TN=8-style swaps lose).
+- Worst config 1.33T (256,256,32,...) — a 28× spread between best and worst:
+  config choice IS the algorithm at this rung.
+
+Autotune ROI at this rung: +15.7% — vs +52%/+24% predicted for
+1D/2D-blocktile in autotune.md; the pipeline (dbuf) shifted the optimum to a
+different point in the space (BN 128→256, BK 16→8, NT 128→256) than the
+pre-pipeline rungs preferred, exactly the "vectorize changes the trade-off"
+pattern from autotune.md.
 
 ## Pipeline mechanics (what makes it fast)
 
