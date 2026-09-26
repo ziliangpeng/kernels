@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Sweep warptile_dbuf configs on the current GPU.
 
-Reads the valid-config list from gen_dbuf_dispatch.py --list (same source of
-truth as the dispatch table), runs the benchmark binary once per config,
-records TFLOPS, and writes results to matmul/dbuf-sweep-results-<tag>.csv
-(completed in the repo, per the "perf data lives in the repo" rule).
+Reads the valid-config list from gen_dbuf_dispatch.py (same source of truth
+as the dispatch table), runs the benchmark binary once per config, records
+TFLOPS incrementally (one CSV row per config, flushed immediately — safe
+against preemption), and skips configs already present in the output CSV
+(resumable: re-running continues where it stopped).
 
 Usage:
   python3 scripts/sweep_dbuf.py [--binary ./matmul_bench] [--n 4096]
-       [--iters 100] [--top 10] [--tag gcp5-h100]
+       [--top 10] [--tag gcp5-h100]
 """
 import argparse
 import csv
@@ -28,7 +29,10 @@ def run_config(binary, n, cfg):
            "--dbuf-WM", str(WM), "--dbuf-WN", str(WN),
            "--dbuf-WNITER", str(WNITER), "--dbuf-TM", str(TM),
            "--dbuf-TN", str(TN), "--dbuf-NT", str(NT)]
-    out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        return None
     m = re.search(r"Performance: ([\d.]+) GFLOPS", out.stdout)
     if not m:
         return None
@@ -45,29 +49,49 @@ def main():
     args = ap.parse_args()
 
     configs = gen_dbuf_dispatch.all_configs()
-    print(f"{len(configs)} valid configs; N={args.n}")
+    out_csv = os.path.join(args.outdir, f"dbuf-sweep-{args.tag}.csv")
+
+    done = set()
+    if os.path.exists(out_csv):
+        with open(out_csv) as f:
+            for row in csv.reader(f):
+                if row and row[0] != "BM":
+                    done.add(tuple(row[:-1]))
+    todo = [c for c in configs if tuple(map(str, c)) not in done]
+    print(f"{len(configs)} valid configs, {len(done)} already done, "
+          f"{len(todo)} to run; N={args.n}", flush=True)
 
     results = []
-    for i, cfg in enumerate(configs):
+    for i, cfg in enumerate(todo):
         gf = run_config(args.binary, args.n, cfg)
         BM, BN, BK, WM, WN, WNITER, TM, TN, NT = cfg
         if gf is None:
-            print(f"[{i+1}/{len(configs)}] {cfg} FAILED/unsupported")
+            print(f"[{i+1}/{len(todo)}] {cfg} FAILED/unsupported", flush=True)
             continue
         results.append((BM, BN, BK, WM, WN, WNITER, TM, TN, NT, gf))
-        print(f"[{i+1}/{len(configs)}] BM={BM} BN={BN} BK={BK} WM={WM} WN={WN} "
-              f"WNITER={WNITER} TM={TM} TN={TN} NT={NT}: {gf/1000:.2f} TFLOPS")
+        # incremental flush: one append per config, preemption-safe
+        new_file = not os.path.exists(out_csv)
+        with open(out_csv, "a", newline="") as f:
+            w = csv.writer(f)
+            if new_file:
+                w.writerow(["BM", "BN", "BK", "WM", "WN", "WNITER", "TM", "TN",
+                            "NT", "GFLOPS"])
+            w.writerow([BM, BN, BK, WM, WN, WNITER, TM, TN, NT, gf])
+        print(f"[{i+1}/{len(todo)}] BM={BM} BN={BN} BK={BK} WM={WM} WN={WN} "
+              f"WNITER={WNITER} TM={TM} TN={TN} NT={NT}: {gf/1000:.2f} TFLOPS",
+              flush=True)
 
-    results.sort(key=lambda r: -r[-1])
-    out_csv = os.path.join(args.outdir, f"dbuf-sweep-{args.tag}.csv")
-    with open(out_csv, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["BM", "BN", "BK", "WM", "WN", "WNITER", "TM", "TN", "NT", "GFLOPS"])
-        w.writerows(results)
-    print(f"\nresults -> {out_csv}")
+    # summary from the full CSV
+    all_rows = []
+    with open(out_csv) as f:
+        for row in csv.reader(f):
+            if row and row[0] != "BM":
+                all_rows.append((tuple(map(int, row[:-1])), float(row[-1])))
+    all_rows.sort(key=lambda r: -r[1])
+    print(f"\nresults -> {out_csv} ({len(all_rows)} rows)")
     print(f"\nTOP {args.top}:")
-    for r in results[:args.top]:
-        print(f"  {r[:-1]}: {r[-1]/1000:.2f} TFLOPS")
+    for cfg, gf in all_rows[:args.top]:
+        print(f"  {cfg}: {gf/1000:.2f} TFLOPS")
 
 
 if __name__ == "__main__":
