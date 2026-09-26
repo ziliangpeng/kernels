@@ -694,7 +694,7 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         // In-process autotune: sweeps all configs in one CUDA session, prints
         // CSV to stdout, installs the best config in g_dbuf.
         dbufAutotune(N, 100);
-        return 0;
+        return;
     } else if (strcmp(method, "cublas") == 0) {
         kernel = new MatmulCublas(N, blockDim);
     } else if (strcmp(method, "wmma") == 0) {
