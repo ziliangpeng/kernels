@@ -15,6 +15,7 @@
 #include "matmul_2d_blocktile.h"
 #include "matmul_vectorized.h"
 #include "matmul_warptile.h"
+#include "matmul_warptile_dbuf.h"
 #include "matmul_cublas.h"
 #include "matmul_wmma.h"
 #include "matmul_wmma_bf16.h"
@@ -34,6 +35,7 @@ const char* BENCHMARK_METHODS[] = {
     "2d_blocktile",
     "vectorized",
     "warptile",
+    "warptile_dbuf",
     "cublas",
     "wmma",
     "wmma_bf16",
@@ -166,6 +168,7 @@ void print_usage(const char *program_name) {
     printf("  2d_blocktile:  2D block tiling (TM=TN=8, 64 elements per thread)\n");
     printf("  vectorized:    float4 vectorized memory access\n");
     printf("  warptile:      Warp-level tiling (near-optimal)\n");
+    printf("  warptile_dbuf: Warp tiling + async double buffering (cp.async pipeline)\n");
     printf("  cublas:        NVIDIA cuBLAS library (highly optimized)\n");
     printf("  wmma:          WMMA Tensor Core FP16 (Volta+ GPUs)\n");
     printf("  wmma_bf16:     WMMA Tensor Core BF16 (Ampere+ GPUs)\n");
@@ -538,6 +541,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulVectorized(N, blockDim);
                 } else if (strcmp(method, "warptile") == 0) {
                     kernel = new MatmulWarptile(N, blockDim);
+                } else if (strcmp(method, "warptile_dbuf") == 0) {
+                    kernel = new MatmulWarptileDbuf(N, blockDim);
                 } else if (strcmp(method, "cublas") == 0) {
                     kernel = new MatmulCublas(N, blockDim);
                 } else if (strcmp(method, "wmma") == 0) {
@@ -682,6 +687,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulVectorized(N, blockDim);
     } else if (strcmp(method, "warptile") == 0) {
         kernel = new MatmulWarptile(N, blockDim);
+    } else if (strcmp(method, "warptile_dbuf") == 0) {
+        kernel = new MatmulWarptileDbuf(N, blockDim);
     } else if (strcmp(method, "cublas") == 0) {
         kernel = new MatmulCublas(N, blockDim);
     } else if (strcmp(method, "wmma") == 0) {

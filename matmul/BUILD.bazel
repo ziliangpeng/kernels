@@ -161,6 +161,21 @@ cuda_library(
     includes = [".."],
 )
 
+# Warp tiling + async double buffering (Simon rung 12)
+cuda_library(
+    name = "matmul_warptile_dbuf",
+    srcs = ["matmul_warptile_dbuf.cu"],
+    hdrs = [
+        "matmul_warptile_dbuf.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # BF16 WMMA Tensor Core kernel (Ampere+)
 # BF16 WMMA requires SM80+
 cuda_library(
@@ -211,6 +226,7 @@ cuda_binary(
         ":matmul_2d_blocktile",
         ":matmul_vectorized",
         ":matmul_warptile",
+        ":matmul_warptile_dbuf",
         ":matmul_cublas",
         ":matmul_wmma",
         ":matmul_wmma_bf16",
