@@ -64,9 +64,11 @@ def emit_dispatch(configs):
     for (BM, BN, BK, WM, WN, WNITER, TM, TN, NT) in configs:
         lines.append(
             f"    if (BM=={BM} && BN=={BN} && BK=={BK} && WM=={WM} && WN=={WN} && "
-            f"WNITER=={WNITER} && TM=={TM} && TN=={TN} && NUM_THREADS=={NT})\n"
+            f"WNITER=={WNITER} && TM=={TM} && TN=={TN} && NUM_THREADS=={NT}) {{\n"
             f"        matmulWarptileDbufKernelT<{BM}, {BN}, {BK}, {WM}, {WN}, "
-            f"{WNITER}, {TM}, {TN}, {NT}><<<blocks, threads>>>(d_A, d_B, d_C, N);"
+            f"{WNITER}, {TM}, {TN}, {NT}><<<blocks, threads>>>(d_A, d_B, d_C, N);\n"
+            f"        return;\n"
+            f"    }}"
         )
     return "\n".join(lines)
 
