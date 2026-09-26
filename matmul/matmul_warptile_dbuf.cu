@@ -85,7 +85,8 @@ __device__ void loadTileAsync(const float *A, const float *B, int N,
         const int row = innerRowB4 + pass * ROW_STRIDE_B4;
         const bool rowOk = (tileIdx + row) < N;
         const int colBase = blockCol * BN_DB + innerColB4 * 4;
-        if (rowOk && colBase + 3 < N) {
+        if (rowOk && colBase + 3 < N &&
+            ((reinterpret_cast<uintptr_t>(&B[(tileIdx + row) * N + colBase]) & 15) == 0)) {
             // Fast path: full float4 in bounds.
             cuda::memcpy_async(&(*Bs)[buf][row][innerColB4 * 4],
                                &B[(tileIdx + row) * N + colBase],
