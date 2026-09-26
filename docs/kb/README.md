@@ -13,6 +13,7 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 - [aiter-gemm-tuner-errratio.md](aiter-gemm-tuner-errratio.md) — AITER GEMM tuner anatomy: errRatio = fraction of elements failing isclose(rtol=1e-2), reference = dequant→FP32 matmul, splitK rounding-order effects, CSV as lookup+audit trail
 - [gemm-fp32-vs-lowprec-accuracy.md](gemm-fp32-vs-lowprec-accuracy.md) — FP32 reference vs FP16/BF16: 0.036% vs 0.288%, bf16 is 8× worse, error independent of M/K
 - [sgemm-ladder-h100.md](sgemm-ladder-h100.md) — Hand-written SGEMM ladder on H100: 5.3→34.8 TFLOPS, autotune lessons
+- [cp-async-double-buffering-h100.md](cp-async-double-buffering-h100.md) — cp.async double buffering (Simon rung 12): warptile 28.1→32.8T (+16.5%), wait_group pipeline mechanics, memcheck-blind logic-bug lesson
 
 ### Beyond GEMM
 - [beyond-gemm-kernel-landscape.md](beyond-gemm-kernel-landscape.md) — 7 kernel frontiers (Flash Attention, paged KV, GEMV, SWA, DSA MLA, allocators, fusion) + Sol-revised progression: dense decode attention before low precision; SWA moved to side branch
