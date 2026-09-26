@@ -292,7 +292,7 @@ VerificationResult verify_method(MatmulKernel *kernel, const char *method, const
     }
 
     result.max_rel_error = max_rel_error;
-    result.passed = (max_rel_error < verify_threshold(method_name));
+    result.passed = (max_rel_error < verify_threshold(method));
 
     return result;
 }
