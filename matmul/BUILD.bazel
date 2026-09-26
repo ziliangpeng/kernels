@@ -37,6 +37,22 @@ cuda_library(
     includes = [".."],
 )
 
+# Naive matmul, 16-bit storage + FP32 accumulation (f16 / bf16)
+cuda_library(
+    name = "matmul_naive_typed",
+    srcs = ["matmul_naive_typed.cu"],
+    hdrs = [
+        "matmul_naive_typed.h",
+        "dtype_traits.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # cuBLAS baseline kernel
 cuda_library(
     name = "matmul_cublas",
@@ -220,6 +236,7 @@ cuda_binary(
     srcs = ["matmul.cpp"],
     deps = [
         ":matmul_naive",
+        ":matmul_naive_typed",
         ":matmul_coalesced",
         ":matmul_smem",
         ":matmul_1d_blocktile",
@@ -253,6 +270,7 @@ cuda_test(
     args = ["--size", "64", "--method", "naive", "--verify"],
     deps = [
         ":matmul_naive",
+        ":matmul_naive_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -266,6 +284,7 @@ cuda_test(
     args = ["--size", "128", "--method", "naive", "--verify"],
     deps = [
         ":matmul_naive",
+        ":matmul_naive_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -279,6 +298,7 @@ cuda_test(
     args = ["--size", "256", "--method", "naive", "--verify"],
     deps = [
         ":matmul_naive",
+        ":matmul_naive_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -292,6 +312,7 @@ cuda_test(
     args = ["--size", "512", "--method", "naive", "--verify"],
     deps = [
         ":matmul_naive",
+        ":matmul_naive_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",

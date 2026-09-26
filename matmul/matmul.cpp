@@ -9,6 +9,8 @@
 #include <cuda_runtime.h>
 #include "cuda_utils.h"
 #include "matmul_naive.h"
+#include "matmul_naive_typed.h"
+#include "dtype_traits.h"
 #include "matmul_coalesced.h"
 #include "matmul_smem.h"
 #include "matmul_1d_blocktile.h"
@@ -30,6 +32,8 @@
 // Benchmark configuration
 const char* BENCHMARK_METHODS[] = {
     "naive",
+    "naive_f16",
+    "naive_bf16",
     "coalesced",
     "smem",
     "1d_blocktile",
@@ -42,7 +46,7 @@ const char* BENCHMARK_METHODS[] = {
     "wmma_bf16",
     "cublas_bf16"
 };
-const int NUM_METHODS = 11;
+const int NUM_METHODS = 13;
 
 const int BENCHMARK_SIZES[] = {64, 128, 256, 512, 1024, 2048};
 const int NUM_SIZES = sizeof(BENCHMARK_SIZES) / sizeof(BENCHMARK_SIZES[0]);
@@ -163,6 +167,8 @@ void print_usage(const char *program_name) {
     printf("  -h, --help                Show this help message\n");
     printf("\nMethods (ordered by optimization level):\n");
     printf("  naive:         Naive triple-nested loop (simple, unoptimized)\n");
+    printf("  naive_f16:     Naive with FP16 storage + FP32 accumulation\n");
+    printf("  naive_bf16:    Naive with BF16 storage + FP32 accumulation\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
     printf("  smem:          Shared memory tiling\n");
     printf("  1d_blocktile:  1D block tiling (TM=8 elements per thread)\n");
@@ -227,8 +233,19 @@ float get_median_time(MatmulKernel *kernel, const float *d_A, const float *d_B,
     return avg_time_ms;
 }
 
+
+// Verify threshold by method: 16-bit storage (input quantization) has
+// inherent error far above the FP32 threshold — FP16 input ~1e-3 rel,
+// BF16 ~1e-2 rel (measured in determinism/ fp8/fp16 series). Keep FP32
+// methods at 1e-4.
+static double verify_threshold(const char *method) {
+    if (strstr(method, "_f16")) return 5e-3;
+    if (strstr(method, "_bf16")) return 2e-2;
+    return 1e-4;
+}
+
 // Helper: Run verification for a method
-VerificationResult verify_method(MatmulKernel *kernel, const float *d_A,
+VerificationResult verify_method(MatmulKernel *kernel, const char *method, const float *d_A,
                                  const float *d_B, float *d_C,
                                  const float *h_A, const float *h_B,
                                  float *h_C, const float *h_expected, int N) {
@@ -275,7 +292,7 @@ VerificationResult verify_method(MatmulKernel *kernel, const float *d_A,
     }
 
     result.max_rel_error = max_rel_error;
-    result.passed = (max_rel_error < 1e-4);
+    result.passed = (max_rel_error < verify_threshold(method_name));
 
     return result;
 }
@@ -360,7 +377,7 @@ void print_verification_table(VerificationResult results[][NUM_SIZES]) {
     printf("                    MATMUL VERIFICATION RESULTS\n");
     printf("=============================================================================\n");
     printf("Reference: CPU matmul (double precision)\n");
-    printf("Threshold: Max relative error < 1e-4\n\n");
+    printf("Threshold: 1e-4 (FP32), 5e-3 (FP16 storage), 2e-2 (BF16 storage)\n\n");
 
     // Print header
     printf("%-15s", "Method");
@@ -448,7 +465,7 @@ void benchmark_all_methods(int blockDim, bool verify) {
             int N = BENCHMARK_SIZES[s];
 
             // Skip large sizes for naive kernel (too slow)
-            if (strcmp(method, "naive") == 0 && N >= 1024) {
+            if ((strcmp(method, "naive") == 0 || strcmp(method, "naive_f16") == 0 || strcmp(method, "naive_bf16") == 0) && N >= 1024) {
                 printf("  Size: %s (%d×%d)... SKIPPED (too slow for naive)\n",
                        SIZE_LABELS[s], N, N);
                 perf_results[m][s].skipped = true;
@@ -530,6 +547,10 @@ void benchmark_all_methods(int blockDim, bool verify) {
             try {
                 if (strcmp(method, "naive") == 0) {
                     kernel = new MatmulNaive(N, blockDim);
+                } else if (strcmp(method, "naive_f16") == 0) {
+                    kernel = new MatmulNaiveTyped<DTypeTraitsHalf>(N, blockDim);
+                } else if (strcmp(method, "naive_bf16") == 0) {
+                    kernel = new MatmulNaiveTyped<DTypeTraitsBf16>(N, blockDim);
                 } else if (strcmp(method, "coalesced") == 0) {
                     kernel = new MatmulCoalesced(N, blockDim);
                 } else if (strcmp(method, "smem") == 0) {
@@ -577,7 +598,7 @@ void benchmark_all_methods(int blockDim, bool verify) {
 
                         // Run verification if enabled
                         if (verify && h_expected) {
-                            VerificationResult vr = verify_method(kernel, d_A, d_B, d_C,
+                            VerificationResult vr = verify_method(kernel, method, d_A, d_B, d_C,
                                                                   h_A, h_B, h_C, h_expected, N);
                             verify_results[m][s] = vr;
 
@@ -676,6 +697,10 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
 
     if (strcmp(method, "naive") == 0) {
         kernel = new MatmulNaive(N, blockDim);
+    } else if (strcmp(method, "naive_f16") == 0) {
+        kernel = new MatmulNaiveTyped<DTypeTraitsHalf>(N, blockDim);
+    } else if (strcmp(method, "naive_bf16") == 0) {
+        kernel = new MatmulNaiveTyped<DTypeTraitsBf16>(N, blockDim);
     } else if (strcmp(method, "coalesced") == 0) {
         kernel = new MatmulCoalesced(N, blockDim);
     } else if (strcmp(method, "smem") == 0) {
