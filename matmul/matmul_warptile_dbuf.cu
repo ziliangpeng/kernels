@@ -1,25 +1,31 @@
 #include "matmul_warptile_dbuf.h"
 #include "cuda_utils.h"
-#include <cooperative_groups.h>
-#include <cuda/barrier>
 #include <cuda_runtime.h>
+#include <cstdint>
 
-// Warp Tiling + async double buffering (Simon rung 12 style)
+// Warp Tiling + cp.async double buffering (Simon rung 12, raw PTX flavor)
 //
 // Same tiling, load mapping, and compute structure as matmul_warptile.cu.
-// The ONLY change: GMEM->SMEM tile loads are issued asynchronously
-// (cuda::memcpy_async) into one of two SMEM buffers, with two
-// cuda::barrier objects tracking copy completion. While the block computes
-// on buffer i, the loads for tile i+1 are already in flight into buffer
-// 1-i. Load latency is hidden behind compute instead of serializing it.
+// The ONLY change: GMEM->SMEM tile loads are issued with the cp.async PTX
+// instruction into one of two SMEM buffers. While the block computes on
+// buffer i, the loads for tile i+1 are already in flight into buffer 1-i.
+// Load latency is hidden behind compute instead of serializing it.
 //
-// Load widths follow Simon's kernel 12: B tiles use 16-byte (float4) async
-// copies; A tiles use 4-byte async copies because the A tile is transposed
-// on store (a 16B load cannot land transposed, so it is split into 4
-// scalar async copies, same as the reference).
+// Pipeline mechanics (classic Ampere+ pattern, what CUTLASS uses pre-TMA):
+//   - cp.async.ca / cp.async.cg issue async GMEM->SMEM copies that bypass
+//     the register file; the optional src-size operand zero-fills the rest
+//     of the copy, which handles matrix-boundary OOB for free.
+//   - cp.async.commit_group batches a thread's pending copies into a group.
+//   - cp.async.wait_group N waits until at most N groups are still pending:
+//     with two groups in flight (current tile + next tile), wait_group 1
+//     completes the current tile while the next tile's copies keep flying.
+//
+// Load widths: B tiles use 16-byte cp.async.cg (with 4-byte fallback when
+// the global address is not 16B-aligned, e.g. odd N); A tiles use 4-byte
+// cp.async.ca because the A tile is transposed on store (same as Simon).
 //
 // A/B vs matmul_warptile therefore isolates exactly one variable:
-// synchronous loads -> async double-buffered pipeline.
+// synchronous loads -> cp.async double-buffered pipeline.
 
 #define BM_DB 128
 #define BN_DB 128
@@ -45,17 +51,49 @@
 
 #define NUM_THREADS_DB (NUM_WARPS_DB * WARP_SIZE)  // 128
 
-// Load one K-tile of A and B into SMEM buffer `buf`, asynchronously.
-// In-bounds elements go through cuda::memcpy_async (tracked by `barrier`);
-// out-of-bounds slots are zero-filled with plain stores. Both become
-// visible after the barrier's arrive_and_wait (block-scope release-acquire),
-// so no extra __syncthreads is needed for correctness.
-__device__ void loadTileAsync(const float *A, const float *B, int N,
-                              int blockRow, int blockCol, int tileIdx, int buf,
-                              float (*As)[2][BK_DB][BM_DB],
-                              float (*Bs)[2][BK_DB][BN_DB],
-                              cuda::barrier<cuda::thread_scope_block> &barrier) {
-    // A tile: BM x BK elements, transposed into As[buf][k][m].
+// ---------------------------------------------------------------------------
+// cp.async wrappers
+// ---------------------------------------------------------------------------
+
+// 4-byte async copy; src_bytes=0 zero-fills the destination (OOB guard).
+__device__ __forceinline__ void cp_async_4(float *smem_dst, const float *gmem_src,
+                                           int src_bytes) {
+    const unsigned smem_addr =
+        static_cast<unsigned>(__cvta_generic_to_shared(smem_dst));
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4, %2;\n" ::"r"(smem_addr),
+                 "l"(gmem_src), "r"(src_bytes));
+}
+
+// 16-byte async copy (.cg: bypass L1); src_bytes<16 zero-fills the remainder.
+__device__ __forceinline__ void cp_async_16(float *smem_dst, const float *gmem_src,
+                                            int src_bytes) {
+    const unsigned smem_addr =
+        static_cast<unsigned>(__cvta_generic_to_shared(smem_dst));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(smem_addr),
+                 "l"(gmem_src), "r"(src_bytes));
+}
+
+__device__ __forceinline__ void cp_async_commit() {
+    asm volatile("cp.async.commit_group;\n");
+}
+
+template <int Pending>
+__device__ __forceinline__ void cp_async_wait() {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(Pending));
+}
+
+// ---------------------------------------------------------------------------
+// Tile loader
+// ---------------------------------------------------------------------------
+
+// Load one K-tile of A and B into SMEM buffer `buf` via cp.async.
+// OOB elements are zero-filled by passing src_bytes = 0 (with the source
+// pointer clamped to a valid in-bounds address for safety).
+__device__ void loadTileCpAsync(const float *A, const float *B, int N,
+                                int blockRow, int blockCol, int tileIdx, int buf,
+                                float (*As)[2][BK_DB][BM_DB],
+                                float (*Bs)[2][BK_DB][BN_DB]) {
+    // ----- A tile: BM x BK, transposed into As[buf][k][m] -----
     // Mapping identical to matmul_warptile.cu: strideA = 8 rows per pass.
     const int strideA = NUM_THREADS_DB / BK_DB;  // 128 / 16 = 8
     const int innerRowA = threadIdx.x / BK_DB;
@@ -63,70 +101,46 @@ __device__ void loadTileAsync(const float *A, const float *B, int N,
     #pragma unroll
     for (int loadOffset = 0; loadOffset < BM_DB; loadOffset += strideA) {
         const int row = innerRowA + loadOffset;
-        const bool rowOk = (blockRow * BM_DB + row) < N;
-        const bool colOk = (tileIdx + innerColA) < N;
-        if (rowOk && colOk) {
-            cuda::memcpy_async(&(*As)[buf][innerColA][row],
-                               &A[row * N + tileIdx + innerColA],
-                               cuda::aligned_size_t<sizeof(float)>(sizeof(float)),
-                               barrier);
-        } else {
-            (*As)[buf][innerColA][row] = 0.0f;
-        }
+        const bool inBounds = (blockRow * BM_DB + row) < N && (tileIdx + innerColA) < N;
+        cp_async_4(&(*As)[buf][innerColA][row],
+                   inBounds ? &A[row * N + tileIdx + innerColA] : A,
+                   inBounds ? 4 : 0);
     }
 
-    // B tile: BK x BN elements into Bs[buf][k][n], float4 (16B) async copies.
-    // 128 threads / 32 float4-columns per row = 4 row passes per thread.
+    // ----- B tile: BK x BN, into Bs[buf][k][n] -----
+    // Fast path: 16B cp.async.cg, 128 threads / 32 float4-columns = 4 passes.
     const int innerRowB4 = threadIdx.x / (BN_DB / 4);   // 0..3
     const int innerColB4 = threadIdx.x % (BN_DB / 4);   // 0..31
     constexpr int ROW_STRIDE_B4 = NUM_THREADS_DB / (BN_DB / 4);  // 4
     #pragma unroll
     for (int pass = 0; pass < BK_DB / ROW_STRIDE_B4; ++pass) {
         const int row = innerRowB4 + pass * ROW_STRIDE_B4;
-        const bool rowOk = (tileIdx + row) < N;
         const int colBase = blockCol * BN_DB + innerColB4 * 4;
+        const float *src = &B[(tileIdx + row) * N + colBase];
+        const bool rowOk = (tileIdx + row) < N;
         if (rowOk && colBase + 3 < N &&
-            ((reinterpret_cast<uintptr_t>(&B[(tileIdx + row) * N + colBase]) & 15) == 0)) {
-            // Fast path: full float4 in bounds.
-            cuda::memcpy_async(&(*Bs)[buf][row][innerColB4 * 4],
-                               &B[(tileIdx + row) * N + colBase],
-                               cuda::aligned_size_t<sizeof(float4)>(sizeof(float4)),
-                               barrier);
+            (reinterpret_cast<uintptr_t>(src) & 15) == 0) {
+            cp_async_16(&(*Bs)[buf][row][innerColB4 * 4], src, 16);
         } else {
-            // Boundary path: per-element copy or zero.
+            // Boundary / unaligned path: per-element 4B copies.
             #pragma unroll
             for (int e = 0; e < 4; ++e) {
-                if (rowOk && colBase + e < N) {
-                    cuda::memcpy_async(&(*Bs)[buf][row][innerColB4 * 4 + e],
-                                       &B[(tileIdx + row) * N + colBase + e],
-                                       cuda::aligned_size_t<sizeof(float)>(sizeof(float)),
-                                       barrier);
-                } else {
-                    (*Bs)[buf][row][innerColB4 * 4 + e] = 0.0f;
-                }
+                const bool ok = rowOk && (colBase + e) < N;
+                cp_async_4(&(*Bs)[buf][row][innerColB4 * 4 + e],
+                           ok ? &src[e] : B, ok ? 4 : 0);
             }
         }
     }
 }
 
-__global__ void matmulWarptileDbufKernel(const float *A, const float *B, float *C, int N) {
-    cooperative_groups::thread_block block = cooperative_groups::this_thread_block();
+// ---------------------------------------------------------------------------
+// Kernel
+// ---------------------------------------------------------------------------
 
-    // Two SMEM buffers per operand + two barriers (front = buffer being
-    // computed, back = buffer being filled). Barriers are swapped each
-    // iteration, Simon rung-12 style.
+__global__ void matmulWarptileDbufKernel(const float *A, const float *B, float *C, int N) {
+    // Two SMEM buffers per operand; buffer i is computed while buffer 1-i fills.
     __shared__ __align__(16) float As[2][BK_DB][BM_DB];
     __shared__ __align__(16) float Bs[2][BK_DB][BN_DB];
-    __shared__ cuda::barrier<cuda::thread_scope_block> barrierStorage[2];
-
-    if (block.thread_rank() == 0) {
-        cuda::init(&barrierStorage[0], block.size());
-        cuda::init(&barrierStorage[1], block.size());
-    }
-    __syncthreads();
-
-    cuda::barrier<cuda::thread_scope_block> *frontBarrier = &barrierStorage[0];
-    cuda::barrier<cuda::thread_scope_block> *backBarrier = &barrierStorage[1];
 
     // Warp / thread placement (identical to matmul_warptile.cu)
     const int warpId = threadIdx.x / WARP_SIZE;
@@ -148,20 +162,29 @@ __global__ void matmulWarptileDbufKernel(const float *A, const float *B, float *
     float regA[WARP_SUBTILE_M_DB * TM_DB];
     float regB[WARP_SUBTILE_N_DB * TN_DB];
 
-    // Prologue: issue async loads for K-tile 0 into buffer 0 (front barrier).
-    loadTileAsync(A, B, N, blockRow, blockCol, 0, 0, &As, &Bs, *frontBarrier);
+    // Prologue: issue cp.async loads for K-tile 0 into buffer 0.
+    loadTileCpAsync(A, B, N, blockRow, blockCol, 0, 0, &As, &Bs);
+    cp_async_commit();
 
     int bufIdx = 0;
     for (int tileIdx = 0; tileIdx < N; tileIdx += BK_DB) {
-        // Issue async loads for the NEXT K-tile into the other buffer,
-        // tracked by the back barrier. Overlaps with the compute below.
-        if (tileIdx + BK_DB < N) {
-            loadTileAsync(A, B, N, blockRow, blockCol, tileIdx + BK_DB, 1 - bufIdx,
-                          &As, &Bs, *backBarrier);
+        // Issue cp.async loads for the NEXT K-tile into the other buffer.
+        // These copies fly while we wait for + compute the current tile.
+        const bool hasNext = (tileIdx + BK_DB) < N;
+        if (hasNext) {
+            loadTileCpAsync(A, B, N, blockRow, blockCol, tileIdx + BK_DB, 1 - bufIdx,
+                            &As, &Bs);
+            cp_async_commit();
         }
 
-        // Wait until the CURRENT tile's loads have landed, then compute.
-        frontBarrier->arrive_and_wait();
+        // Wait for the CURRENT tile's group to complete; the next tile's
+        // group (issued just above) is allowed to keep flying.
+        if (hasNext) {
+            cp_async_wait<1>();
+        } else {
+            cp_async_wait<0>();
+        }
+        __syncthreads();  // block-wide visibility of the current tile
 
         const float (*AsBuf)[BM_DB] = As[bufIdx];
         const float (*BsBuf)[BN_DB] = Bs[bufIdx];
@@ -197,15 +220,10 @@ __global__ void matmulWarptileDbufKernel(const float *A, const float *B, float *
             }
         }
 
-        // Swap buffers and barriers for the next iteration.
-        bufIdx = 1 - bufIdx;
-        cuda::barrier<cuda::thread_scope_block> *tmp = frontBarrier;
-        frontBarrier = backBarrier;
-        backBarrier = tmp;
-
-        // All threads must finish computing on the old buffer before anyone
-        // issues new async copies into it (buffer-reuse safety).
+        // All threads must finish computing on the current buffer before the
+        // next iteration issues cp.async copies into it (buffer-reuse safety).
         __syncthreads();
+        bufIdx = 1 - bufIdx;
     }
 
     // Write results (identical to matmul_warptile.cu)
