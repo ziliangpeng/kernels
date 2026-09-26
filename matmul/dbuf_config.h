@@ -49,4 +49,13 @@ inline void printDbufConfig(const char *tag) {
             g_dbuf.WNITER, g_dbuf.TM, g_dbuf.TN, g_dbuf.NUM_THREADS);
 }
 
+// ---------------------------------------------------------------------------
+// In-process autotuner (like @triton.autotune): sweep all configs from
+// dbuf_configs.inc in ONE CUDA session — matrices allocated once, kernel
+// launched per config with cuda-event timing. Prints one CSV row per config
+// (flushed) and finally the best config + TFLOPS.
+// Implemented in matmul_warptile_dbuf.cu (has access to the kernel launcher).
+// ---------------------------------------------------------------------------
+void dbufAutotune(int N, int num_iterations);
+
 #endif // DBUF_CONFIG_H

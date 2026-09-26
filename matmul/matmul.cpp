@@ -690,6 +690,11 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWarptile(N, blockDim);
     } else if (strcmp(method, "warptile_dbuf") == 0) {
         kernel = new MatmulWarptileDbuf(N, blockDim);
+    } else if (strcmp(method, "dbuf_autotune") == 0) {
+        // In-process autotune: sweeps all configs in one CUDA session, prints
+        // CSV to stdout, installs the best config in g_dbuf.
+        dbufAutotune(N, 100);
+        return 0;
     } else if (strcmp(method, "cublas") == 0) {
         kernel = new MatmulCublas(N, blockDim);
     } else if (strcmp(method, "wmma") == 0) {
