@@ -45,6 +45,15 @@ identical to `matmul_warptile.cu`. Any perf delta is attributable to the pipelin
 Shape sweep (single run): 512: 2.37T vs warptile 2.01T (+18%); 2048: 32.68T vs
 28.38T (+15.1%); 4096: 32.77T vs 28.13T (+16.5%). Gain is shape-stable.
 
+Correctness matrix (all vs CPU double-precision reference, threshold 1e-4):
+
+| N | Path exercised | Max rel err | Result |
+|---:|---|---:|---|
+| 512 | aligned, full tiles | 1.4e-06 | PASS |
+| 1000 | OOB boundary tiles + K-tail (cp.async src-size zero-fill) | 2.1e-06 | PASS |
+| 2048 | aligned, full tiles | 3.4e-06 | PASS |
+| 4096 | aligned, full tiles (scale) | 4.6e-06 | PASS |
+
 ## Pipeline mechanics (what makes it fast)
 
 ```
