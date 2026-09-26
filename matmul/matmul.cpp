@@ -811,10 +811,11 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
             printf("Max absolute error: %.2e\n", max_abs_error);
             printf("Max relative error: %.2e\n", max_rel_error);
 
-            if (max_rel_error < 1e-4) {
-                printf("PASSED: Results match CPU reference\n");
+            double thr = verify_threshold(method);
+            if (max_rel_error < thr) {
+                printf("PASSED: Results match CPU reference (threshold %.0e)\n", thr);
             } else {
-                printf("FAILED: Error exceeds threshold (1e-4)\n");
+                printf("FAILED: Error exceeds threshold (%.0e)\n", thr);
             }
         }
 
