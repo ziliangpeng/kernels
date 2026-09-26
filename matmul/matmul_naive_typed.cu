@@ -13,6 +13,12 @@
 //     timed together with the kernel)
 
 template <typename Traits>
+__global__ void convertFp32ToKernel(const float *in, typename Traits::T *out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) out[i] = Traits::from_float(in[i]);
+}
+
+template <typename Traits>
 __global__ void matmulNaiveTypedKernel(const typename Traits::T *A,
                                        const typename Traits::T *B,
                                        float *C, int N) {

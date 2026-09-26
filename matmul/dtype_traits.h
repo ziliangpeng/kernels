@@ -35,10 +35,9 @@ struct DTypeTraitsBf16 {
 };
 
 // Convert a float device buffer to a T device buffer (device-side kernel).
+// Defined in matmul_naive_typed.cu (must be compiled by nvcc; host compilers
+// have no CUDA built-ins).
 template <typename Traits>
-__global__ void convertFp32ToKernel(const float *in, typename Traits::T *out, int n) {
-    int i = blockIdx.x * blockDim.x + threadIdx.x;
-    if (i < n) out[i] = Traits::from_float(in[i]);
-}
+__global__ void convertFp32ToKernel(const float *in, typename Traits::T *out, int n);
 
 #endif // DTYPE_TRAITS_H
