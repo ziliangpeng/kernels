@@ -615,10 +615,10 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulWMMA(N, blockDim);
                 } else if (strcmp(method, "wmma_bf16") == 0) {
                     kernel = new MatmulWmmaBf16(N, blockDim);
-                } else if (strcmp(method, "cublas_fp16") == 0) {
-        kernel = new MatmulCublasFp16(N, blockDim);
-    } else if (strcmp(method, "cublas_bf16") == 0) {
+                } else if (strcmp(method, "cublas_bf16") == 0) {
                     kernel = new MatmulCublasBf16(N, blockDim);
+                } else if (strcmp(method, "cublas_fp16") == 0) {
+                    kernel = new MatmulCublasFp16(N, blockDim);
                 }
 
                 if (!kernel) {
@@ -833,6 +833,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWmmaBf16(N, blockDim);
     } else if (strcmp(method, "cublas_bf16") == 0) {
         kernel = new MatmulCublasBf16(N, blockDim);
+    } else if (strcmp(method, "cublas_fp16") == 0) {
+        kernel = new MatmulCublasFp16(N, blockDim);
     }
 
     if (kernel) {
