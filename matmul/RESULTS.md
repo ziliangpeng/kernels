@@ -22,7 +22,7 @@
 | 5 | 2D blocktile | 128,128,8,8,8 | 22.21 | 21.47 | 0.97x | — | — |
 | 5a | 2D blocktile **autotuned** | (128,128,16,16,8) f32 / (128,128,8,16,8) f16 | 33.78ᵇ | 33.12ᵇ | 0.98x | — | +52% (f32) / +54% (f16) |
 | 6 | vectorized (16B loads) | 128,128,8,8,8 | 32.73 | 32.83 | **1.003x** | — | — |
-| 6a | vectorized **autotuned** | — | 34.65ᵇ | — | — | — | +6% (f32) |
+| 6a | vectorized **autotuned** | f32:(128,128,16,8,8) / f16:(128,64,8,16,8) | 33.49ᵇ | **36.53ᵇ** | **1.091x** | — | +2% (f32) / +11% (f16) |
 | 10 | warptile | 64,64,8,8,4,64,64 | 28.13 | — | — | — | — |
 | 10a | warptile **autotuned** | 128,128,16,16,4,64,32 | 39.07ᵇ | — | — | — | +39% (f32) |
 | 12 | warptile + dbuf (cp.async) | 128,256,8,64,64,2,8,4 | 37.60ᵇ | — | — | — | +34% (f32) |
@@ -56,7 +56,7 @@ confirmed against the archive hard-coded auto (33.80T, 0.06% match).
 |---|---|---|
 | 1D (13 cfgs) | (128,128,4,32) 19.36T | (32,32,4,8) 16.31T |
 | 2D (19 cfgs) | (128,128,16,16,8) 33.78T | (128,128,8,16,8) 33.12T |
-| vectorized (archive 15 cfgs) | — | — |
+| vectorized (16 cfgs) | (128,128,16,8,8) 33.49T | (128,64,8,16,8) 36.53T |
 | warptile (archive ~200 cfgs) | (128,128,16,16,4,64,32) 39.07T | — |
 | warptile dbuf (1360 cfgs) | (128,256,8,64,64,2,8,4) 37.60T | — |
 
@@ -74,6 +74,7 @@ deep BK.
 | 2D autotune f32 | 219279 | h100-0-19 | 2d-autotune-2026-09-27.md |
 | 2D autotune f16 + vectorized_f16 | 219280/219289 | h100-0-19 / h100-0-4 | 2d-autotune / vectorized-16bit worklogs |
 | warptile_auto / dbuf | 219256 | h100-0-19 | autotune-port-2026-09-26.md |
+| vec autotune f32/f16 | 219293 | h100-0-0 | vec-autotune-2026-09-27.md |
 | cuBLAS FP16/BF16 | 219286 | h100-0-4 | 2d-autotune-2026-09-27.md addendum |
 
 Sweep CSVs live in `matmul/`: `1d-autotune-f32/f16-gcp5-h100-2026-09-26.csv`,
