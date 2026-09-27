@@ -44,12 +44,15 @@ traffic halving matters less, cvt tax still paid). Previous "crossover at 1D
 
 ## Open items
 
-1. **FP16 sweep anomaly**: the in-process sweep picked (32,32,4,8) at 16.30T
-   as FP16 winner while the default config (64,64,8,8) measures 17.21T in the
-   same binary — the sweep's own numbers must contain (64,64,8,8) < 16.30,
-   contradicting the benchmark path. Suspect: sweep timing methodology (3
-   warmup + 100-iter back-to-back) vs benchmark path (10 warmup, separate
-   timing). Full sweep CSV needed (previous run only kept the BEST line).
+1. **FP16 sweep anomaly — RESOLVED (methodology, not drift)**: sweep picks
+   (32,32,4,8) 16.3T as winner while the benchmark path measures (64,64,8,8)
+   at 17.2T in the same binary. Triple back-to-back sweep runs (job 219241)
+   reproduce per-config numbers to <0.1% — no thermal/DVFS drift. The gap is
+   systematic: sweep uses 3 warmup iterations (L2 cold-ish, previous config
+   evicted it) vs benchmark path's 10 warmup. Sweep numbers are internally
+   consistent (fair ranking) but ~7% low in absolute terms vs the benchmark
+   path. Fix queued: warmup 3->10 in the sweep; winner re-validated on the
+   benchmark path.
 2. **warptile_auto 39.3T** (archive repo, gcp5) exceeds our dbuf winner 37.59T
    cross-node — needs a same-session comparison before trusting; if real,
    the tuned warptile optimum rivals double buffering.
