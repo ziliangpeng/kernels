@@ -57,3 +57,39 @@ genuinely dtype-dependent algorithmic ranking, not a tuning accident.
 ## Data
 
 CSV: `matmul/warp-autotune-f16-gcp5-h100-2026-09-27.csv` (136 rows + header).
+
+## Addendum: the 26.6% template tax root-caused — MULTI-INSTANCE TU codegen tax
+
+ABAB same-process duel (job 219310, node h100-0-54, verify bit-identical):
+
+| Kernel | ms/iter | TFLOPS |
+|---|---:|---:|
+| A: archive hard-coded kernel (verbatim copy) | 3.4946 | **39.33** |
+| B: our tuned template, same config, in the 136-instance TU | 4.4231 | 31.07 |
+| **B/A** | | **1.266 slower** |
+
+Single-instance TU test (job 219311): the SAME template source, instantiated
+ONLY at the anchor config, compiled standalone: **39.34T** — reproduces A to
+0.03%.
+
+**Root cause: compiling 136 kernel template instances in one TU costs 26.6%
+on every instance** (TU-level register/resource budget shared across
+instances). Not the template mechanism itself, not __restrict__ (tested:
+no change), not dispatch (dispatch path launches identical code).
+
+Implications (important for the whole ladder):
+1. The sweep's RANKING within the 136-instance build is still valid
+   (all instances taxed similarly), but sweep ABSOLUTE numbers are ~26% low
+   for warptile. Vec/2D/1D templates showed little/no tax — the tax scales
+   with per-instance register pressure (warptile TM=16 configs are the
+   register-hungriest).
+2. Production numbers for tuned winners MUST come from a single-instance (or
+   few-instance) rebuild — which is exactly the ABAB protocol we already
+   adopted. The protocol now has a mechanism-level justification.
+3. Fix options for the sweep binary itself: split dispatch chains across
+   multiple TUs (e.g. 8 TUs x 17 configs), or `__launch_bounds__` per config.
+   Deferred — sweep ranking is unaffected.
+
+False leads burned on the way (negative results worth keeping): __restrict__
+(no change), cross-node variance (39.33 reproduced on node 54), sweep
+methodology (same-process duel rules it out).
