@@ -1,5 +1,13 @@
 # 1D Blocktile FP16 — Rung 4 of the 16-bit Ladder (Crossover Confirmed)
 
+> **CORRECTION (2026-09-26, later)**: these numbers were measured with the
+> `-dc` (relocatable device code) build, which cost 30-60% on this kernel
+> set. Both FP32 baselines and FP16 numbers here are depressed; corrected
+> same-session numbers are in `full-ladder-rebench-v2-2026-09-26.md`.
+> The by-rung RATIO trend is still directionally valid but the absolute
+> values and the exact crossover rung shifted (crossover is at smem, not 1d).
+
+
 **Date**: 2026-09-26
 **Kernel**: `matmul/matmul_1d_blocktile_typed.cu` (method `1d_blocktile_f16`)
 **GPU**: H100 80GB HBM3 (a-h100-cluster, SM90) — Slurm jobs 219203 (build), 219204/219205 (data)
