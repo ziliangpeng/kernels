@@ -250,6 +250,7 @@ void Matmul1DBlocktileAuto::tune(const float *d_A, const float *d_B, float *d_C)
            N, best_BM, best_BN, best_BK, best_TM, best_ms, best_tflops);
 }
 
+Matmul1DBlocktileAuto::Matmul1DBlocktileAuto(int N, int blockDim)
     : N(N), blockDim(blockDim),
       best_BM(64), best_BN(64), best_BK(8), best_TM(8),
       best_time_ms(0.0f), tuned(false) {}

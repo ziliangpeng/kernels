@@ -1116,6 +1116,7 @@ void MatmulWarptileAuto::tune(const float *d_A, const float *d_B, float *d_C) {
     tuned = true;
 }
 
+MatmulWarptileAuto::MatmulWarptileAuto(int N, int blockDim)
     : N(N), blockDim(blockDim),
       best_BM(128), best_BN(128), best_BK(16), best_TM(8), best_TN(4),
       best_WM(64), best_WN(64),
