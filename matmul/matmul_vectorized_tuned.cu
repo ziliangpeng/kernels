@@ -303,6 +303,23 @@ void MatmulVectorizedTuned<Traits>::autotune(const float *d_A, const float *d_B,
     cudaFree(d_probe);
 }
 
+// ---------------------------------------------------------------------------
+// Hard-coded-launch exports (ABAB protocol: production numbers must come from
+// a direct compile-time-constant launch, not the runtime dispatch chain).
+
+void convertVecTHalf(const float *in, __half *out, long long n) {
+    int t = 256;
+    long long b = (n + t - 1) / t;
+    convertVecT<DTypeTraitsHalf><<<(unsigned)b, t>>>(in, out, (int)n);
+}
+
+void launchVecWinnerF16(const __half *A, const __half *B, float *C, int N) {
+    // FP16 sweep winner (128,64,8,16,8): 64 threads/block, grid tiles N/64 x N/128
+    dim3 threads(64);
+    dim3 grid((N + 63) / 64, (N + 127) / 128);
+    matmulVecTunedKernel<DTypeTraitsHalf, 128, 64, 8, 16, 8><<<grid, threads>>>(A, B, C, N);
+}
+
 // Explicit instantiations: FP32 control + FP16.
 template class MatmulVectorizedTuned<DTypeTraitsFloat>;
 template class MatmulVectorizedTuned<DTypeTraitsHalf>;
