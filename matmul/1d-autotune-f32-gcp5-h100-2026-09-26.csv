@@ -1,0 +1,19 @@
+# 1D blocktile autotune sweep, 13 configs, gcp5 H100 (SM90), 2026-09-26
+# Slurm job 219222 (afterok build 219221); N=4096 square; per-config 3 warmup + 100-iter batched event timing
+# TM>=128 configs LAUNCH_FAIL: register pressure (128 accumulators/thread * >64 regs other state > 64K regs/SM)
+# format: idx,BM,BN,BK,TM,GFLOPS
+# 1D blocktile autotune (fp32 storage, N=4096): 13 configs
+0,32,32,2,16,8999.9
+1,32,32,4,8,10453.9
+2,32,32,8,4,10619.2
+3,64,64,2,32,11471.7
+4,64,64,4,16,12478.7
+5,64,64,8,8,12562.3
+6,64,64,16,4,11283.3
+7,128,128,2,64,12093.5
+8,128,128,4,32,13342.9
+9,128,128,8,16,11966.7
+10,256,256,2,128,LAUNCH_FAIL
+11,256,256,4,64,LAUNCH_FAIL
+12,512,512,2,256,LAUNCH_FAIL
+# BEST fp32 BM=128 BN=128 BK=4 TM=32: 13342.9 GFLOPS (13.34 TFLOPS)
