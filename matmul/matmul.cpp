@@ -730,10 +730,7 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulSmemTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "1d_blocktile_f16") == 0) {
         kernel = new Matmul1DBlocktileTyped<DTypeTraitsHalf>(N, blockDim);
-    } else if (strcmp(method, "1d_autotune_f32") == 0) {
-        kernel = new Matmul1DBlocktileTuned<DTypeTraitsFloat>(N, blockDim, kConfigs1D[0]);
-    } else if (strcmp(method, "1d_autotune_f16") == 0) {
-        kernel = new Matmul1DBlocktileTuned<DTypeTraitsHalf>(N, blockDim, kConfigs1D[0]);
+
     } else if (strcmp(method, "coalesced") == 0) {
         kernel = new MatmulCoalesced(N, blockDim);
     } else if (strcmp(method, "smem") == 0) {
