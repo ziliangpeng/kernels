@@ -17,9 +17,9 @@ __global__ void convertWT(const float *in, typename Traits::T *out, int n) {
 }
 
 template <typename Traits, int BM, int BN, int BK, int TM, int TN, int WARP_M, int WARP_N>
-__global__ void matmulWarptileTunedKernel(const typename Traits::T *A,
-                                          const typename Traits::T *B,
-                                          float *C, int N) {
+__global__ void matmulWarptileTunedKernel(const typename Traits::T * __restrict__ A,
+                                          const typename Traits::T * __restrict__ B,
+                                          float * __restrict__ C, int N) {
     __shared__ typename Traits::T As[BK][BM + 1];  // +1 pad: bank conflicts
     __shared__ typename Traits::T Bs[BK][BN];
 
