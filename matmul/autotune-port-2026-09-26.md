@@ -18,12 +18,22 @@ All within ±1% of the archive binary on the same cluster — the port is
 faithful. Files: `matmul/matmul_{1d_blocktile,2d_blocktile,vectorized,warptile}_auto.{cu,h}`
 (baseline classes stripped, Auto classes + templated kernels intact).
 
-## Headline: warptile_auto 39.07T > warptile_dbuf 37.59T (pending same-session)
+## Headline: warptile_auto 39.07T > warptile_dbuf 37.60T — SAME SESSION CONFIRMED
 
-The archive warptile autotune reaches 39T — ABOVE our dbuf winner's 37.6T —
-on a different node/session. A same-session comparison is queued (job
-219256). If it holds, the tuned warp-tiling optimum beats double buffering
-on H100 FP32, which would reorder the ladder's top rung.
+Same node (gcp5-h100-0-19), same binary, back-to-back (job 219256):
+warptile_auto 39.07T vs warptile_dbuf 37.60T (+3.9%). The tuned warp-tiling
+optimum BEATS double buffering on H100 FP32 — the ladder's top rung
+reorders. Interpretation: at its tuned optimum (BM=64 BN=128 BK=8 WM=64
+WN=32 per the archive tune), warp-tiling's register-level reuse is already
+close enough to the SMEM-bandwidth ceiling that cp.async pipelining adds
+less than a wider accumulator configuration does. The dbuf autotune space
+(1360 configs) and the warptile_auto space never overlap, so the two
+optima are different points of a shared design space — merging them
+(dbuf + warptile_auto's config space) is the obvious next rung.
+
+Also confirmed same-session: FP16 sweep with warmup 3->10 keeps the same
+winner (16.32T, (32,32,4,8)) — the methodology fix changes absolute levels
+toward bench-path parity without reordering the ranking.
 
 ## Porting pitfalls hit (all fixed, all committed)
 
