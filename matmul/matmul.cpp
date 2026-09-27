@@ -14,6 +14,10 @@
 #include "matmul_smem_typed.h"
 #include "matmul_1d_blocktile_typed.h"
 #include "matmul_1d_blocktile_tuned.h"
+
+// config table lives in matmul_1d_blocktile_tuned.cu (matmul_1d_configs.inc)
+extern const int NUM_1D_CONFIGS;
+extern const Cfg1D kConfigs1D[];
 #include "dtype_traits.h"
 #include "matmul_coalesced.h"
 #include "matmul_smem.h"

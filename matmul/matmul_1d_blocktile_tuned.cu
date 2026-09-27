@@ -79,7 +79,7 @@ __global__ void matmul1DTunedKernel(const typename Traits::T *A,
     }
 }
 
-#include "matmul_1d_dispatch.inc"
+#include "matmul_1d_configs.inc"
 
 // ---------------------------------------------------------------------------
 // Host-side dispatch

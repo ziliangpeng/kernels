@@ -91,7 +91,7 @@ cuda_library(
     srcs = ["matmul_1d_blocktile_tuned.cu"],
     hdrs = [
         "matmul_1d_blocktile_tuned.h",
-        "matmul_1d_dispatch.inc",
+        "matmul_1d_configs.inc",
         "matmul_1d_launch.inc",
         "dtype_traits.h",
         "matmul_kernel.h",
