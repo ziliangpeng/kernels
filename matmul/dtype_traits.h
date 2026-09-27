@@ -16,6 +16,7 @@
 // WITHOUT their flaw of converting inside the timed region.
 
 #include <cuda_fp16.h>
+#include <cstring>
 #include <cuda_bf16.h>
 
 // FP32 traits: lets the SAME templated kernel serve as its own FP32 control
@@ -24,20 +25,45 @@ struct DTypeTraitsFloat {
     using T = float;
     static constexpr const char *name = "fp32";
     static constexpr const char *suffix = "fp32";
+    using VecT = float4;  // 16-byte vector: 4 floats
     __device__ static float to_float(T x) { return x; }
     __host__ __device__ static T from_float(float x) { return x; }
-
     __host__ __device__ static T zero() { return 0.0f; }
+    __host__ __device__ static void zero_vec(VecT *v) { *v = make_float4(0, 0, 0, 0); }
+    __host__ __device__ static T get_vec_elem(const VecT &v, int i) {
+        return (i == 0) ? v.x : (i == 1) ? v.y : (i == 2) ? v.z : v.w;
+    }
+    __host__ __device__ static void set_vec_elem(VecT *v, int i, T x) {
+        if (i == 0) v->x = x; else if (i == 1) v->y = x;
+        else if (i == 2) v->z = x; else v->w = x;
+    }
 };
 
 struct DTypeTraitsHalf {
     using T = __half;
     static constexpr const char *name = "fp16";
     static constexpr const char *suffix = "f16";
+    using VecT = uint4;   // 16-byte vector: 8 halves
     __device__ static float to_float(T x) { return __half2float(x); }
     __host__ __device__ static T from_float(float x) { return __float2half(x); }
-
     __host__ __device__ static T zero() { return from_float(0.0f); }
+    __host__ __device__ static void zero_vec(VecT *v) { *v = make_uint4(0, 0, 0, 0); }
+    __host__ __device__ static T get_vec_elem(const VecT &v, int i) {
+        // 8 halves packed in 4 uints (2 per uint)
+        uint u = (i & 1) ? (v.x >> 16) : (v.x & 0xFFFFu);
+        if (i >= 2) u = (i & 1) ? (v.y >> 16) : (v.y & 0xFFFFu);
+        if (i >= 4) u = (i & 1) ? (v.z >> 16) : (v.z & 0xFFFFu);
+        if (i >= 6) u = (i & 1) ? (v.w >> 16) : (v.w & 0xFFFFu);
+        __half h;
+        memcpy(&h, &u, 2);
+        return h;
+    }
+    __host__ __device__ static void set_vec_elem(VecT *v, int i, T x) {
+        uint u; memcpy(&u, &x, 2);
+        uint *slot = (i < 2) ? &v->x : (i < 4) ? &v->y : (i < 6) ? &v->z : &v->w;
+        if (i & 1) *slot = (*slot & 0xFFFFu) | (u << 16);
+        else       *slot = (*slot & 0xFFFF0000u) | u;
+    }
 };
 
 struct DTypeTraitsBf16 {

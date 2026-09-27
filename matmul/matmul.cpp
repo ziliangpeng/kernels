@@ -14,6 +14,7 @@
 #include "matmul_smem_typed.h"
 #include "matmul_1d_blocktile_typed.h"
 #include "matmul_2d_blocktile_typed.h"
+#include "matmul_vectorized_typed.h"
 #include "matmul_warptile_auto.h"
 #include "matmul_vectorized_auto.h"
 #include "matmul_2d_blocktile_auto.h"
@@ -55,6 +56,7 @@ const char* BENCHMARK_METHODS[] = {
     "smem_f16",
     "1d_blocktile_f16",
     "2d_blocktile_f16",
+    "vectorized_f16",
     "1d_blocktile_auto",
     "2d_blocktile_auto",
     "vectorized_auto",
@@ -619,6 +621,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulCublasBf16(N, blockDim);
                 } else if (strcmp(method, "cublas_fp16") == 0) {
                     kernel = new MatmulCublasFp16(N, blockDim);
+                } else if (strcmp(method, "vectorized_f16") == 0) {
+                    kernel = new MatmulVectorizedTyped<DTypeTraitsHalf>(N, blockDim);
                 }
 
                 if (!kernel) {
@@ -835,6 +839,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulCublasBf16(N, blockDim);
     } else if (strcmp(method, "cublas_fp16") == 0) {
         kernel = new MatmulCublasFp16(N, blockDim);
+    } else if (strcmp(method, "vectorized_f16") == 0) {
+        kernel = new MatmulVectorizedTyped<DTypeTraitsHalf>(N, blockDim);
     }
 
     if (kernel) {
