@@ -166,8 +166,12 @@ int main(int argc, char **argv) {
     // Winner config (128,128,16,8,4,32,64): WARPS_X=2 * WARPS_Y=4 * 32 = 256 thr
     dim3 threads(256);
     dim3 grid((N + 127) / 128, (N + 127) / 128);
-    auto launch16 = [&]() {
+    auto launch16 = [&]() {  // FP16 sweep winner (TM=8)
         matmulWarptileTunedKernel<DTypeTraitsHalf, 128, 128, 16, 8, 4, 32, 64><<<grid, threads>>>(d_A16, d_B16, d_C, N);
+        cudaCheckError(cudaGetLastError());
+    };
+    auto launch16b = [&]() {  // FP16 at FP32-winner anchor config (TM=16, register-heavy)
+        matmulWarptileTunedKernel<DTypeTraitsHalf, 128, 128, 16, 16, 4, 64, 32><<<grid, threads>>>(d_A16, d_B16, d_C, N);
         cudaCheckError(cudaGetLastError());
     };
     auto launch32 = [&]() {
@@ -203,18 +207,28 @@ int main(int argc, char **argv) {
         return ms / iters;
     };
 
-    std::vector<double> r32(reps), r16(reps);
-    printf("# rep,fp32_ms,fp16_ms,sm_clock\n");
+    std::vector<double> r32(reps), r16(reps), r16b(reps);
+    printf("# rep,fp32anchor_ms,fp16winner_ms,fp16anchor_ms,sm_clock\n");
     for (int r = 0; r < reps; r++) {
         r32[r] = timeit(false, 100);
         r16[r] = timeit(true, 100);
-        printf("R,%d,%.4f,%.4f,%u\n", r, r32[r], r16[r], sm_clock());
+        for (int w = 0; w < 10; w++) launch16b();
+        cudaDeviceSynchronize();
+        cudaEventRecord(es);
+        for (int i = 0; i < 100; i++) launch16b();
+        cudaEventRecord(ee); cudaEventSynchronize(ee);
+        float ms; cudaEventElapsedTime(&ms, es, ee);
+        r16b[r] = ms / 100.0f;
+        printf("R,%d,%.4f,%.4f,%.4f,%u\n", r, r32[r], r16[r], r16b[r], sm_clock());
         fflush(stdout);
     }
-    double t32 = median(r32), t16 = median(r16);
-    double f32 = 2.0 * N * N * N / t32 / 1e9, f16 = 2.0 * N * N * N / t16 / 1e9;
-    printf("# SUMMARY single-instance winner config (128,128,16,8,4,32,64)\n");
-    printf("# FP32 %.4f ms = %.2f TFLOPS   FP16 %.4f ms = %.2f TFLOPS   f16/f32 = %.4f\n",
-           t32, f32, t16, f16, f16 / f32);
+    double t32 = median(r32), t16 = median(r16), t16b = median(r16b);
+    double f32 = 2.0 * N * N * N / t32 / 1e9, f16 = 2.0 * N * N * N / t16 / 1e9, f16b = 2.0 * N * N * N / t16b / 1e9;
+    printf("# SUMMARY 3-instance (tax-free) duel @ N=%d\n", N);
+    printf("# FP32 anchor (128,128,16,16,4,64,32)    %.4f ms = %.2f TFLOPS\n", t32, f32);
+    printf("# FP16 winner (128,128,16,8,4,32,64)     %.4f ms = %.2f TFLOPS\n", t16, f16);
+    printf("# FP16 anchor (128,128,16,16,4,64,32)    %.4f ms = %.2f TFLOPS\n", t16b, f16b);
+    printf("# FP16 best = %.2f TFLOPS (%s)   dtype ratio vs FP32 anchor = %.4f\n",
+           std::max(f16, f16b), f16 > f16b ? "winner-cfg" : "anchor-cfg", std::max(f16, f16b) / f32);
     return 0;
 }
