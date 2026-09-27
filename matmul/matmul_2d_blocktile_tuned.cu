@@ -225,12 +225,18 @@ void Matmul2DBlocktileTuned<Traits>::autotune(const float *d_A, const float *d_B
         bool ok = true;
         for (int w = 0; w < 10; w++)
             ok = launch2DTuned<Traits>(d_A16, d_B16, d_probe, N, c.BM, c.BN, c.BK, c.TM, c.TN) && ok;
-        if (!ok) {
-            printf("%d,%d,%d,%d,%d,%d,LAUNCH_FAIL\n", ci, c.BM, c.BN, c.BK, c.TM, c.TN);
+        cudaDeviceSynchronize();
+        cudaError_t lerr = cudaGetLastError();
+        if (!ok || lerr != cudaSuccess) {
+            // Runtime launch failures (e.g., 512 threads x 152 regs > 64K regs/SM
+            // at BM=BN=256 configs) are SILENT without this check — the GPU idles
+            // and the event timing measures an empty queue (2026-09-27: produced
+            // impossible 205,796 TFLOPS rows before this fix).
+            printf("%d,%d,%d,%d,%d,%d,LAUNCH_FAIL(%s)\n", ci, c.BM, c.BN, c.BK, c.TM, c.TN,
+                   !ok ? "no dispatch" : cudaGetErrorString(lerr));
             fflush(stdout);
             continue;
         }
-        cudaCheckError(cudaDeviceSynchronize());
 
         cudaEvent_t start, stop;
         cudaCheckError(cudaEventCreate(&start));
