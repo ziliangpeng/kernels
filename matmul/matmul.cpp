@@ -15,6 +15,7 @@
 #include "matmul_1d_blocktile_typed.h"
 #include "matmul_2d_blocktile_typed.h"
 #include "matmul_vectorized_typed.h"
+#include "matmul_vectorized_tuned.h"
 #include "matmul_warptile_auto.h"
 #include "matmul_vectorized_auto.h"
 #include "matmul_2d_blocktile_auto.h"
@@ -57,6 +58,8 @@ const char* BENCHMARK_METHODS[] = {
     "1d_blocktile_f16",
     "2d_blocktile_f16",
     "vectorized_f16",
+    "vec_autotune_f32",
+    "vec_autotune_f16",
     "1d_blocktile_auto",
     "2d_blocktile_auto",
     "vectorized_auto",
@@ -205,6 +208,7 @@ void print_usage(const char *program_name) {
     printf("  2d_blocktile_f16: 2D blocktile (default cfg) with FP16 storage + FP32 acc\n");
     printf("  1d_autotune_f32/f16: 1D blocktile in-process autotune (13 configs, CSV to stdout)\n");
     printf("  2d_autotune_f32/f16: 2D blocktile in-process autotune (19 configs, CSV to stdout)\n");
+    printf("  vec_autotune_f32/f16: vectorized in-process autotune (16 configs, CSV to stdout)\n");
     printf("  1d/2d_blocktile_auto, vectorized_auto, warptile_auto: archive-repo autotune classes (ported)\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
     printf("  smem:          Shared memory tiling\n");
@@ -787,6 +791,27 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulVectorizedAuto(N, blockDim);
     } else if (strcmp(method, "warptile_auto") == 0) {
         kernel = new MatmulWarptileAuto(N, blockDim);
+    } else if (strcmp(method, "vec_autotune_f32") == 0 || strcmp(method, "vec_autotune_f16") == 0) {
+        // In-process vectorized autotune (16 configs), CSV to stdout.
+        float *h_A, *h_B;
+        allocateAndInitMatrices(&h_A, &h_B, N);
+        float *d_A, *d_B, *d_C;
+        cudaCheckError(cudaMalloc(&d_A, (size_t)N * N * sizeof(float)));
+        cudaCheckError(cudaMalloc(&d_B, (size_t)N * N * sizeof(float)));
+        cudaCheckError(cudaMalloc(&d_C, (size_t)N * N * sizeof(float)));
+        cudaCheckError(cudaMemcpy(d_A, h_A, (size_t)N * N * sizeof(float), cudaMemcpyHostToDevice));
+        cudaCheckError(cudaMemcpy(d_B, h_B, (size_t)N * N * sizeof(float), cudaMemcpyHostToDevice));
+
+        if (strcmp(method, "vec_autotune_f32") == 0) {
+            MatmulVectorizedTuned<DTypeTraitsFloat> k(N, blockDim, CfgVec{128, 128, 8, 8, 8});
+            k.autotune(d_A, d_B, N, 100);
+        } else {
+            MatmulVectorizedTuned<DTypeTraitsHalf> k(N, blockDim, CfgVec{128, 128, 8, 8, 8});
+            k.autotune(d_A, d_B, N, 100);
+        }
+        cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
+        free(h_A); free(h_B);
+        return;
     } else if (strcmp(method, "2d_autotune_f32") == 0 || strcmp(method, "2d_autotune_f16") == 0) {
         // In-process 2D autotune (19 configs), CSV to stdout.
         float *h_A, *h_B;
