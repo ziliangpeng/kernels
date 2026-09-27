@@ -223,23 +223,6 @@ int main(int argc, char **argv) {
     cudaMalloc(&pC, bytes * sizeof(float));
     cudaMalloc(&pA16, bytes * sizeof(Tr::T));
     cudaMalloc(&pB16, bytes * sizeof(Tr::T));
-    // device-side fill with converted verify data tiled up (values irrelevant to FMA timing)
-    {
-        int t = 256; size_t b = (bytes + t - 1) / t;
-        convK<Tr><<<(unsigned)b, t>>>(pAf, pA16, 0);  // placeholder no-op guard below
-    }
-    // fill pattern: convert a repeating host seed
-    {
-        std::vector<float> seed(1 << 16);
-        for (size_t i = 0; i < seed.size(); i++)
-            seed[i] = ((i * 1103515245 + 12345) % 1000) / 1000.0f - 0.5f;
-        float *sA;
-        cudaMalloc(&sA, seed.size() * sizeof(float));
-        cudaMemcpy(sA, seed.data(), seed.size() * sizeof(float), cudaMemcpyHostToDevice);
-        int t = 256; size_t b = (bytes + t - 1) / t;
-        convK<Tr><<<(unsigned)b, t>>>(sA, pA16, bytes);   // reads may go OOB on sA
-        cudaDeviceSynchronize();
-    }
     // clean perf fill: memset a benign bit pattern (half 0x3C00 = 1.0 works for both dtypes;
     // float 0x3C003C00 is a tiny normal ~3e-5, harmless)
     cudaMemset(pA16, 0x3C, bytes * sizeof(Tr::T));
