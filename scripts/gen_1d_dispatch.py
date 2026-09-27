@@ -54,7 +54,8 @@ with open("matmul/matmul_1d_launch.inc", "w") as f:
             f"        dim3 blocks((N + {bn} - 1) / {bn}, (N + {bm} - 1) / {bm});\n"
             f"        matmul1DTunedKernel<Traits, {bm}, {bn}, {bk}, {tm}>"
             f"<<<blocks, threads>>>(A, B, C, N);\n"
-            f"        cudaCheckError(cudaGetLastError());\n"
+            f"        cudaError_t err = cudaGetLastError();\n"
+            f"        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal\n"
             f"        return true;\n"
             f"    }}\n")
 print("wrote matmul_1d_configs.inc + matmul_1d_launch.inc")

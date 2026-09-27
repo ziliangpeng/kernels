@@ -3,90 +3,103 @@
         dim3 threads(64);
         dim3 blocks((N + 32 - 1) / 32, (N + 32 - 1) / 32);
         matmul1DTunedKernel<Traits, 32, 32, 2, 16><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 32 && BN == 32 && BK == 4 && TM == 8) {
         dim3 threads(128);
         dim3 blocks((N + 32 - 1) / 32, (N + 32 - 1) / 32);
         matmul1DTunedKernel<Traits, 32, 32, 4, 8><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 32 && BN == 32 && BK == 8 && TM == 4) {
         dim3 threads(256);
         dim3 blocks((N + 32 - 1) / 32, (N + 32 - 1) / 32);
         matmul1DTunedKernel<Traits, 32, 32, 8, 4><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 64 && BN == 64 && BK == 2 && TM == 32) {
         dim3 threads(128);
         dim3 blocks((N + 64 - 1) / 64, (N + 64 - 1) / 64);
         matmul1DTunedKernel<Traits, 64, 64, 2, 32><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 64 && BN == 64 && BK == 4 && TM == 16) {
         dim3 threads(256);
         dim3 blocks((N + 64 - 1) / 64, (N + 64 - 1) / 64);
         matmul1DTunedKernel<Traits, 64, 64, 4, 16><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 64 && BN == 64 && BK == 8 && TM == 8) {
         dim3 threads(512);
         dim3 blocks((N + 64 - 1) / 64, (N + 64 - 1) / 64);
         matmul1DTunedKernel<Traits, 64, 64, 8, 8><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 64 && BN == 64 && BK == 16 && TM == 4) {
         dim3 threads(1024);
         dim3 blocks((N + 64 - 1) / 64, (N + 64 - 1) / 64);
         matmul1DTunedKernel<Traits, 64, 64, 16, 4><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 128 && BN == 128 && BK == 2 && TM == 64) {
         dim3 threads(256);
         dim3 blocks((N + 128 - 1) / 128, (N + 128 - 1) / 128);
         matmul1DTunedKernel<Traits, 128, 128, 2, 64><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 128 && BN == 128 && BK == 4 && TM == 32) {
         dim3 threads(512);
         dim3 blocks((N + 128 - 1) / 128, (N + 128 - 1) / 128);
         matmul1DTunedKernel<Traits, 128, 128, 4, 32><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 128 && BN == 128 && BK == 8 && TM == 16) {
         dim3 threads(1024);
         dim3 blocks((N + 128 - 1) / 128, (N + 128 - 1) / 128);
         matmul1DTunedKernel<Traits, 128, 128, 8, 16><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 256 && BN == 256 && BK == 2 && TM == 128) {
         dim3 threads(512);
         dim3 blocks((N + 256 - 1) / 256, (N + 256 - 1) / 256);
         matmul1DTunedKernel<Traits, 256, 256, 2, 128><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 256 && BN == 256 && BK == 4 && TM == 64) {
         dim3 threads(1024);
         dim3 blocks((N + 256 - 1) / 256, (N + 256 - 1) / 256);
         matmul1DTunedKernel<Traits, 256, 256, 4, 64><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }
     if (BM == 512 && BN == 512 && BK == 2 && TM == 256) {
         dim3 threads(1024);
         dim3 blocks((N + 512 - 1) / 512, (N + 512 - 1) / 512);
         matmul1DTunedKernel<Traits, 512, 512, 2, 256><<<blocks, threads>>>(A, B, C, N);
-        cudaCheckError(cudaGetLastError());
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) return false;  // launch-infeasible (e.g. register pressure), not fatal
         return true;
     }

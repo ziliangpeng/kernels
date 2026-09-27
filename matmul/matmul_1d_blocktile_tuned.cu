@@ -130,9 +130,15 @@ void Matmul1DBlocktileTuned<Traits>::autotune(const float *d_A, const float *d_B
     for (int ci = 0; ci < NUM_1D_CONFIGS; ci++) {
         const Cfg1D &c = kConfigs1D[ci];
 
-        // warmup
+        // warmup (launch-infeasible configs -> 0 GFLOPS, sweep continues)
+        bool ok = true;
         for (int w = 0; w < 3; w++)
-            launch1DTuned<Traits>(d_A16, d_B16, d_probe, N, c.BM, c.BN, c.BK, c.TM);
+            ok = launch1DTuned<Traits>(d_A16, d_B16, d_probe, N, c.BM, c.BN, c.BK, c.TM) && ok;
+        if (!ok) {
+            printf("%d,%d,%d,%d,%d,LAUNCH_FAIL\n", ci, c.BM, c.BN, c.BK, c.TM);
+            fflush(stdout);
+            continue;
+        }
         cudaCheckError(cudaDeviceSynchronize());
 
         cudaEvent_t start, stop;
