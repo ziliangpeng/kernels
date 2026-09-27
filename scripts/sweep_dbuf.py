@@ -9,7 +9,7 @@ against preemption), and skips configs already present in the output CSV
 
 Usage:
   python3 scripts/sweep_dbuf.py [--binary ./matmul_bench] [--n 4096]
-       [--top 10] [--tag gcp5-h100]
+       [--top 10] [--tag an-h100-cluster]
 """
 import argparse
 import csv

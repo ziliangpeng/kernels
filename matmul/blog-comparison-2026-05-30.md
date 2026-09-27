@@ -119,7 +119,7 @@ Note: our WMMA at 4K (5.7%, 27.5T) is better than at 2K (2.6%, 25.6T) — larger
 
 **Our A100 numbers** verified on 2026-06-01 ~10:25 AM PT via IAP tunnel to `a100-spot-5` (us-east1-b). Fresh rebuild from `main` branch, all kernels in single session. Reproducibility ±0.5% on 100-iteration medians.
 
-**Our H100 numbers** verified on `pi1-h100-27` (job 11723, `--gres=gpu:8 --exclusive`). Run-to-run reproducibility ±0.07 T on auto kernels.
+**Our H100 numbers** verified on `an-h100-node` (job 11723, `--gres=gpu:8 --exclusive`). Run-to-run reproducibility ±0.07 T on auto kernels.
 
 **Simon's numbers** extracted from his README.md (GPUs marker: "NVIDIA A6000 (Ampere)") and `siboehm/SGEMM_CUDA` source. cuBLAS mode confirmed by reading `src/runner.cu` line 129-131.
 

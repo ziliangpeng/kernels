@@ -242,8 +242,8 @@ void launchWarptileDbuf(const float *d_A, const float *d_B, float *d_C, int N,
     exit(1);
 }
 
-// Default = autotune winner on H100 (gcp5, 2026-09-26, sweep of 1360 configs,
-// see matmul/dbuf-sweep-gcp5-h100-2026-09-26.csv): 37.60T vs 32.49T for the
+// Default = autotune winner on H100 (a-h100-cluster, 2026-09-26, sweep of 1360 configs,
+// see matmul/dbuf-sweep-an-h100-node-26.csv): 37.60T vs 32.49T for the
 // original hardcoded config.
 DbufConfig g_dbuf = {128, 256, 8, 64, 64, 2, 8, 4, 256};
 

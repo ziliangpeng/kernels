@@ -5,7 +5,7 @@ Distilled takeaways from implementing Simon Boehm's double-buffering rung
 `matmul_warptile_dbuf.cu`. Full experiment log:
 [`matmul/warptile-dbuf-2026-09-26.md`](../../matmul/warptile-dbuf-2026-09-26.md).
 
-- GPU: H100 80GB HBM3 (gcp5-h100-0-28, SM90), CUDA 12.4, same-session baselines
+- GPU: H100 80GB HBM3 (an-h100-node, SM90), CUDA 12.4, same-session baselines
 - Shape: N=4096 FP32, 100-iteration batched timing, 3-run stability ±0.02%
 
 ## The number that matters

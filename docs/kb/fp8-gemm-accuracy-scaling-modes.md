@@ -1,6 +1,6 @@
 # FP8 GEMM: Accuracy, Scaling Modes, and Real-World Impact
 
-**Experiment dates**: 2026-08-27/28 · **GPUs**: NVIDIA H100 80GB (gcp5), AMD MI325X (amd2 dev pod)
+**Experiment dates**: 2026-08-27/28 · **GPUs**: NVIDIA H100 80GB (a-h100-cluster), AMD MI325X (an-amd-node dev pod)
 **Scripts**: `determinism/fp8_gemm_test.py`, `determinism/fp8_scaling_compare.py`, `determinism/fp8_blockwise_aiter.py`, `determinism/fp8_deepgemm_test.py`
 **Results**: `determinism/results_fp8_*.json`
 

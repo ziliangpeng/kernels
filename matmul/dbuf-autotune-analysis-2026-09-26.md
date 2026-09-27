@@ -1,7 +1,7 @@
 # dbuf Autotune Analysis — What Wins and Why
 
-**Data**: 1360 configs, full sweep CSV [`dbuf-sweep-gcp5-h100-2026-09-26.csv`](dbuf-sweep-gcp5-h100-2026-09-26.csv)
-(gcp5 H100, 2026-09-26, N=4096 FP32, warmup 3 + 100-iter event timing per config)
+**Data**: 1360 configs, full sweep CSV [`dbuf-sweep-an-h100-node-26.csv`](dbuf-sweep-an-h100-node-26.csv)
+(a-h100-cluster H100, 2026-09-26, N=4096 FP32, warmup 3 + 100-iter event timing per config)
 
 This note answers: which dimensions decide performance, and what the causal
 mechanism is. All numbers below are computed from the sweep CSV.

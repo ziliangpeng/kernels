@@ -1,7 +1,7 @@
 # Nsight Compute Profiling — Matmul 1024×1024, H100 SM90
 
 **Date**: 2026-05-30  
-**Node**: pi1-h100-11 (Job 11711)  
+**Node**: an-h100-node (Job 11711)  
 **GPU**: NVIDIA H100 80GB HBM3, 132 SMs @ 1.98 GHz boost, CUDA 12.8  
 **Profile tool**: ncu 2025.1.1.0  
 **Binary**: `~/matmul_profile` (11 methods, single launch each, N=1024, block dim=16)
@@ -82,6 +82,6 @@ Our hand-written kernels cap at ~33 TFLOPS (vectorized float4 @ N=2048). cuBLAS 
 
 ## Raw ncu-rep Files
 
-- `~/matmul_ncu_0.ncu-rep` through `~/matmul_ncu_16.ncu-rep` on pi1-h100-11 home (NFS)
+- `~/matmul_ncu_0.ncu-rep` through `~/matmul_ncu_16.ncu-rep` on an-h100-node home (NFS)
 - Each file = 1 kernel launch, 10 passes
 - Extract: `sudo /usr/local/cuda/bin/ncu -i <file>.ncu-rep --print-summary per-kernel`

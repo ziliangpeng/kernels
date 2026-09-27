@@ -1,4 +1,4 @@
-# 1D blocktile autotune sweep, 13 configs, gcp5 H100 (SM90), 2026-09-26
+# 1D blocktile autotune sweep, 13 configs, a-h100-cluster H100 (SM90), 2026-09-26
 # Slurm job 219222 (afterok build 219221); N=4096 square; per-config 3 warmup + 100-iter batched event timing
 # TM>=128 configs LAUNCH_FAIL: register pressure (128 accumulators/thread * >64 regs other state > 64K regs/SM)
 # format: idx,BM,BN,BK,TM,GFLOPS

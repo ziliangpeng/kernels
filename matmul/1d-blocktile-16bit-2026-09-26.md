@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-26
 **Kernel**: `matmul/matmul_1d_blocktile_typed.cu` (method `1d_blocktile_f16`)
-**GPU**: H100 80GB HBM3 (gcp5, SM90) — Slurm jobs 219203 (build), 219204/219205 (data)
+**GPU**: H100 80GB HBM3 (a-h100-cluster, SM90) — Slurm jobs 219203 (build), 219204/219205 (data)
 **Semantics**: FP16 storage (GMEM + SMEM tiles) + FP32 accumulation, default
 config BM=64 BN=64 BK=8 TM=8 (NOT autotuned — matches `1d_blocktile`).
 **Verification**: max rel err 6.53e-05 — PASS (threshold 5e-3).

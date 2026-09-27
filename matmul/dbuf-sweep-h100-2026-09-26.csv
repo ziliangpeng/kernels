@@ -1,5 +1,5 @@
 # warptile_dbuf autotune sweep
-# Date: 2026-09-26 | Cluster: gcp5 (Slurm) | Node: gcp5-h100-0-2 | Job: 219149
+# Date: 2026-09-26 | Cluster: a-h100-cluster (Slurm) | Node: an-h100-node | Job: N
 # GPU: NVIDIA H100 80GB HBM3 (SM90, 132 SMs @ 1.98 GHz) | CUDA 12.4
 # Shape: N=4096 square FP32 | warmup 3 + 100-iter batched cuda-event timing per config
 # Columns: BM,BN,BK,WM,WN,WNITER,TM,TN,NT,GFLOPS

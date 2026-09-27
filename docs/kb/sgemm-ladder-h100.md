@@ -4,7 +4,7 @@ First-hand benchmark data from writing and tuning every rung of the SGEMM ladder
 Full step-by-step derivation, code walkthrough, and analysis: [`matmul/worklog.md`](../../matmul/worklog.md) (750 lines).
 
 - GPU: H100 80GB HBM3, SM90, 132 SMs @ 1.98 GHz
-- Node: pi1-h100-11 (idle)
+- Node: an-h100-node (idle)
 - Shape: N=4096 square FP32 GEMM, median of 100 iterations
 - Baseline: cuBLAS FP32 (`CUBLAS_PEDANTIC_MATH`) = **52.2 TFLOPS**
 

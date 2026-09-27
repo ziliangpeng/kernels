@@ -1,6 +1,6 @@
 # FP32 Reference vs FP16/BF16 GEMM Accuracy
 
-**Experiment date**: 2026-08-27 · **GPUs**: NVIDIA H100 80GB (gcp5), AMD MI325X (amd2 dev pod)
+**Experiment date**: 2026-08-27 · **GPUs**: NVIDIA H100 80GB (a-h100-cluster), AMD MI325X (an-amd-node dev pod)
 **Script**: `determinism/fp32_vs_lowprec.py` · **Results**: `determinism/results_fp32_vs_lowprec_{h100,mi325x}.json`
 
 ## Question
@@ -76,7 +76,7 @@ BF16 is 8× less accurate than FP16, yet training uses BF16. Why:
 3. This is why **inference** often prefers FP16 (accuracy matters more,
    activations are bounded) while **training** prefers BF16 (range matters).
 
-## Pitfall encountered (gcp5 H100)
+## Pitfall encountered (a-h100-cluster H100)
 
 User-site torch 2.7.1+cu126 bundles its own NCCL, but the Slurm batch
 environment resolves system `libnccl.so.2` (2.20.5) which lacks

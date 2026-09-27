@@ -424,9 +424,9 @@ The hardcoded `(128, 128, 8, 8, 8)` siboehm-A100 default ranks **8th of 19** at 
 
 ### Reproducibility check
 
-Sweeps have been re-run multiple times across pi1-h100-11 (during initial dev) and pi1-h100-16 (idle node, post-Gemini-review fixes). Winner has always been `(128, 128, 16, 16, 8)`. Absolute throughput ranges 33.7–34.1T across independent runs on idle nodes, well within typical node-noise (±0.5%). Numbers throughout this doc reflect the most recent clean idle-node run on pi1-h100-16 (~34.0T).
+Sweeps have been re-run multiple times across an-h100-node (during initial dev) and an-h100-node (idle node, post-Gemini-review fixes). Winner has always been `(128, 128, 16, 16, 8)`. Absolute throughput ranges 33.7–34.1T across independent runs on idle nodes, well within typical node-noise (±0.5%). Numbers throughout this doc reflect the most recent clean idle-node run on an-h100-node (~34.0T).
 
-The originally-reported numbers came from a node where other Slurm jobs were not yet active (pre-fix sweep ran in low-contention window). Between the pre-fix and post-fix runs the cluster filled up, but pi1-h100-16 was idle when we re-tested, so the post-fix numbers are clean.
+The originally-reported numbers came from a node where other Slurm jobs were not yet active (pre-fix sweep ran in low-contention window). Between the pre-fix and post-fix runs the cluster filled up, but an-h100-node was idle when we re-tested, so the post-fix numbers are clean.
 
 (Removed the original 3-run reproducibility table from this section; the post-fix run is the canonical number now.)
 
@@ -493,7 +493,7 @@ The vectorized autotune uses **the same structure as 2D blocktile** (non-transpo
 | `2d_blocktile_auto` (prev winner) | `(128, 128, 16, 16, 8)` | 33.7 T | 64.6% |
 | `vectorized_auto` vs `2d_blocktile_auto` | same config | **+1.1T (+3.3%)** | **+2.1pp** |
 
-### Full sweep table (N=4096, single-launch median per candidate, post-fix re-sweep on exclusive pi1-h100-27)
+### Full sweep table (N=4096, single-launch median per candidate, post-fix re-sweep on exclusive an-h100-node)
 
 | # | BM | BN | BK | TM | TN | thr | SMEM | TFLOPS | notes |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
@@ -516,13 +516,13 @@ The vectorized autotune uses **the same structure as 2D blocktile** (non-transpo
 
 ### Reproducibility
 
-Two independent runs on exclusive `pi1-h100-27` (job 11723, full 8-GPU reservation, OverSubscribe=NO) gave 34.49T and 34.57T best — within 0.2%. The 100-iteration average is 34.90T / 34.89T — also tight. Earlier numbers (34.77–34.81T) came from `pi1-h100-16`, which we later discovered was a shared dev-partition node (OverSubscribe=OK, no GPU TRES on our salloc). Numbers above are from the truly-exclusive node post-`As[BM][BK+1]` bank-conflict fix.
+Two independent runs on exclusive `an-h100-node` (job 11723, full 8-GPU reservation, OverSubscribe=NO) gave 34.49T and 34.57T best — within 0.2%. The 100-iteration average is 34.90T / 34.89T — also tight. Earlier numbers (34.77–34.81T) came from `an-h100-node`, which we later discovered was a shared dev-partition node (OverSubscribe=OK, no GPU TRES on our salloc). Numbers above are from the truly-exclusive node post-`As[BM][BK+1]` bank-conflict fix.
 
 ### Bank-conflict padding (Gemini PR #4 review)
 
 Gemini's PR #4 review caught that the inner-loop SMEM access `As[threadRow * TM + i][dotIdx]` causes a 2-way bank conflict when `TM * BK` is a multiple of 32 (e.g. `BK=16, TM=16` → stride 256 = 8×32). The fix is a 1-element inner-dimension pad: `__shared__ float As[BM][BK + 1]`. Inner stride becomes `TM * (BK+1) = 17 * 16 = 272`, not divisible by 32 → conflict eliminated. Cost: 512 bytes extra SMEM for BM=128.
 
-Effect by candidate (delta vs pre-fix on shared `pi1-h100-16`):
+Effect by candidate (delta vs pre-fix on shared `an-h100-node`):
 
 | Candidate | Pre-fix (shared -16) | Post-fix (exclusive -27) | Δ |
 |---|---|---|---|
@@ -563,7 +563,7 @@ The entire autotune grid was re-run on an A100-SXM4-40GB spot VM (`a100-spot-5`,
 
 The winner (`BM=BN=64, BK=4, TM=16`) is the same parameter count as H100's winner — but the reason is different. On H100, smaller BK won because it allows larger TM (= more register reuse). On A100, the constraint is SMEM bandwidth: at N=4096, BK=4 keeps each block's SMEM working set small, letting more blocks co-reside per SM. The H100 winner also happens to be the best config on A100 because the kernel's constraint (`BM=BN=BK·TM`) limits the space so much that the same config dominates both.
 
-| Metric | H100 (pi1-h100-27) | A100 (spot VM) | Ratio |
+| Metric | H100 (an-h100-node) | A100 (spot VM) | Ratio |
 |---|---|---|---|
 | 1D blocktile auto (TFLOPS) | 19.26 | 11.15 | 1.73× |
 | % vs cuBLAS FP32 | 36.9% | 59.9% | — |
@@ -608,7 +608,7 @@ The H100 winner `(128, 128, 16, 16, 8)` ranks **4th** on A100 at 15.15 T. The wi
 
 This is the first concrete evidence that **autotune winners are architecture-specific**. The parameter space is identical; the hardware picks different optima.
 
-| Metric | H100 (pi1-h100-27) | A100 (spot VM) |
+| Metric | H100 (an-h100-node) | A100 (spot VM) |
 |---|---|---|
 | 2D blocktile auto (TFLOPS) | 34.03 | 16.37 |
 | % vs cuBLAS FP32 | 65.2% | 88.0% |

@@ -3,7 +3,7 @@
 **Date**: 2026-05-30  
 **GPU**: H100 80GB HBM3, SM90, 132 SMs @ 1.98 GHz  
 **Baseline**: cuBLAS FP32 (`CUBLAS_PEDANTIC_MATH`) — 52.2 TFLOPS @ 4K  
-**Node**: pi1-h100-11  
+**Node**: an-h100-node  
 
 Each kernel = one class (`Matmul*`) in `matmul_*.{h,cu}`. Benchmark harness in `matmul.cpp`. All numbers at N=4096 unless noted.
 
@@ -727,7 +727,7 @@ We've now beaten Simon's autotuned warptile running on H100 (31.8 TFLOPS) — wi
 
 Implemented `MatmulVectorizedAuto` (see `matmul_vectorized.cu`) — first time `execute()` is called, sweeps 16 `(BM, BN, BK, TM, TN)` candidates and caches the best. Same structure as 2D blocktile (non-transposed `As[BM][BK]`, strided scalar loads) plus float4 (128-bit) C stores.
 
-Performance comparison at N=4096 (idle pi1-h100-16, 3-run median):
+Performance comparison at N=4096 (idle an-h100-node, 3-run median):
 
 | Variant | Config | N=4096 TFLOPS | vs cuBLAS FP32 |
 |---|---|---|---|

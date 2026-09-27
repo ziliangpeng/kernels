@@ -2,7 +2,7 @@
 
 **Date**: 2026-09-26
 **Kernel**: `matmul/matmul_coalesced_typed.cu` (method `coalesced_f16`)
-**GPU**: H100 80GB HBM3 (gcp5, SM90) — Slurm jobs 219185 (build) + 219187 (data)
+**GPU**: H100 80GB HBM3 (a-h100-cluster, SM90) — Slurm jobs 219185 (build) + 219187 (data)
 **Semantics**: FP16 storage + FP32 accumulation (16-bit format settled on FP16,
 2026-09-26). Same thread mapping as `matmul_coalesced.cu` (32×32 tile, 1D
 indexing, coalesced B loads). Conversion lazy/untimed.

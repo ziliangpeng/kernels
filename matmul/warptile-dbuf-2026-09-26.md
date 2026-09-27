@@ -2,8 +2,8 @@
 
 **Date**: 2026-09-26
 **Kernel**: `matmul/matmul_warptile_dbuf.cu` (method `warptile_dbuf`)
-**GPU**: H100 80GB HBM3 (gcp5, SM90, 132 SMs @ 1.98 GHz) — gcp5-h100-0-28 (A/B),
-gcp5-h100-0-2 job 219149 (autotune sweep)
+**GPU**: H100 80GB HBM3 (a-h100-cluster, SM90, 132 SMs @ 1.98 GHz) — an-h100-node (A/B),
+an-h100-node job 219149 (autotune sweep)
 **Baseline**: same-session `warptile`, `vectorized`, `cublas` from the same build
 **Shape**: N=4096 square FP32 GEMM, 100-iteration batched timing (repo standard)
 
@@ -28,7 +28,7 @@ Exactly one thing: how the GMEM→SMEM tile loads are performed.
 Tiling, load mapping, thread placement, compute inner loop, and the epilogue are
 identical to `matmul_warptile.cu`. Any perf delta is attributable to the pipeline.
 
-## Results (N=4096, gcp5 H100, 3-run stability ±0.02%)
+## Results (N=4096, a-h100-cluster H100, 3-run stability ±0.02%)
 
 | Kernel | TFLOPS | vs cuBLAS FP32 | vs warptile |
 |---|---:|---:|---:|
@@ -57,7 +57,7 @@ Correctness matrix (all vs CPU double-precision reference, threshold 1e-4):
 
 ## Autotune results (2026-09-26, in-process sweep of 1360 valid configs)
 
-Full data: [`dbuf-sweep-gcp5-h100-2026-09-26.csv`](dbuf-sweep-gcp5-h100-2026-09-26.csv)
+Full data: [`dbuf-sweep-an-h100-node-26.csv`](dbuf-sweep-an-h100-node-26.csv)
 (same cluster/node/session as the A/B above; per-config warmup 3 + 100-iter
 batched event timing; zero launch failures).
 
@@ -124,7 +124,7 @@ loop i:    cp.async(tile i+1 → buf 1-i); commit;        // group G(i+1) in fli
 ## How to reproduce
 
 ```bash
-# on gcp5 (or any H100 with CUDA 12.4):
+# on a-h100-cluster (or any H100 with CUDA 12.4):
 bash build_matmul.sh                  # nvcc direct build, sm_90, -O3
 srun --partition=low --gres=gpu:1 ./matmul_bench --method warptile_dbuf -n 4096 --verify
 ```
