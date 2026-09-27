@@ -103,6 +103,46 @@ cuda_library(
     includes = [".."],
 )
 
+# Ported archive-repo autotune class: matmul_1d_blocktile_auto
+cuda_library(
+    name = "matmul_1d_blocktile_auto",
+    srcs = ["matmul_1d_blocktile_auto.cu"],
+    hdrs = ["matmul_1d_blocktile_auto.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Ported archive-repo autotune class: matmul_2d_blocktile_auto
+cuda_library(
+    name = "matmul_2d_blocktile_auto",
+    srcs = ["matmul_2d_blocktile_auto.cu"],
+    hdrs = ["matmul_2d_blocktile_auto.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Ported archive-repo autotune class: matmul_vectorized_auto
+cuda_library(
+    name = "matmul_vectorized_auto",
+    srcs = ["matmul_vectorized_auto.cu"],
+    hdrs = ["matmul_vectorized_auto.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
+# Ported archive-repo autotune class: matmul_warptile_auto
+cuda_library(
+    name = "matmul_warptile_auto",
+    srcs = ["matmul_warptile_auto.cu"],
+    hdrs = ["matmul_warptile_auto.h"],
+    deps = ["//cuda:cuda_utils"],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # Naive matmul, 16-bit storage + FP32 accumulation (f16 / bf16)
 cuda_library(
     name = "matmul_naive_typed",
@@ -306,6 +346,10 @@ cuda_binary(
         ":matmul_coalesced_typed",
         ":matmul_smem_typed",
         ":matmul_1d_blocktile_typed",
+        ":matmul_1d_blocktile_auto",
+        ":matmul_2d_blocktile_auto",
+        ":matmul_vectorized_auto",
+        ":matmul_warptile_auto",
         ":matmul_1d_blocktile_tuned",
         ":matmul_coalesced",
         ":matmul_smem",

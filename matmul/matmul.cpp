@@ -13,6 +13,10 @@
 #include "matmul_coalesced_typed.h"
 #include "matmul_smem_typed.h"
 #include "matmul_1d_blocktile_typed.h"
+#include "matmul_warptile_auto.h"
+#include "matmul_vectorized_auto.h"
+#include "matmul_2d_blocktile_auto.h"
+#include "matmul_1d_blocktile_auto.h"
 #include "matmul_1d_blocktile_tuned.h"
 
 // config table lives in matmul_1d_blocktile_tuned.cu (matmul_1d_configs.inc)
@@ -47,6 +51,10 @@ const char* BENCHMARK_METHODS[] = {
     "smem",
     "smem_f16",
     "1d_blocktile_f16",
+    "1d_blocktile_auto",
+    "2d_blocktile_auto",
+    "vectorized_auto",
+    "warptile_auto",
     "1d_autotune_f32",
     "1d_autotune_f16",
     "1d_blocktile",
@@ -186,6 +194,7 @@ void print_usage(const char *program_name) {
     printf("  smem_f16:      SMEM tiling with FP16 storage + FP32 accumulation\n");
     printf("  1d_blocktile_f16: 1D blocktile (default cfg) with FP16 storage + FP32 acc\n");
     printf("  1d_autotune_f32/f16: 1D blocktile in-process autotune (13 configs, CSV to stdout)\n");
+    printf("  1d/2d_blocktile_auto, vectorized_auto, warptile_auto: archive-repo autotune classes (ported)\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
     printf("  smem:          Shared memory tiling\n");
     printf("  1d_blocktile:  1D block tiling (TM=8 elements per thread)\n");
