@@ -13,6 +13,7 @@
 #include "matmul_coalesced_typed.h"
 #include "matmul_smem_typed.h"
 #include "matmul_1d_blocktile_typed.h"
+#include "matmul_2d_blocktile_typed.h"
 #include "matmul_warptile_auto.h"
 #include "matmul_vectorized_auto.h"
 #include "matmul_2d_blocktile_auto.h"
@@ -51,6 +52,7 @@ const char* BENCHMARK_METHODS[] = {
     "smem",
     "smem_f16",
     "1d_blocktile_f16",
+    "2d_blocktile_f16",
     "1d_blocktile_auto",
     "2d_blocktile_auto",
     "vectorized_auto",
@@ -193,6 +195,7 @@ void print_usage(const char *program_name) {
     printf("  coalesced_f16: Coalesced with FP16 storage + FP32 accumulation\n");
     printf("  smem_f16:      SMEM tiling with FP16 storage + FP32 accumulation\n");
     printf("  1d_blocktile_f16: 1D blocktile (default cfg) with FP16 storage + FP32 acc\n");
+    printf("  2d_blocktile_f16: 2D blocktile (default cfg) with FP16 storage + FP32 acc\n");
     printf("  1d_autotune_f32/f16: 1D blocktile in-process autotune (13 configs, CSV to stdout)\n");
     printf("  1d/2d_blocktile_auto, vectorized_auto, warptile_auto: archive-repo autotune classes (ported)\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
@@ -583,6 +586,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulSmemTyped<DTypeTraitsHalf>(N, blockDim);
                 } else if (strcmp(method, "1d_blocktile_f16") == 0) {
                     kernel = new Matmul1DBlocktileTyped<DTypeTraitsHalf>(N, blockDim);
+                } else if (strcmp(method, "2d_blocktile_f16") == 0) {
+                    kernel = new Matmul2DBlocktileTyped<DTypeTraitsHalf>(N, blockDim);
                 } else if (strcmp(method, "coalesced") == 0) {
                     kernel = new MatmulCoalesced(N, blockDim);
                 } else if (strcmp(method, "smem") == 0) {
@@ -739,6 +744,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulSmemTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "1d_blocktile_f16") == 0) {
         kernel = new Matmul1DBlocktileTyped<DTypeTraitsHalf>(N, blockDim);
+    } else if (strcmp(method, "2d_blocktile_f16") == 0) {
+        kernel = new Matmul2DBlocktileTyped<DTypeTraitsHalf>(N, blockDim);
 
     } else if (strcmp(method, "coalesced") == 0) {
         kernel = new MatmulCoalesced(N, blockDim);
