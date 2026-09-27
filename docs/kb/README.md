@@ -36,3 +36,4 @@ Hands-on findings from kernel experiments on NVIDIA H100 and AMD MI325X.
 ### Hardware
 - [hardware-h100.md](hardware-h100.md) — NVIDIA H100 Tensor Core, cuBLAS, TF32
 - [hardware-mi325x.md](hardware-mi325x.md) — AMD MI325X MFMA, rocBLAS
+- [nvcc -dc perf cliff](nvcc-dc-perf-cliff.md) — relocatable device code cost 30-60% GEMM perf; #include'd dispatch tables don't need it
