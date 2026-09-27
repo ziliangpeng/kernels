@@ -22,7 +22,7 @@
 | 5 | 2D blocktile | 128,128,8,8,8 | 22.21 | 21.47 | 0.97x | — | — |
 | 5a | 2D blocktile **autotuned** | (128,128,16,16,8) f32 / (128,128,8,16,8) f16 | 33.78ᵇ | 33.12ᵇ | 0.98x | — | +52% (f32) / +54% (f16) |
 | 6 | vectorized (16B loads) | 128,128,8,8,8 | 32.73 | 32.83 | **1.003x** | — | — |
-| 6a | vectorized **autotuned** | f32:(128,128,16,8,8) / f16:(128,64,8,16,8) | 33.49ᵇ | **36.53ᵇ** | **1.091x** | — | +2% (f32) / +11% (f16) |
+| 6a | vectorized **autotuned** | f32:(128,128,16,8,8) / f16:(128,64,8,16,8) | 33.49ᵇ | **36.47**ᵈ | **1.091x** | — | +2% (f32) / +11% (f16) |
 | 10 | warptile | 64,64,8,8,4,64,64 | 28.13 | — | — | — | — |
 | 10a | warptile **autotuned** | 128,128,16,16,4,64,32 | 39.07ᵇ | — | — | — | +39% (f32) |
 | 12 | warptile + dbuf (cp.async) | 128,256,8,64,64,2,8,4 | 37.60ᵇ | — | — | — | +34% (f32) |
@@ -36,6 +36,20 @@ be re-built hard-coded for production numbers.
 ᵇ same template-tax caveat; FP32 2D winner (128,128,16,16,8) was independently
 confirmed against the archive hard-coded auto (33.80T, 0.06% match).
 ᶜ node h100-0-4; archive reference 493.6T (cross-node ±5%).
+ᵈ ABAB-confirmed hard-coded production number (job 219295): B/A=1.0000 vs
+dispatch path — vec template carries NO dispatch tax (the 1D rung's 7.5% tax
+was 1D-specific); sweep value 36.53T reproduces to 0.2%.
+
+### Simon Boehm numbering map (why rows jump: 7 absorbed, 8→12, 9→10)
+
+| Simon # | Optimization | This repo |
+|---|---|---|
+| 0-6 | naive … vectorized | rungs 1-6 |
+| 7 | bank-conflict elimination (SMEM padding) | built INTO 2D/vectorized (`As[BM][BK+1]` padding), not a separate row |
+| 8 | cp.async double buffering | rung 12 (dbuf) |
+| 9 | warptile (register-level warp tiling) | rungs 10/10a |
+| 9a/b/c | WMMA / PTX MMA / CUTLASS | future WGMMA rungs; cuBLAS FP16 is the library ceiling |
+| 11-12 | Strassen / block-recursive | not done — algorithmic FLOP-count variants, orthogonal to the memory-hierarchy teaching ladder |
 
 ## Reading the table
 

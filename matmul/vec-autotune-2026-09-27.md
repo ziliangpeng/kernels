@@ -43,3 +43,16 @@
 ## Data
 
 CSV: `matmul/vec-autotune-f32-f16-gcp5-h100-2026-09-27.csv`
+
+## Addendum: ABAB hard-coded confirmation (job 219295, node h100-0-9)
+
+A = compile-time-constant launch of the winner (exported `launchVecWinnerF16`,
+no dispatch chain), B = runtime dispatch path, same config (128,64,8,16,8).
+
+- **B/A = 1.0000** (7 reps, batched == single, clock 1980, IQR < 0.03%) — the
+  vec template has ZERO dispatch/codegen cost. The 1D rung's 7.5% template tax
+  was a 1D-specific codegen artifact, not a general property of the
+  template+dispatch design.
+- **Official production number: 36.47T** (hard-coded build, ABAB protocol).
+  Sweep's 36.53T reproduces to 0.2% — the vec sweep numbers are directly
+  citable.
