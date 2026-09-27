@@ -759,6 +759,14 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         // CSV to stdout, installs the best config in g_dbuf.
         dbufAutotune(N, 100);
         return;
+    } else if (strcmp(method, "1d_blocktile_auto") == 0) {
+        kernel = new Matmul1DBlocktileAuto(N, blockDim);
+    } else if (strcmp(method, "2d_blocktile_auto") == 0) {
+        kernel = new Matmul2DBlocktileAuto(N, blockDim);
+    } else if (strcmp(method, "vectorized_auto") == 0) {
+        kernel = new MatmulVectorizedAuto(N, blockDim);
+    } else if (strcmp(method, "warptile_auto") == 0) {
+        kernel = new MatmulWarptileAuto(N, blockDim);
     } else if (strcmp(method, "1d_autotune_f32") == 0 || strcmp(method, "1d_autotune_f16") == 0) {
         // In-process 1D autotune (13 configs), CSV to stdout.
         float *h_A, *h_B;
