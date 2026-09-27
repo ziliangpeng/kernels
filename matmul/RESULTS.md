@@ -56,6 +56,7 @@ was 1D-specific); sweep value 36.53T reproduces to 0.2%.
 - **FP32 column**: scalar-FMA ceiling is warptile_auto 39.07T = 75.2% of
   cuBLAS FP32. The ladder teaches tiling → SMEM → vectorization → warp tiling
   → double buffering.
+- **FP16 ordering inverts at the top**: for FP32, warptile (39.07) > vec (34.65); for FP16, vec (36.49) > warptile tuned (32.40) — deep register tiling pays cvt on every SMEM read at shallow reuse depth, so 16-bit favors load vectorization (matmul/warp-autotune-2026-09-27.md).
 - **FP16 column**: 16-bit storage wins where GMEM traffic dominates (smem rung
   1.04x) and pays a cvt tax where issue-bound; vectorized rung reaches parity
   (1.003x) but no scalar kernel can beat ~33T — the cvt pipe (cvt:FMA ≈ 1:1,
@@ -71,7 +72,7 @@ was 1D-specific); sweep value 36.53T reproduces to 0.2%.
 | 1D (13 cfgs) | (128,128,4,32) 19.36T | (32,32,4,8) 16.31T |
 | 2D (19 cfgs) | (128,128,16,16,8) 33.78T | (128,128,8,16,8) 33.12T |
 | vectorized (16 cfgs) | (128,128,16,8,8) 33.49T | (128,64,8,16,8) 36.53T |
-| warptile (archive ~200 cfgs) | (128,128,16,16,4,64,32) 39.07T | — |
+| warptile (136 pruned cfgs) | (128,128,16,16,4,64,32) 39.07T | (128,128,16,8,4,32,64) 32.40T |
 | warptile dbuf (1360 cfgs) | (128,256,8,64,64,2,8,4) 37.60T | — |
 
 Notable: FP32 and FP16 optima DIVERGE (dtype-dependent optima). FP16 prefers
@@ -89,6 +90,7 @@ deep BK.
 | 2D autotune f16 + vectorized_f16 | 219280/219289 | h100-0-19 / h100-0-4 | 2d-autotune / vectorized-16bit worklogs |
 | warptile_auto / dbuf | 219256 | h100-0-19 | autotune-port-2026-09-26.md |
 | vec autotune f32/f16 | 219293 | h100-0-0 | vec-autotune-2026-09-27.md |
+| warptile autotune f16 | 219300/219305 | h100-0-54 | warp-autotune-2026-09-27.md |
 | cuBLAS FP16/BF16 | 219286 | h100-0-4 | 2d-autotune-2026-09-27.md addendum |
 
 Sweep CSVs live in `matmul/`: `1d-autotune-f32/f16-gcp5-h100-2026-09-26.csv`,
