@@ -1,3 +1,8 @@
+#define LW(_BM,_BN,_BK,_TM,_TN,_WM,_WN) \
+    if (BM == _BM && BN == _BN && BK == _BK && TM == _TM && TN == _TN && WM == _WM && WN == _WN) { \
+        matmulWarptileTunedKernel<Traits, _BM, _BN, _BK, _TM, _TN, _WM, _WN><<<grid, threads>>>(A, B, C, N); \
+        return true; \
+    }
 LW(64,64,8,8,4,32,32)
 LW(64,64,8,8,4,32,64)
 LW(64,64,8,8,4,64,32)
@@ -134,3 +139,4 @@ LW(256,256,16,8,8,64,64)
 LW(256,256,16,16,4,64,32)
 LW(256,256,16,16,4,64,64)
 LW(256,256,16,16,8,64,64)
+#undef LW
