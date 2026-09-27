@@ -24,7 +24,7 @@
 | 6 | vectorized (16B loads) | 128,128,8,8,8 | 32.73 | 32.83 | **1.003x** | — | — |
 | 6a | vectorized **autotuned** | f32:(128,128,16,8,8) / f16:(128,64,8,16,8) | 33.49ᵇ | **36.47**ᵈ | **1.091x** | — | +2% (f32) / +11% (f16) |
 | 10 | warptile | 128,128,16,64,64,8,4 | 28.13 | **29.87** | **1.062x** | — | — |
-| 10a | warptile **autotuned** | f32:(128,128,16,16,4,64,32) / f16:(128,128,16,8,4,32,64) | 39.07ᵇ | 32.40ᵇ | 0.829xᵉ | — | +39% (f32) / +9% (f16) |
+| 10a | warptile **autotuned** | f32:(64,128,8,8,4,32,64) / f16:(128,128,16,8,4,32,64) | 37.71ᵇ | 32.39ᵇ | **0.859x** | — | +34% (f32, pruned space) / +9% (f16) |
 | 12 | warptile + dbuf (cp.async) | 128,256,8,64,64,2,8,4 | 37.60ᵇ | — | — | — | +34% (f32) |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
@@ -39,10 +39,12 @@ confirmed against the archive hard-coded auto (33.80T, 0.06% match).
 ᵈ ABAB-confirmed hard-coded production number (job 219295): B/A=1.0000 vs
 dispatch path — vec template carries NO dispatch tax (the 1D rung's 7.5% tax
 was 1D-specific); sweep value 36.53T reproduces to 0.2%.
-ᵉ cross-tool ratio for now: FP32 from the archive hard-coded auto (39.07T),
-FP16 from our template sweep (32.40T). Same-tool FP32 sweep in flight; this
-ratio will be refreshed when it lands. The structural finding (FP16 optimum
-abandons TM=16 deep-reuse configs) is same-tool and already solid.
+ᵉ same-tool ratios (both from our 136-config template sweep, same node):
+winner/winner 0.859x; per-config systematic — TM=8 family 0.835-0.859x,
+TM=16 family 0.76-0.79x (cvt tax grows with accumulator depth). The archive
+hard-coded warptile_auto (39.07T full-space) retains the FP32 crown: our
+pruned-space template FP32 winner is 37.71T — the warptile template has a
+codegen gap vs hard-coded that the vec template does not (open item).
 
 ### Simon Boehm numbering map (why rows jump: 7 absorbed, 8→12, 9→10)
 
@@ -76,7 +78,7 @@ abandons TM=16 deep-reuse configs) is same-tool and already solid.
 | 1D (13 cfgs) | (128,128,4,32) 19.36T | (32,32,4,8) 16.31T |
 | 2D (19 cfgs) | (128,128,16,16,8) 33.78T | (128,128,8,16,8) 33.12T |
 | vectorized (16 cfgs) | (128,128,16,8,8) 33.49T | (128,64,8,16,8) 36.53T |
-| warptile (136 pruned cfgs) | (128,128,16,16,4,64,32) 39.07T | (128,128,16,8,4,32,64) 32.40T |
+| warptile (136 pruned cfgs, template) | (64,128,8,8,4,32,64) 37.71T | (128,128,16,8,4,32,64) 32.39T |
 | warptile dbuf (1360 cfgs) | (128,256,8,64,64,2,8,4) 37.60T | — |
 
 Notable: FP32 and FP16 optima DIVERGE (dtype-dependent optima). FP16 prefers
@@ -94,7 +96,7 @@ deep BK.
 | 2D autotune f16 + vectorized_f16 | 219280/219289 | h100-0-19 / h100-0-4 | 2d-autotune / vectorized-16bit worklogs |
 | warptile_auto / dbuf | 219256 | h100-0-19 | autotune-port-2026-09-26.md |
 | vec autotune f32/f16 | 219293 | h100-0-0 | vec-autotune-2026-09-27.md |
-| warptile autotune f16 | 219300/219305 | h100-0-54 | warp-autotune-2026-09-27.md |
+| warptile autotune f16/f32 | 219300/219305/219306/219307 | h100-0-54 | warp-autotune-2026-09-27.md |
 | cuBLAS FP16/BF16 | 219286 | h100-0-4 | 2d-autotune-2026-09-27.md addendum |
 
 Sweep CSVs live in `matmul/`: `1d-autotune-f32/f16-gcp5-h100-2026-09-26.csv`,
