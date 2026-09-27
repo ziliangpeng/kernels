@@ -3,6 +3,7 @@
 #include "dtype_traits.h"
 #include <cuda_runtime.h>
 #include <cstdio>
+#include <unistd.h>
 #include <algorithm>
 
 // Templatized 1D block-tiling kernel (rung 4, autotune space).
@@ -129,6 +130,13 @@ void Matmul1DBlocktileTuned<Traits>::autotune(const float *d_A, const float *d_B
     double best = -1.0;
     for (int ci = 0; ci < NUM_1D_CONFIGS; ci++) {
         const Cfg1D &c = kConfigs1D[ci];
+
+        // Per-config cool-down: let power/clock state recover so every config
+        // is measured in the same burst-like state as the benchmark path.
+        // Without this, sustained sweep load throttles throughput-bound configs
+        // ~7% (measured 2026-09-26: (64,64,8,8) 16.0T in-sweep vs 17.2T burst)
+        // and the ranking flips vs the bench path.
+        usleep(150000);
 
         // warmup (launch-infeasible configs -> 0 GFLOPS, sweep continues)
         bool ok = true;
