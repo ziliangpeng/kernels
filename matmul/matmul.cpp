@@ -11,6 +11,7 @@
 #include "matmul_naive.h"
 #include "matmul_naive_typed.h"
 #include "matmul_coalesced_typed.h"
+#include "matmul_smem_typed.h"
 #include "dtype_traits.h"
 #include "matmul_coalesced.h"
 #include "matmul_smem.h"
@@ -38,6 +39,7 @@ const char* BENCHMARK_METHODS[] = {
     "coalesced",
     "coalesced_f16",
     "smem",
+    "smem_f16",
     "1d_blocktile",
     "2d_blocktile",
     "vectorized",
@@ -172,6 +174,7 @@ void print_usage(const char *program_name) {
     printf("  naive_f16:     Naive with FP16 storage + FP32 accumulation\n");
     printf("  naive_bf16:    Naive with BF16 storage + FP32 accumulation\n");
     printf("  coalesced_f16: Coalesced with FP16 storage + FP32 accumulation\n");
+    printf("  smem_f16:      SMEM tiling with FP16 storage + FP32 accumulation\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
     printf("  smem:          Shared memory tiling\n");
     printf("  1d_blocktile:  1D block tiling (TM=8 elements per thread)\n");
@@ -556,6 +559,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulNaiveTyped<DTypeTraitsBf16>(N, blockDim);
                 } else if (strcmp(method, "coalesced_f16") == 0) {
                     kernel = new MatmulCoalescedTyped<DTypeTraitsHalf>(N, blockDim);
+                } else if (strcmp(method, "smem_f16") == 0) {
+                    kernel = new MatmulSmemTyped<DTypeTraitsHalf>(N, blockDim);
                 } else if (strcmp(method, "coalesced") == 0) {
                     kernel = new MatmulCoalesced(N, blockDim);
                 } else if (strcmp(method, "smem") == 0) {
@@ -708,6 +713,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulNaiveTyped<DTypeTraitsBf16>(N, blockDim);
     } else if (strcmp(method, "coalesced_f16") == 0) {
         kernel = new MatmulCoalescedTyped<DTypeTraitsHalf>(N, blockDim);
+    } else if (strcmp(method, "smem_f16") == 0) {
+        kernel = new MatmulSmemTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "coalesced") == 0) {
         kernel = new MatmulCoalesced(N, blockDim);
     } else if (strcmp(method, "smem") == 0) {

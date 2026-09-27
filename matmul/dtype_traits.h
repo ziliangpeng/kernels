@@ -24,6 +24,8 @@ struct DTypeTraitsHalf {
     static constexpr const char *suffix = "f16";
     __device__ static float to_float(T x) { return __half2float(x); }
     __host__ __device__ static T from_float(float x) { return __float2half(x); }
+
+    __host__ __device__ static T zero() { return from_float(0.0f); }
 };
 
 struct DTypeTraitsBf16 {
@@ -32,6 +34,8 @@ struct DTypeTraitsBf16 {
     static constexpr const char *suffix = "bf16";
     __device__ static float to_float(T x) { return __bfloat162float(x); }
     __host__ __device__ static T from_float(float x) { return __float2bfloat16(x); }
+
+    __host__ __device__ static T zero() { return from_float(0.0f); }
 };
 
 // Convert a float device buffer to a T device buffer (device-side kernel).

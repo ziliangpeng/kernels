@@ -53,6 +53,22 @@ cuda_library(
     includes = [".."],
 )
 
+# SMEM tiling matmul, FP16 storage + FP32 accumulation
+cuda_library(
+    name = "matmul_smem_typed",
+    srcs = ["matmul_smem_typed.cu"],
+    hdrs = [
+        "matmul_smem_typed.h",
+        "dtype_traits.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # Naive matmul, 16-bit storage + FP32 accumulation (f16 / bf16)
 cuda_library(
     name = "matmul_naive_typed",
@@ -254,6 +270,7 @@ cuda_binary(
         ":matmul_naive",
         ":matmul_naive_typed",
         ":matmul_coalesced_typed",
+        ":matmul_smem_typed",
         ":matmul_coalesced",
         ":matmul_smem",
         ":matmul_1d_blocktile",
@@ -289,6 +306,7 @@ cuda_test(
         ":matmul_naive",
         ":matmul_naive_typed",
         ":matmul_coalesced_typed",
+        ":matmul_smem_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -304,6 +322,7 @@ cuda_test(
         ":matmul_naive",
         ":matmul_naive_typed",
         ":matmul_coalesced_typed",
+        ":matmul_smem_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -319,6 +338,7 @@ cuda_test(
         ":matmul_naive",
         ":matmul_naive_typed",
         ":matmul_coalesced_typed",
+        ":matmul_smem_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
@@ -334,6 +354,7 @@ cuda_test(
         ":matmul_naive",
         ":matmul_naive_typed",
         ":matmul_coalesced_typed",
+        ":matmul_smem_typed",
         ":matmul_kernel_h",
         ":matrix_init",
         "//cuda:cuda_utils",
