@@ -85,6 +85,24 @@ cuda_library(
     includes = [".."],
 )
 
+# 1D blocktile autotune (templated, dtype-generic), FP32 control + FP16
+cuda_library(
+    name = "matmul_1d_blocktile_tuned",
+    srcs = ["matmul_1d_blocktile_tuned.cu"],
+    hdrs = [
+        "matmul_1d_blocktile_tuned.h",
+        "matmul_1d_dispatch.inc",
+        "matmul_1d_launch.inc",
+        "dtype_traits.h",
+        "matmul_kernel.h",
+    ],
+    deps = [
+        "//cuda:cuda_utils",
+    ],
+    target_compatible_with = ["//constraints:cuda"],
+    includes = [".."],
+)
+
 # Naive matmul, 16-bit storage + FP32 accumulation (f16 / bf16)
 cuda_library(
     name = "matmul_naive_typed",
@@ -288,6 +306,7 @@ cuda_binary(
         ":matmul_coalesced_typed",
         ":matmul_smem_typed",
         ":matmul_1d_blocktile_typed",
+        ":matmul_1d_blocktile_tuned",
         ":matmul_coalesced",
         ":matmul_smem",
         ":matmul_1d_blocktile",

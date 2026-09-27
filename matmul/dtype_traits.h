@@ -18,6 +18,18 @@
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
 
+// FP32 traits: lets the SAME templated kernel serve as its own FP32 control
+// (same code path, zero conversion) — clean same-binary A/B for autotune.
+struct DTypeTraitsFloat {
+    using T = float;
+    static constexpr const char *name = "fp32";
+    static constexpr const char *suffix = "fp32";
+    __device__ static float to_float(T x) { return x; }
+    __host__ __device__ static T from_float(float x) { return x; }
+
+    __host__ __device__ static T zero() { return 0.0f; }
+};
+
 struct DTypeTraitsHalf {
     using T = __half;
     static constexpr const char *name = "fp16";

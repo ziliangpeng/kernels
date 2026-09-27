@@ -13,6 +13,7 @@
 #include "matmul_coalesced_typed.h"
 #include "matmul_smem_typed.h"
 #include "matmul_1d_blocktile_typed.h"
+#include "matmul_1d_blocktile_tuned.h"
 #include "dtype_traits.h"
 #include "matmul_coalesced.h"
 #include "matmul_smem.h"
@@ -42,6 +43,8 @@ const char* BENCHMARK_METHODS[] = {
     "smem",
     "smem_f16",
     "1d_blocktile_f16",
+    "1d_autotune_f32",
+    "1d_autotune_f16",
     "1d_blocktile",
     "2d_blocktile",
     "vectorized",
@@ -178,6 +181,7 @@ void print_usage(const char *program_name) {
     printf("  coalesced_f16: Coalesced with FP16 storage + FP32 accumulation\n");
     printf("  smem_f16:      SMEM tiling with FP16 storage + FP32 accumulation\n");
     printf("  1d_blocktile_f16: 1D blocktile (default cfg) with FP16 storage + FP32 acc\n");
+    printf("  1d_autotune_f32/f16: 1D blocktile in-process autotune (13 configs, CSV to stdout)\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
     printf("  smem:          Shared memory tiling\n");
     printf("  1d_blocktile:  1D block tiling (TM=8 elements per thread)\n");
@@ -722,6 +726,10 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulSmemTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "1d_blocktile_f16") == 0) {
         kernel = new Matmul1DBlocktileTyped<DTypeTraitsHalf>(N, blockDim);
+    } else if (strcmp(method, "1d_autotune_f32") == 0) {
+        kernel = new Matmul1DBlocktileTuned<DTypeTraitsFloat>(N, blockDim, kConfigs1D[0]);
+    } else if (strcmp(method, "1d_autotune_f16") == 0) {
+        kernel = new Matmul1DBlocktileTuned<DTypeTraitsHalf>(N, blockDim, kConfigs1D[0]);
     } else if (strcmp(method, "coalesced") == 0) {
         kernel = new MatmulCoalesced(N, blockDim);
     } else if (strcmp(method, "smem") == 0) {
@@ -740,6 +748,27 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         // In-process autotune: sweeps all configs in one CUDA session, prints
         // CSV to stdout, installs the best config in g_dbuf.
         dbufAutotune(N, 100);
+        return;
+    } else if (strcmp(method, "1d_autotune_f32") == 0 || strcmp(method, "1d_autotune_f16") == 0) {
+        // In-process 1D autotune (13 configs), CSV to stdout.
+        float *h_A, *h_B;
+        allocateAndInitMatrices(&h_A, &h_B, N);
+        float *d_A, *d_B, *d_C;
+        cudaCheckError(cudaMalloc(&d_A, (size_t)N * N * sizeof(float)));
+        cudaCheckError(cudaMalloc(&d_B, (size_t)N * N * sizeof(float)));
+        cudaCheckError(cudaMalloc(&d_C, (size_t)N * N * sizeof(float)));
+        cudaCheckError(cudaMemcpy(d_A, h_A, (size_t)N * N * sizeof(float), cudaMemcpyHostToDevice));
+        cudaCheckError(cudaMemcpy(d_B, h_B, (size_t)N * N * sizeof(float), cudaMemcpyHostToDevice));
+
+        if (strcmp(method, "1d_autotune_f32") == 0) {
+            Matmul1DBlocktileTuned<DTypeTraitsFloat> k(N, blockDim, kConfigs1D[0]);
+            k.autotune(d_A, d_B, N, 100);
+        } else {
+            Matmul1DBlocktileTuned<DTypeTraitsHalf> k(N, blockDim, kConfigs1D[0]);
+            k.autotune(d_A, d_B, N, 100);
+        }
+        cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
+        free(h_A); free(h_B);
         return;
     } else if (strcmp(method, "cublas") == 0) {
         kernel = new MatmulCublas(N, blockDim);
