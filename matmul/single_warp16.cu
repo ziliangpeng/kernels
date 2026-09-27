@@ -166,15 +166,21 @@ int main(int argc, char **argv) {
     // Winner config (128,128,16,8,4,32,64): WARPS_X=2 * WARPS_Y=4 * 32 = 256 thr
     dim3 threads(256);
     dim3 grid((N + 127) / 128, (N + 127) / 128);
-    using K16 = matmulWarptileTunedKernel<DTypeTraitsHalf, 128, 128, 16, 8, 4, 32, 64>;
-    using K32 = matmulWarptileTunedKernel<DTypeTraitsFloat, 128, 128, 16, 8, 4, 32, 64>;
+    auto launch16 = [&]() {
+        matmulWarptileTunedKernel<DTypeTraitsHalf, 128, 128, 16, 8, 4, 32, 64><<<grid, threads>>>(d_A16, d_B16, d_C, N);
+        cudaCheckError(cudaGetLastError());
+    };
+    auto launch32 = [&]() {
+        matmulWarptileTunedKernel<DTypeTraitsFloat, 128, 128, 16, 8, 4, 32, 64><<<grid, threads>>>(d_A, d_B, d_C, N);
+        cudaCheckError(cudaGetLastError());
+    };
 
     // verify: FP16 vs FP32-reference (quantization diff expected, threshold 5e-3 rel)
-    K32<<<grid, threads>>>(d_A, d_B, d_C, N);
+    launch32();
     cudaDeviceSynchronize();
     std::vector<float> c32((size_t)N * N);
     cudaMemcpy(c32.data(), d_C, (size_t)N * N * sizeof(float), cudaMemcpyDeviceToHost);
-    K16<<<grid, threads>>>(d_A16, d_B16, d_C, N);
+    launch16();
     cudaDeviceSynchronize();
     std::vector<float> c16((size_t)N * N);
     cudaMemcpy(c16.data(), d_C, (size_t)N * N * sizeof(float), cudaMemcpyDeviceToHost);
@@ -188,16 +194,10 @@ int main(int argc, char **argv) {
     cudaEvent_t es, ee;
     cudaEventCreate(&es); cudaEventCreate(&ee);
     auto timeit = [&](bool is16, int iters) {
-        for (int w = 0; w < 10; w++) {
-            if (is16) K16<<<grid, threads>>>(d_A16, d_B16, d_C, N);
-            else K32<<<grid, threads>>>(d_A, d_B, d_C, N);
-        }
+        for (int w = 0; w < 10; w++) { if (is16) launch16(); else launch32(); }
         cudaDeviceSynchronize();
         cudaEventRecord(es);
-        for (int i = 0; i < iters; i++) {
-            if (is16) K16<<<grid, threads>>>(d_A16, d_B16, d_C, N);
-            else K32<<<grid, threads>>>(d_A, d_B, d_C, N);
-        }
+        for (int i = 0; i < iters; i++) { if (is16) launch16(); else launch32(); }
         cudaEventRecord(ee); cudaEventSynchronize(ee);
         float ms; cudaEventElapsedTime(&ms, es, ee);
         return ms / iters;
