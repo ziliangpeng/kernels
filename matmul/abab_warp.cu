@@ -146,7 +146,7 @@ struct AK : MatmulKernel {
     int N;
     AK(int N_) : N(N_) {}
     void execute(const float *d_A, const float *d_B, float *d_C) override {
-        dim3 threads(128);  // (128/64)*(128/32)*32 = 4 warps * 32
+        dim3 threads(256);  // WARPS_X(BN/WN=4) * WARPS_Y(BM/WM=2) * 32
         dim3 grid((N + 127) / 128, (N + 127) / 128);
         archiveWarptileKernel<128, 128, 16, 16, 4, 64, 32><<<grid, threads>>>(d_A, d_B, d_C, N);
         cudaCheckError(cudaGetLastError());

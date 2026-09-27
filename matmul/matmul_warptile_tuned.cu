@@ -257,7 +257,7 @@ void MatmulWarptileTuned<Traits>::autotune(const float *d_A, const float *d_B, i
 
 // Direct F32 launch export (ABAB tool): anchor config (128,128,16,16,4,64,32).
 void launchWTunedF32Direct(const float *A, const float *B, float *C, int N) {
-    dim3 threads(128);
+    dim3 threads(256);  // WARPS_X(4) * WARPS_Y(2) * 32 for (128,128,16,16,4,64,32)
     dim3 grid((N + 127) / 128, (N + 127) / 128);
     matmulWarptileTunedKernel<DTypeTraitsFloat, 128, 128, 16, 16, 4, 64, 32><<<grid, threads>>>(A, B, C, N);
 }
