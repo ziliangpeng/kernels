@@ -62,7 +62,7 @@ __global__ void matmulVecTunedKernel(const typename Traits::T *A,
         #pragma unroll
         for (int rowOff = 0; rowOff < BM; rowOff += aRowStride) {
             const int row = aVecRow + rowOff;
-            if (blockRow * BM + row < N) {
+            if (row < BM && blockRow * BM + row < N) {
                 VecT tmp;
                 Traits::zero_vec(&tmp);
                 if (tileIdx + aVecCol * VE + (VE - 1) < N) {
@@ -84,7 +84,7 @@ __global__ void matmulVecTunedKernel(const typename Traits::T *A,
         #pragma unroll
         for (int rowOff = 0; rowOff < BK; rowOff += bRowStride) {
             const int row = bVecRow + rowOff;
-            if (tileIdx + row < N) {
+            if (row < BK && tileIdx + row < N) {
                 VecT tmp;
                 Traits::zero_vec(&tmp);
                 if (blockCol * BN + bVecCol * VE + (VE - 1) < N) {
