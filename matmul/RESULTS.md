@@ -24,7 +24,7 @@
 | 6 | vectorized (16B loads) | 128,128,8,8,8 | 32.73 | 32.83 | **1.003x** | — | — |
 | 6a | vectorized **autotuned** | f32:(128,128,16,8,8) / f16:(128,64,8,16,8) | 33.49ᵇ | **36.47**ᵈ | **1.091x** | — | +2% (f32) / +11% (f16) |
 | 10 | warptile | 128,128,16,64,64,8,4 | 28.13 | **29.87** | **1.062x** | — | — |
-| 10a | warptile **autotuned** | 128,128,16,16,4,64,32 | 39.07ᵇ | — | — | — | +39% (f32) |
+| 10a | warptile **autotuned** | f32:(128,128,16,16,4,64,32) / f16:(128,128,16,8,4,32,64) | 39.07ᵇ | 32.40ᵇ | 0.829xᵉ | — | +39% (f32) / +9% (f16) |
 | 12 | warptile + dbuf (cp.async) | 128,256,8,64,64,2,8,4 | 37.60ᵇ | — | — | — | +34% (f32) |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
@@ -39,6 +39,10 @@ confirmed against the archive hard-coded auto (33.80T, 0.06% match).
 ᵈ ABAB-confirmed hard-coded production number (job 219295): B/A=1.0000 vs
 dispatch path — vec template carries NO dispatch tax (the 1D rung's 7.5% tax
 was 1D-specific); sweep value 36.53T reproduces to 0.2%.
+ᵉ cross-tool ratio for now: FP32 from the archive hard-coded auto (39.07T),
+FP16 from our template sweep (32.40T). Same-tool FP32 sweep in flight; this
+ratio will be refreshed when it lands. The structural finding (FP16 optimum
+abandons TM=16 deep-reuse configs) is same-tool and already solid.
 
 ### Simon Boehm numbering map (why rows jump: 7 absorbed, 8→12, 9→10)
 
