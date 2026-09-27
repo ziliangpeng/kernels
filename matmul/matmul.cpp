@@ -36,6 +36,7 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_wmma.h"
 #include "matmul_wmma_bf16.h"
 #include "matmul_cublas_bf16.h"
+#include "matmul_cublas_fp16.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -70,7 +71,8 @@ const char* BENCHMARK_METHODS[] = {
     "cublas",
     "wmma",
     "wmma_bf16",
-    "cublas_bf16"
+    "cublas_bf16",
+    "cublas_fp16"
 };
 const int NUM_METHODS = 13;
 
@@ -213,6 +215,7 @@ void print_usage(const char *program_name) {
     printf("  wmma:          WMMA Tensor Core FP16 (Volta+ GPUs)\n");
     printf("  wmma_bf16:     WMMA Tensor Core BF16 (Ampere+ GPUs)\n");
     printf("  cublas_bf16:   cuBLAS BF16 Tensor Core (Ampere+ GPUs)\n");
+    printf("  cublas_fp16:   cuBLAS FP16 Tensor Core, FP32 compute (FP16 ladder ceiling)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -272,7 +275,7 @@ float get_median_time(MatmulKernel *kernel, const float *d_A, const float *d_B,
 // BF16 ~1e-2 rel (measured in determinism/ fp8/fp16 series). Keep FP32
 // methods at 1e-4.
 static double verify_threshold(const char *method) {
-    if (strstr(method, "_f16")) return 5e-3;
+    if (strstr(method, "_f16") || strstr(method, "fp16")) return 5e-3;
     if (strstr(method, "_bf16")) return 2e-2;
     return 1e-4;
 }
@@ -612,7 +615,9 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulWMMA(N, blockDim);
                 } else if (strcmp(method, "wmma_bf16") == 0) {
                     kernel = new MatmulWmmaBf16(N, blockDim);
-                } else if (strcmp(method, "cublas_bf16") == 0) {
+                } else if (strcmp(method, "cublas_fp16") == 0) {
+        kernel = new MatmulCublasFp16(N, blockDim);
+    } else if (strcmp(method, "cublas_bf16") == 0) {
                     kernel = new MatmulCublasBf16(N, blockDim);
                 }
 
