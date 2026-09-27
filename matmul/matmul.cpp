@@ -10,6 +10,7 @@
 #include "cuda_utils.h"
 #include "matmul_naive.h"
 #include "matmul_naive_typed.h"
+#include "matmul_coalesced_typed.h"
 #include "dtype_traits.h"
 #include "matmul_coalesced.h"
 #include "matmul_smem.h"
@@ -35,6 +36,7 @@ const char* BENCHMARK_METHODS[] = {
     "naive_f16",
     "naive_bf16",
     "coalesced",
+    "coalesced_f16",
     "smem",
     "1d_blocktile",
     "2d_blocktile",
@@ -169,6 +171,7 @@ void print_usage(const char *program_name) {
     printf("  naive:         Naive triple-nested loop (simple, unoptimized)\n");
     printf("  naive_f16:     Naive with FP16 storage + FP32 accumulation\n");
     printf("  naive_bf16:    Naive with BF16 storage + FP32 accumulation\n");
+    printf("  coalesced_f16: Coalesced with FP16 storage + FP32 accumulation\n");
     printf("  coalesced:     Global memory coalescing optimization\n");
     printf("  smem:          Shared memory tiling\n");
     printf("  1d_blocktile:  1D block tiling (TM=8 elements per thread)\n");
@@ -465,7 +468,7 @@ void benchmark_all_methods(int blockDim, bool verify) {
             int N = BENCHMARK_SIZES[s];
 
             // Skip large sizes for naive kernel (too slow)
-            if ((strcmp(method, "naive") == 0 || strcmp(method, "naive_f16") == 0 || strcmp(method, "naive_bf16") == 0) && N >= 1024) {
+            if ((strcmp(method, "naive") == 0 || strcmp(method, "naive_f16") == 0 || strcmp(method, "naive_bf16") == 0 || strcmp(method, "coalesced") == 0 || strcmp(method, "coalesced_f16") == 0) && N >= 1024) {
                 printf("  Size: %s (%d×%d)... SKIPPED (too slow for naive)\n",
                        SIZE_LABELS[s], N, N);
                 perf_results[m][s].skipped = true;
@@ -551,6 +554,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
                     kernel = new MatmulNaiveTyped<DTypeTraitsHalf>(N, blockDim);
                 } else if (strcmp(method, "naive_bf16") == 0) {
                     kernel = new MatmulNaiveTyped<DTypeTraitsBf16>(N, blockDim);
+                } else if (strcmp(method, "coalesced_f16") == 0) {
+                    kernel = new MatmulCoalescedTyped<DTypeTraitsHalf>(N, blockDim);
                 } else if (strcmp(method, "coalesced") == 0) {
                     kernel = new MatmulCoalesced(N, blockDim);
                 } else if (strcmp(method, "smem") == 0) {
@@ -701,6 +706,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulNaiveTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "naive_bf16") == 0) {
         kernel = new MatmulNaiveTyped<DTypeTraitsBf16>(N, blockDim);
+    } else if (strcmp(method, "coalesced_f16") == 0) {
+        kernel = new MatmulCoalescedTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "coalesced") == 0) {
         kernel = new MatmulCoalesced(N, blockDim);
     } else if (strcmp(method, "smem") == 0) {
