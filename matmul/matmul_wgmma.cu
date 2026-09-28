@@ -1,15 +1,16 @@
-// Rung 9c: Hopper WGMMA — v1 correctness-first implementation.
+// Rung 9c: Hopper WGMMA — v2, m64n64k16 (sweep-verified shape).
 //
-// Instruction: wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16
-//   - both operands from SMEM (SS), K-major, NO swizzle (mode 0)
-//   - BK=16 keeps every tile start at a swizzle-pattern boundary (base
-//     offset field = 0), LBO/SBO constants in element terms:
-//       A_s[64][16] halfs, row pitch 32B -> LBO=16B (1 core matrix along K),
-//       SBO=256B (8 rows of 32B = core-matrix step along M)
+// Instruction: wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16
+//   - SS operands (both from SMEM), K-major, NO swizzle (mode 0)
+//   - canonical interleave layout (sweep-verified 2026-09-28: the ONLY
+//     passing combo of 243 — layout L0, LBO=1024, SBO=128):
+//     core matrix = 8x8 halfs contiguous (128B); atom (mi, ki) at
+//     mi*128 + ki*1024 bytes; A tile 64x16 = 8x2 atoms (2KB); B tile
+//     64x16 = 2KB (WBN=64).
 //   - B pre-transposed on device to [N][K] (K-major) so trans_b=0
-//   - single buffer, cp.async not used in v1 (plain SMEM stores) —
-//     feeding strategy is v2's problem; v1 asks: does the descriptor math
-//     produce correct math and what does an unfed wgmma deliver?
+//   - 32 f32 accumulators per thread; epilogue 8 col groups x 4 regs
+//
+// One warpgroup (128 threads) computes a 64x64 output tile.
 
 #include "matmul_wgmma.h"
 #include "cuda_utils.h"
@@ -17,70 +18,37 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cstdio>
+#include <cstdint>
 
 // ---- device helpers -------------------------------------------------------
 
 __device__ __forceinline__ uint64_t make_smem_desc(const void *ptr, uint32_t lbo,
                                                    uint32_t sbo) {
-    // No-swizzle descriptor. Fields (PTX ISA "GMMA descriptor"):
-    //   [13:0]  smem addr >> 4       [29:16] LBO >> 4
-    //   [45:32] SBO >> 4             [61:49] base offset (0 here)
-    //   [63:62] swizzle mode: 0 = none
     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(ptr));
     uint64_t d = 0;
     d |= (uint64_t)((addr & 0x3FFFF) >> 4);
     d |= ((uint64_t)((lbo >> 4) & 0x3FFF) << 16);
     d |= ((uint64_t)((sbo >> 4) & 0x3FFF) << 32);
-    // bits 46-48 and 49-61 zero, swizzle 00
     return d;
 }
 
-// d[8][8] = 64 f32 accumulators (m64n128: 128 f32 across 128 threads? no —
-// m64n128 accumulator = 64*128/128 = 64 f32 per thread, held as 64 regs).
-// Layout used by PTX: 64 regs named {%0..%63}. We keep them in a float
-// array of 64 and pass all 64 as "+r" constraints.
-
-#define WGMMA_M64N128K16_F32F16F16(d, desc_a, desc_b, scale_d)                \
+#define WGMMA_M64N64K16(d, desc_a, desc_b, scale_d)                            \
     asm volatile(                                                             \
         "{\n"                                                                 \
-        "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 "                \
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 "                 \
         "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31}," \
         " %32,"                                                               \
         " %33,"                                                               \
         " %34, 1, 1, 0, 0;\n"                                                 \
         "}\n"                                                                 \
-        : "+f"(d[0]),
-        "+f"(d[1]),
-        "+f"(d[2]),
-        "+f"(d[3]),
-        "+f"(d[4]),
-        "+f"(d[5]),
-        "+f"(d[6]),
-        "+f"(d[7]),
-        "+f"(d[8]),
-        "+f"(d[9]),
-        "+f"(d[10]),
-        "+f"(d[11]),
-        "+f"(d[12]),
-        "+f"(d[13]),
-        "+f"(d[14]),
-        "+f"(d[15]),
-        "+f"(d[16]),
-        "+f"(d[17]),
-        "+f"(d[18]),
-        "+f"(d[19]),
-        "+f"(d[20]),
-        "+f"(d[21]),
-        "+f"(d[22]),
-        "+f"(d[23]),
-        "+f"(d[24]),
-        "+f"(d[25]),
-        "+f"(d[26]),
-        "+f"(d[27]),
-        "+f"(d[28]),
-        "+f"(d[29]),
-        "+f"(d[30]),
-        "+f"(d[31]) \
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),                  \
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),                  \
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),                 \
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),                 \
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),                 \
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),                 \
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),                 \
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])                  \
         : "l"(desc_a), "l"(desc_b), "n"(int32_t(scale_d)));
 
 __device__ __forceinline__ void wgmma_fence() {
@@ -89,9 +57,8 @@ __device__ __forceinline__ void wgmma_fence() {
 __device__ __forceinline__ void wgmma_commit() {
     asm volatile("wgmma.commit_group.sync.aligned;\n");
 }
-template <int N>
-__device__ __forceinline__ void wgmma_wait() {
-    asm volatile("wgmma.wait_group.sync.aligned %0;\n" ::"n"(N));
+__device__ __forceinline__ void wgmma_wait0() {
+    asm volatile("wgmma.wait_group.sync.aligned 0;\n");
 }
 
 // ---- converter kernels ----------------------------------------------------
@@ -102,7 +69,7 @@ __global__ void convertF32ToF16(const float * __restrict__ in,
     if (i < n) out[i] = __float2half(in[i]);
 }
 
-// B: [K][N] row-major -> Bt: [N][K] (K-major), tiled coalesced-ish
+// B: [K][N] row-major -> Bt: [N][K] (K-major)
 __global__ void transposeB(const __half * __restrict__ B,
                            __half * __restrict__ Bt, int N) {
     __shared__ __half tile[32][33];
@@ -117,37 +84,32 @@ __global__ void transposeB(const __half * __restrict__ B,
 
 // ---- main kernel ----------------------------------------------------------
 //
-// Grid: (N/128, N/64). One warpgroup per 64x128 output tile.
-// SMEM: A_s[64][16] (2KB), B_s[128][16] (4KB) — single buffer, reloaded
-// from GMEM each K-step via plain stores (v1; correctness first).
+// Grid: (N/64, N/64). One warpgroup per 64x64 output tile.
 
 constexpr int WBM = 64;
-constexpr int WBN = 128;
+constexpr int WBN = 64;
 constexpr int WBK = 16;
 
 __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     const __half * __restrict__ A, const __half * __restrict__ Bt,
     float * __restrict__ C, int N) {
 
-    // Canonical no-swizzle GMMA layout: core matrix = 8x8 halfs contiguous
-    // (128B). Atom (mi, ki) at mi*128 + ki*1024 bytes. LBO=1024 (K step),
-    // SBO=128 (M/N step). A tile: 8x2 atoms = 2KB; B tile: 16x2 atoms = 4KB.
+    // Canonical no-swizzle interleave (sweep-verified): core matrix = 8x8
+    // halfs (128B) contiguous; atom (mi, ki) at mi*128 + ki*1024 bytes.
     __shared__ __align__(128) unsigned char A_s[WBM * WBK * 2];
     __shared__ __align__(128) unsigned char B_s[WBN * WBK * 2];
 
-    const int blockM = blockIdx.y;  // 64-row tile
-    const int blockN = blockIdx.x;  // 128-col tile
-
+    const int blockM = blockIdx.y;
+    const int blockN = blockIdx.x;
     const int tid = threadIdx.x;
-    // load mapping: 128 threads move 64x16 + 128x16 halfs
-    // A: 1024 halfs -> 8 per thread; B: 2048 halfs -> 16 per thread
-    const int aRow = tid / 2;             // 0..63 (64 rows, 2 threads per row)
-    const int aCol = (tid % 2) * 8;       // 0 or 8 (8 halfs each)
-    const int bRow = tid;                 // 0..127 (one Bt row each)
 
-    float acc[64];
+    // load mapping (both tiles 64x16): row=tid/2, 8-half chunk=tid%2
+    const int aRow = tid / 2;
+    const int aCol = (tid % 2) * 8;
+
+    float acc[32];
     #pragma unroll
-    for (int i = 0; i < 64; i++) acc[i] = 0.0f;
+    for (int i = 0; i < 32; i++) acc[i] = 0.0f;
 
     const __half *Atile = A + (size_t)(blockM * WBM) * N;
     const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
@@ -155,41 +117,32 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     wgmma_fence();
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
-        // ---- load A_s: thread t -> (row = t/2, half-chunk = t%2 of 8)
-        // destination byte offset: (row/8)*128 + (t%2)*1024 + (row%8)*16
+        // A row aRow, k-half-chunk aCol (16B): dst = interleave offset
         {
             const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + aCol);
             uint4 *dst = reinterpret_cast<uint4 *>(A_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
             *dst = *src;
         }
-        // ---- load B_s: thread t -> Bt row t; two 16B chunks (k 0-7, 8-15)
+        // B (Bt rows blockN*64..+64, same 64x16 shape)
         {
-            const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)bRow * N + k0);
-            uint4 *dst0 = reinterpret_cast<uint4 *>(B_s + (bRow / 8) * 128 + (bRow % 8) * 16);
-            uint4 *dst1 = reinterpret_cast<uint4 *>(B_s + (bRow / 8) * 128 + 1024 + (bRow % 8) * 16);
-            dst0[0] = src[0];
-            dst1[0] = src[1];
+            const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + k0 + aCol);
+            uint4 *dst = reinterpret_cast<uint4 *>(B_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            *dst = *src;
         }
         __syncthreads();
 
-        // ---- one wgmma over this K-slice
         uint64_t descA = make_smem_desc(A_s, 1024, 128);
         uint64_t descB = make_smem_desc(B_s, 1024, 128);
         wgmma_fence();
-        WGMMA_M64N128K16_F32F16F16(acc, descA, descB, 1);
+        WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
-        wgmma_wait<0>();
+        wgmma_wait0();
 
         __syncthreads();
     }
 
-    // ---- write C: PTX m64nN accumulator fragment mapping (pyptx/PTX spec):
-    //   frag_row = w*16 + lane/4, frag_col = (lane%4)*2
-    //   per column group g (8 cols wide): 4 regs
-    //     acc[g*4+0] -> (frag_row,   frag_col + g*8)
-    //     acc[g*4+1] -> (frag_row,   frag_col + g*8 + 1)
-    //     acc[g*4+2] -> (frag_row+8, frag_col + g*8)
-    //     acc[g*4+3] -> (frag_row+8, frag_col + g*8 + 1)
+    // epilogue (sweep-verified m64n64): frag_row = w*16 + lane/4,
+    // frag_col = (lane%4)*2; 8 col groups x 4 regs.
     const int w = tid / 32;
     const int l = tid % 32;
     const int rowBase = blockM * WBM + w * 16 + (l / 4);
