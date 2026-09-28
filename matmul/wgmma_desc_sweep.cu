@@ -78,7 +78,7 @@ int main() {
     const int N = 64;
     std::vector<__half> hA(N * N), hB(N * N), hBt(N * N);
     std::vector<float> A(N * N), B(N * N), ref(N * N, 0.f), got(N * N, 0.f);
-    for (int i = 0; i < N * N; i++) {
+    for (long long i = 0; i < (long long)N * N; i++) {
         A[i] = ((i * 1103515245 + 12345) % 1000) / 1000.0f - 0.5f;
         B[i] = ((i * 2654435761 + 987654321) % 1000) / 1000.0f - 0.5f;
         hA[i] = __float2half(A[i]);
@@ -105,29 +105,21 @@ int main() {
             for (int j = 0; j < N; j++) ref16[i * N + j] += a * B[k * N + j];
         }
 
-    const uint32_t LBOs[] = {16, 1024, 2048};
-    const uint32_t SBOs[] = {128, 256, 1024};
-    for (int lay = 0; lay < 3; lay++)
-        for (uint32_t la : LBOs)
-            for (uint32_t sa : SBOs)
-                for (uint32_t lb : LBOs)
-                    for (uint32_t sb : SBOs) {
-                        cudaMemset(dC, 0, N * N * 4);
-                        if (lay == 0) wgmmaTest<0><<<1, 128>>>(dA, dBt, dC, N, la, sa, lb, sb);
-                        else if (lay == 1) wgmmaTest<1><<<1, 128>>>(dA, dBt, dC, N, la, sa, lb, sb);
-                        else wgmmaTest<2><<<1, 128>>>(dA, dBt, dC, N, la, sa, lb, sb);
-                        cudaDeviceSynchronize();
-                        cudaError_t e = cudaGetLastError();
-                        if (e != cudaSuccess) { printf("L%d LBO=%u SBO=%u / LBO=%u SBO=%u : LAUNCH/RUN ERR\n", lay, la, sa, lb, sb); cudaGetLastError(); continue; }
-                        cudaMemcpy(got.data(), dC, N * N * 4, cudaMemcpyDeviceToHost);
-                        double maxrel = 0;
-                        for (int i = 0; i < N * N; i++) {
-                            double d = std::fabs(got[i] - ref16[i]) / std::max(1.0, (double)std::fabs(ref16[i]));
-                            if (d > maxrel) maxrel = d;
-                        }
-                        if (maxrel < 2e-3)
-                            printf("*** PASS L%d LBOa=%u SBOa=%u LBOb=%u SBOb=%u  maxrel=%.2e\n", lay, la, sa, lb, sb, maxrel);
-                    }
-    printf("sweep done\n");
+    int lay = atoi(argv[1]);
+    uint32_t la = atoi(argv[2]), sa = atoi(argv[3]), lb = atoi(argv[4]), sb = atoi(argv[5]);
+    cudaMemset(dC, 0, N * N * 4);
+    if (lay == 0) wgmmaTest<0><<<1, 128>>>(dA, dBt, dC, N, la, sa, lb, sb);
+    else if (lay == 1) wgmmaTest<1><<<1, 128>>>(dA, dBt, dC, N, la, sa, lb, sb);
+    else wgmmaTest<2><<<1, 128>>>(dA, dBt, dC, N, la, sa, lb, sb);
+    cudaDeviceSynchronize();
+    cudaError_t e = cudaGetLastError();
+    if (e != cudaSuccess) { printf("L%d LBO=%u SBO=%u / LBO=%u SBO=%u : ERR %s\n", lay, la, sa, lb, sb, cudaGetErrorString(e)); return 1; }
+    cudaMemcpy(got.data(), dC, N * N * 4, cudaMemcpyDeviceToHost);
+    double maxrel = 0;
+    for (int i = 0; i < N * N; i++) {
+        double d = std::fabs(got[i] - ref16[i]) / std::max(1.0, (double)std::fabs(ref16[i]));
+        if (d > maxrel) maxrel = d;
+    }
+    printf("L%d LBOa=%u SBOa=%u LBOb=%u SBOb=%u : maxrel=%.3e %s\n", lay, la, sa, lb, sb, maxrel, maxrel < 2e-3 ? "PASS" : "");
     return 0;
 }
