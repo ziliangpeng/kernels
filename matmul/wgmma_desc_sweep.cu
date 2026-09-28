@@ -101,15 +101,7 @@ int main(int argc, char **argv) {
     cudaMemcpy(dA, hA.data(), N * N * 2, cudaMemcpyHostToDevice);
     cudaMemcpy(dBt, hBt.data(), N * N * 2, cudaMemcpyHostToDevice);
 
-    // wait — kernel stages only the FIRST 16-k slice? No: our sweep kernel does
-    // one wgmma on k=0..15 only. Restrict verify to k-slice 0..15 contribution.
-    std::vector<float> ref16(N * N, 0.f);
-    for (int i = 0; i < N; i++)
-        for (int k = 0; k < 16; k++) {
-            float a = A[i * N + k];
-            for (int j = 0; j < N; j++) ref16[i * N + j] += a * B[k * N + j];
-        }
-
+    // K-loop version accumulates FULL K -> verify against the full reference
     int lay = atoi(argv[1]);
     uint32_t la = atoi(argv[2]), sa = atoi(argv[3]), lb = atoi(argv[4]), sb = atoi(argv[5]);
     cudaMemset(dC, 0, N * N * 4);
@@ -122,7 +114,7 @@ int main(int argc, char **argv) {
     cudaMemcpy(got.data(), dC, N * N * 4, cudaMemcpyDeviceToHost);
     double maxrel = 0;
     for (int i = 0; i < N * N; i++) {
-        double d = std::fabs(got[i] - ref16[i]) / std::max(1.0, (double)std::fabs(ref16[i]));
+        double d = std::fabs(got[i] - ref[i]) / std::max(1.0, (double)std::fabs(ref[i]));
         if (d > maxrel) maxrel = d;
     }
     printf("L%d LBOa=%u SBOa=%u LBOb=%u SBOb=%u : maxrel=%.3e %s\n", lay, la, sa, lb, sb, maxrel, maxrel < 2e-3 ? "PASS" : "");
