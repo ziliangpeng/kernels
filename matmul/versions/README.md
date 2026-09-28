@@ -14,7 +14,7 @@ narrative. Read bottom-up for the teaching arc.
 | v5 | matmul_wgmma_v5.cu | 16f4769..16f4769 | v4 + cp.async 16B, 2-stage | 130.04 | staging goes async; 2 stages too shallow to help |
 | v5.1 | matmul_wgmma_v5.1.cu | 9373920..ec4644f | 4-stage pipeline, 3 copies in flight | 142.42 | depth (not async-ness) hides latency; wait-depth counting bug |
 | v6 | matmul_wgmma_v6.cu | f1feb44..dbc4ed1 | m64n128k16, 2 wgs, 4-stage | **164.83** | wgmma instruction count halved; **B layout follows macro shape** (full-128-row atoms, LBO=2048) |
-| v7 | matmul_wgmma_v7.cu | 327a1b0.. | m64n256k16, 128x256 CTA, 3-stage | 162.73 | bigger tile bought NOTHING (AI 85 vs 64) -> v6's gap is latency/sync, not bandwidth; staging-granularity change without re-derived offsets = 2 bugs |
+| v7 | matmul_wgmma_v7.cu | 327a1b0..8e5a45f | m64n256k16, 128x256 CTA, 3-stage | 162.73 | bigger tile bought NOTHING (AI 85 vs 64) -> v6's gap is latency/sync, not bandwidth; staging-granularity change without re-derived offsets = 2 bugs |
 
 ## Per-version notes (what to look at when reading the code)
 
