@@ -123,9 +123,14 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
 
     // Load mapping: threads 0..255 stage A, 256..511 stage B (each 128 rows
     // x 2 uint4 chunks). e = tid%256: row = e/2, chunk = e%2.
+    // A 64x16 quadrant occupies 2048B (2 K-atoms x LBO=1024), so rows 64-127
+    // form a SECOND quadrant at +2048 — NOT +1024 (that was v4 bug #2: I
+    // confused the 64-row atom-grid periodicity with the quadrant footprint).
+    // k-atom stride stays 1024 = LBO (sweep-verified).
     const int lrow = (tid % 256) / 2;
     const int lchunk = (tid % 256) % 2;
-    const unsigned loff = (lrow / 8) * 128 + lchunk * 1024 + (lrow % 8) * 16;
+    const unsigned loff = (lrow / 64) * 2048 + ((lrow % 64) / 8) * 128 +
+                          lchunk * 1024 + (lrow % 8) * 16;
     const bool ldA = tid < 256;
 
     float acc[32];
@@ -148,8 +153,10 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
         const int buf = (k0 / WBK) & 1;
-        const unsigned char *Aq = A_s[buf] + wgM * 1024;
-        const unsigned char *Bq = B_s[buf] + wgN * 1024;
+        // Quadrant base: a 64x16 quadrant's atoms span 2048B (2 K-atoms x
+        // LBO 1024); rows 64-127's quadrant starts at +2048.
+        const unsigned char *Aq = A_s[buf] + wgM * 2048;
+        const unsigned char *Bq = B_s[buf] + wgN * 2048;
         uint64_t descA = make_smem_desc(Aq, 1024, 128);
         uint64_t descB = make_smem_desc(Bq, 1024, 128);
         wgmma_fence();
