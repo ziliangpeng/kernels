@@ -1,16 +1,20 @@
-// Rung 9c: Hopper WGMMA — v2, m64n64k16 (sweep-verified shape).
+// Rung 9c: Hopper WGMMA — v4, CTA tile 128x128, 4 warpgroups (2x2).
 //
-// Instruction: wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16
-//   - SS operands (both from SMEM), K-major, NO swizzle (mode 0)
-//   - canonical interleave layout (sweep-verified 2026-09-28: the ONLY
-//     passing combo of 243 — layout L0, LBO=1024, SBO=128):
-//     core matrix = 8x8 halfs contiguous (128B); atom (mi, ki) at
-//     mi*128 + ki*1024 bytes; A tile 64x16 = 8x2 atoms (2KB); B tile
-//     64x16 = 2KB (WBN=64).
-//   - B pre-transposed on device to [N][K] (K-major) so trans_b=0
-//   - 32 f32 accumulators per thread; epilogue 8 col groups x 4 regs
+// Instruction: wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 (same
+// sweep-verified macro as v2/v3). Each warpgroup computes a 64x64 quadrant;
+// wgM = wg/2 picks the A half, wgN = wg%2 the B half.
 //
-// One warpgroup (128 threads) computes a 64x64 output tile.
+// Key layout fact (v4): the no-swizzle interleave is 64-row periodic —
+// row r+8 shifts the atom offset by exactly +1024B = one LBO unit — so the
+// quadrant descriptors are simply base+1024 with the SAME LBO=1024/SBO=128.
+//
+// Pipeline (from v3, now cross-warpgroup safe): stage k+1 loads while the
+// 4 warpgroups' wgmma run on stage k. wait_group 1 is per-warpgroup, so a
+// __syncthreads() after it guarantees ALL warpgroups' previous reads are
+// done before the double-buffer flip is overwritten.
+//
+// Roofline: AI = 2*128*128*16 / ((128+128)*16*2) = 64 FLOP/B -> ~230T cap
+// at 3.35TB/s HBM (v3 measured ~91% of its own 115T cap: bandwidth-bound).
 
 #include "matmul_wgmma.h"
 #include "cuda_utils.h"
@@ -96,29 +100,33 @@ __global__ void transposeB(const __half * __restrict__ B,
 
 // ---- main kernel ----------------------------------------------------------
 //
-// Grid: (N/64, N/64). One warpgroup per 64x64 output tile.
+// Grid: (N/128, N/128). 512 threads = 4 warpgroups, 2x2 quadrant split.
 
-constexpr int WBM = 64;
-constexpr int WBN = 64;
+constexpr int WBM = 128;
+constexpr int WBN = 128;
 constexpr int WBK = 16;
 
-__global__ __launch_bounds__(128) void matmulWgmmaKernel(
+__global__ __launch_bounds__(512) void matmulWgmmaKernel(
     const __half * __restrict__ A, const __half * __restrict__ Bt,
     float * __restrict__ C, int N) {
 
-    // Canonical no-swizzle interleave (sweep-verified): core matrix = 8x8
-    // halfs (128B) contiguous; atom (mi, ki) at mi*128 + ki*1024 bytes.
-    // DOUBLE-BUFFERED (v3): load tile k+1 into buf^1 while wgmma runs on buf.
+    // Interleave atoms: (row/8)*128 + chunk*1024 + (row%8)*16, chunk = k/8.
+    // 64-row periodic: quadrant base offset = wgM/wgN * 1024.
     __shared__ __align__(128) unsigned char A_s[2][WBM * WBK * 2];
     __shared__ __align__(128) unsigned char B_s[2][WBN * WBK * 2];
 
     const int blockM = blockIdx.y;
     const int blockN = blockIdx.x;
     const int tid = threadIdx.x;
+    const int wg = tid / 128;          // warpgroup 0..3
+    const int wgM = wg / 2, wgN = wg % 2;
 
-    // load mapping (both tiles 64x16): row=tid/2, 8-half chunk=tid%2
-    const int aRow = tid / 2;
-    const int aCol = (tid % 2) * 8;
+    // Load mapping: threads 0..255 stage A, 256..511 stage B (each 128 rows
+    // x 2 uint4 chunks). e = tid%256: row = e/2, chunk = e%2.
+    const int lrow = (tid % 256) / 2;
+    const int lchunk = (tid % 256) % 2;
+    const unsigned loff = (lrow / 8) * 128 + lchunk * 1024 + (lrow % 8) * 16;
+    const bool ldA = tid < 256;
 
     float acc[32];
     #pragma unroll
@@ -127,49 +135,48 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     const __half *Atile = A + (size_t)(blockM * WBM) * N;
     const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
 
-    // ---- v3 pipeline: prologue loads tile 0; steady state issues wgmma on
-    // buf, then (wait_group 1 = previous wgmma done) loads tile k+1 into
-    // buf^1 while the current wgmma runs. No per-step wait_group 0.
-    {
-        // load tile 0 -> buf 0
-        const uint4 *srcA = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + aCol);
-        uint4 *dstA = reinterpret_cast<uint4 *>(A_s[0] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
-        dstA[0] = srcA[0];
-        const uint4 *srcB = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + aCol);
-        uint4 *dstB = reinterpret_cast<uint4 *>(B_s[0] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
-        dstB[0] = srcB[0];
-        fence_proxy_async();
-        __syncthreads();
+    // prologue: stage 0 -> buf 0
+    if (ldA) {
+        const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)lrow * N + lchunk * 8);
+        *reinterpret_cast<uint4 *>(A_s[0] + loff) = *src;
+    } else {
+        const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)lrow * N + lchunk * 8);
+        *reinterpret_cast<uint4 *>(B_s[0] + loff) = *src;
     }
+    fence_proxy_async();
+    __syncthreads();
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
         const int buf = (k0 / WBK) & 1;
-        uint64_t descA = make_smem_desc(A_s[buf], 1024, 128);
-        uint64_t descB = make_smem_desc(B_s[buf], 1024, 128);
+        const unsigned char *Aq = A_s[buf] + wgM * 1024;
+        const unsigned char *Bq = B_s[buf] + wgN * 1024;
+        uint64_t descA = make_smem_desc(Aq, 1024, 128);
+        uint64_t descB = make_smem_desc(Bq, 1024, 128);
         wgmma_fence();
         WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
 
         if (k0 + WBK < N) {
-            wgmma_wait<1>();  // previous wgmma done -> buf^1 free to overwrite
-            const uint4 *srcA = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + WBK + aCol);
-            uint4 *dstA = reinterpret_cast<uint4 *>(A_s[buf ^ 1] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
-            dstA[0] = srcA[0];
-            const uint4 *srcB = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + k0 + WBK + aCol);
-            uint4 *dstB = reinterpret_cast<uint4 *>(B_s[buf ^ 1] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
-            dstB[0] = srcB[0];
+            wgmma_wait<1>();          // this wg's previous wgmma done
+            __syncthreads();          // ALL wgs' previous reads done (buf^1 free)
+            if (ldA) {
+                const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)lrow * N + k0 + WBK + lchunk * 8);
+                *reinterpret_cast<uint4 *>(A_s[buf ^ 1] + loff) = *src;
+            } else {
+                const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)lrow * N + k0 + WBK + lchunk * 8);
+                *reinterpret_cast<uint4 *>(B_s[buf ^ 1] + loff) = *src;
+            }
             fence_proxy_async();
-            __syncthreads();
+            __syncthreads();          // loads visible to async proxy
         }
     }
     wgmma_wait0();
 
-    // epilogue (sweep-verified m64n64): frag_row = w*16 + lane/4,
-    // frag_col = (lane%4)*2; 8 col groups x 4 regs.
-    const int w = tid / 32;
+    // epilogue (per-quadrant, sweep-verified m64n64 mapping)
+    const int w = (tid % 128) / 32;
     const int l = tid % 32;
-    const int rowBase = blockM * WBM + w * 16 + (l / 4);
-    const int colBase = blockN * WBN + (l % 4) * 2;
+    const int rowBase = blockM * WBM + wgM * 64 + w * 16 + (l / 4);
+    const int colBase = blockN * WBN + wgN * 64 + (l % 4) * 2;
     #pragma unroll
     for (int g = 0; g < 8; g++) {
         C[(size_t)(rowBase) * N + colBase + g * 8]      = acc[g * 4 + 0];
@@ -201,6 +208,6 @@ void MatmulWgmma::execute(const float *d_A, const float *d_B, float *d_C) {
     transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
 
     dim3 grid(N / WBN, N / WBM);
-    matmulWgmmaKernel<<<grid, 128>>>(d_A16, d_Bt16, d_C, N);
+    matmulWgmmaKernel<<<grid, 512>>>(d_A16, d_Bt16, d_C, N);
     cudaCheckError(cudaGetLastError());
 }
