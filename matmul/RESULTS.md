@@ -113,3 +113,17 @@ Sweep CSVs live in `matmul/`: `1d-autotune-f32/f16-gcp5-h100-2026-09-26.csv`,
    fixed 2026-09-27).
 4. Build flags matter: `-dc` cost 30-60% on this kernel set
    (docs/kb/nvcc-dc-perf-cliff.md). All numbers above are no-dc builds.
+
+## Methodology note: H100 non-Tensor FP16 rate (verified 2026-09-28, GH100 whitepaper)
+
+Official peaks (SXM5): FP32 non-Tensor 66.9T, **FP16 non-Tensor 133.8T = 2x FP32**
+(BF16 non-Tensor also 133.8T). The 2x belongs to the half2-packed path (HFMA2),
+whose accumulator is half2 — i.e. it requires FP16 ACCUMULATION. Our ladder's
+semantics (FP16 storage, cvt, FP32 accumulation) cannot use packed math at all,
+so the scalar-path ceiling stands as measured. Correction to our earlier claim
+that "H100 CUDA-core FP16 rate = FP32 rate": the rate is 2x, but it is locked
+behind fp16-accumulator numerics (K=4096 sequential fp16 accumulation: worst-case
+rel err ~n·eps ≈ 200%, RMS ~3%). A hybrid rung (fp16 partial sums every ~64
+steps + fp32 flush, RMS ~0.4%) could partially unlock the packed rate — open
+experiment. Sources: NVIDIA H100 whitepaper architecture table (gtc22-whitepaper-hopper.pdf,
+PB-11133-001, techpowerup GH100 PDF — all consistent).
