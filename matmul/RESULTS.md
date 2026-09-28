@@ -29,7 +29,8 @@
 | 9a | **WMMA fragment API** (naive TC, GMEM-direct fragments) | 16,16,16 | — | 27.55ᶠ | — | 27.56 (bf16) | first TC data point |
 | 9c | **WGMMA v2** (m64n64k16, single-buffer, unoptimized feed) | 64,64,16 | — | 104.36ᵍ | — | — | first TC number; 2.65x scalar king |
 | 9c | **WGMMA v4** (128x128 CTA, 4 warpgroups, dbuf) | 128,128,16 | — | 135.82 | — | — | +30% over v2; LDG direct load |
-| 9c | **WGMMA v5.1** (cp.async, 4-stage pipeline) | 128,128,16 | — | **142.42** | — | — | +5% over v4; 62% of HBM cap |
+| 9c | **WGMMA v5.1** (cp.async, 4-stage pipeline) | 128,128,16 | — | 142.42 | — | — | depth—not async—hides latency |
+| 9c | **WGMMA v6** (m64n128k16, 2 wgs, 4-stage) | 128,128,16 | — | **164.83** | — | — | +16%; 72% of HBM cap |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
