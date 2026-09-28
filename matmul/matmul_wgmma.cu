@@ -120,8 +120,11 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     const __half * __restrict__ A, const __half * __restrict__ Bt,
     float * __restrict__ C, int N) {
 
-    __shared__ __align__(128) __half A_s[WBM][WBK];
-    __shared__ __align__(128) __half B_s[WBN][WBK];
+    // Canonical no-swizzle GMMA layout: core matrix = 8x8 halfs contiguous
+    // (128B). Atom (mi, ki) at mi*128 + ki*1024 bytes. LBO=1024 (K step),
+    // SBO=128 (M/N step). A tile: 8x2 atoms = 2KB; B tile: 16x2 atoms = 4KB.
+    __shared__ __align__(128) unsigned char A_s[WBM * WBK * 2];
+    __shared__ __align__(128) unsigned char B_s[WBN * WBK * 2];
 
     const int blockM = blockIdx.y;  // 64-row tile
     const int blockN = blockIdx.x;  // 128-col tile
@@ -131,8 +134,7 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     // A: 1024 halfs -> 8 per thread; B: 2048 halfs -> 16 per thread
     const int aRow = tid / 2;             // 0..63 (64 rows, 2 threads per row)
     const int aCol = (tid % 2) * 8;       // 0 or 8 (8 halfs each)
-    const int bRow = tid;                 // 0..127 (one row each)
-    const int bColBase = 0;               // 16 halfs per row -> loop below
+    const int bRow = tid;                 // 0..127 (one Bt row each)
 
     float acc[64];
     #pragma unroll
@@ -144,24 +146,26 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     wgmma_fence();
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
-        // ---- load A_s: rows 0..63, cols k0..k0+15 (2 threads/row, 8 halfs = 16B)
+        // ---- load A_s: thread t -> (row = t/2, half-chunk = t%2 of 8)
+        // destination byte offset: (row/8)*128 + (t%2)*1024 + (row%8)*16
         {
             const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + aCol);
-            uint4 *dst = reinterpret_cast<uint4 *>(&A_s[aRow][aCol]);
+            uint4 *dst = reinterpret_cast<uint4 *>(A_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
             *dst = *src;
         }
-        // ---- load B_s: 128 rows x 16 halfs (one row per thread, 2 x 16B)
+        // ---- load B_s: thread t -> Bt row t; two 16B chunks (k 0-7, 8-15)
         {
             const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)bRow * N + k0);
-            uint4 *dst = reinterpret_cast<uint4 *>(&B_s[bRow][0]);
-            dst[0] = src[0];
-            dst[1] = src[1];
+            uint4 *dst0 = reinterpret_cast<uint4 *>(B_s + (bRow / 8) * 128 + (bRow % 8) * 16);
+            uint4 *dst1 = reinterpret_cast<uint4 *>(B_s + (bRow / 8) * 128 + 1024 + (bRow % 8) * 16);
+            dst0[0] = src[0];
+            dst1[0] = src[1];
         }
         __syncthreads();
 
         // ---- one wgmma over this K-slice
-        uint64_t descA = make_smem_desc(&A_s[0][0], 16, 8 * WBK * 2);  // LBO=16B, SBO=8 rows x 32B
-        uint64_t descB = make_smem_desc(&B_s[0][0], 16, 8 * WBK * 2);  // same pitch
+        uint64_t descA = make_smem_desc(A_s, 1024, 128);  // LBO=K atom step, SBO=M atom step
+        uint64_t descB = make_smem_desc(B_s, 1024, 128);
         wgmma_fence();
         WGMMA_M64N128K16_F32F16F16(acc, descA, descB, 1);
         wgmma_commit();
