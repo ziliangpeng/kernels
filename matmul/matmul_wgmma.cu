@@ -200,8 +200,14 @@ __global__ __launch_bounds__(256) void matmulWgmmaKernel(
     // each thread issues TWO 16B cp.async per stage (one A, one B).
     const int lrow = tid / 2;
     const int lchunk = tid % 2;
-    const unsigned loff = (lrow / 64) * 2048 + ((lrow % 64) / 8) * 128 +
-                          lchunk * 1024 + (lrow % 8) * 16;
+    // v6 layouts DIVERGE: A stays per-wg quadrant (64 rows, atoms (r/8)*128
+    // + chunk*1024, desc LBO=1024); B is a FULL 128-row tile — m64n128 walks
+    // 16 n-atoms at SBO=128 (2048B span), so k-chunks sit at +2048 and the
+    // descriptor LBO is 2048. Using the 64-row quadrant layout for B made the
+    // hardware read k-chunk-1 bytes as n-atoms 8..15 (v6 verify bug).
+    const unsigned loffA = (lrow / 64) * 2048 + ((lrow % 64) / 8) * 128 +
+                           lchunk * 1024 + (lrow % 8) * 16;
+    const unsigned loffB = (lrow / 8) * 128 + lchunk * 2048 + (lrow % 8) * 16;
     const __half *Atile = A + (size_t)(blockM * WBM) * N;
     const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
 
@@ -213,8 +219,8 @@ __global__ __launch_bounds__(256) void matmulWgmmaKernel(
     // per stage (so wait_group<N> counts STAGES-1-N pending groups).
     #pragma unroll
     for (int s = 0; s < STAGES - 1; s++) {
-        cp_async16(A_s[s] + loff, Atile + (size_t)lrow * N + s * WBK + lchunk * 8);
-        cp_async16(B_s[s] + loff, Btile + (size_t)lrow * N + s * WBK + lchunk * 8);
+        cp_async16(A_s[s] + loffA, Atile + (size_t)lrow * N + s * WBK + lchunk * 8);
+        cp_async16(B_s[s] + loffB, Btile + (size_t)lrow * N + s * WBK + lchunk * 8);
         cp_async_commit();
     }
 
@@ -225,7 +231,7 @@ __global__ __launch_bounds__(256) void matmulWgmmaKernel(
         const unsigned char *Aq = A_s[buf] + wgM * 2048;
         const unsigned char *Bq = B_s[buf];  // full 128-row B tile (n128)
         uint64_t descA = make_smem_desc(Aq, 1024, 128);
-        uint64_t descB = make_smem_desc(Bq, 1024, 128);
+        uint64_t descB = make_smem_desc(Bq, 2048, 128);  // LBO=2048: 16 n-atoms x 128B per k-chunk
 
         // Wait until THIS stage's cp.async group has landed. Groups more
         // recent than tile i: tiles i+1..i+2 (tile i+3 is issued AFTER this
@@ -249,8 +255,8 @@ __global__ __launch_bounds__(256) void matmulWgmmaKernel(
         if (ks < N) {
             wgmma_wait<1>();          // wgmma from 2 iterations ago done -> its stage reusable
             __syncthreads();          // ALL wgs done reading that stage
-            cp_async16(A_s[ks / WBK % STAGES] + loff, Atile + (size_t)lrow * N + ks + lchunk * 8);
-            cp_async16(B_s[ks / WBK % STAGES] + loff, Btile + (size_t)lrow * N + ks + lchunk * 8);
+            cp_async16(A_s[ks / WBK % STAGES] + loffA, Atile + (size_t)lrow * N + ks + lchunk * 8);
+            cp_async16(B_s[ks / WBK % STAGES] + loffB, Btile + (size_t)lrow * N + ks + lchunk * 8);
             cp_async_commit();
         }
     }
