@@ -12,6 +12,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <cstdio>
+#include <unistd.h>
 
 __device__ __forceinline__ void cp_async_4b(void *smem_dst, const void *gmem_src,
                                             int src_bytes) {
