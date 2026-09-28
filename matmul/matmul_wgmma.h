@@ -2,6 +2,8 @@
 #define MATMUL_WGMMA_H
 
 #include "matmul_kernel.h"
+#include <cuda_fp16.h>
+#include <cstdint>
 
 // Rung 9c: Hopper WGMMA (wgmma.mma_async, warp-group Tensor Core).
 // v1 = correctness-first: SS operands (both from SMEM, K-major), no swizzle
