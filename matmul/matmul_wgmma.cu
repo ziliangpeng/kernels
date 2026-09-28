@@ -164,8 +164,8 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
         __syncthreads();
 
         // ---- one wgmma over this K-slice
-        uint64_t descA = make_smem_desc(A_s, 1024, 128);  // LBO=K atom step, SBO=M atom step
-        uint64_t descB = make_smem_desc(B_s, 1024, 128);
+        uint64_t descA = make_smem_desc(A_s, 16, 128);  // K-major no-swizzle: LBO encoded 1 (assumed); SBO=M atom step
+        uint64_t descB = make_smem_desc(B_s, 16, 128);
         wgmma_fence();
         WGMMA_M64N128K16_F32F16F16(acc, descA, descB, 1);
         wgmma_commit();
