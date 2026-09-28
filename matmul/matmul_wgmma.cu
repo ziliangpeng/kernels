@@ -173,10 +173,15 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
         uint64_t descA = make_smem_desc(Aq, 1024, 128);
         uint64_t descB = make_smem_desc(Bq, 1024, 128);
 
-        // wait until THIS stage's cp.async group has landed (at most
-        // STAGES-1 groups may still be pending: the ones issued for stages
-        // AFTER this one), make it visible to the async proxy, issue wgmma.
-        cp_async_wait<STAGES - 1>();
+        // Wait until THIS stage's cp.async group has landed. Groups more
+        // recent than tile i: tiles i+1..i+2 (tile i+3 is issued AFTER this
+        // wait) — so the allowed-pending depth is min(2, tilesLeft), NOT
+        // STAGES-1 (that over-permits and reads unlanded tiles: v5.1 bug).
+        // Tail iterations have fewer newer groups -> clamp to wait<0>.
+        const int tilesLeft = (N - k0) / WBK - 1;
+        if (tilesLeft >= 2)      cp_async_wait<2>();
+        else if (tilesLeft == 1) cp_async_wait<1>();
+        else                     cp_async_wait<0>();
         __syncthreads();
         fence_proxy_async();
 
