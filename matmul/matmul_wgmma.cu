@@ -170,27 +170,23 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
         __syncthreads();
     }
 
-    // ---- write C: m64n128 fragment layout: thread t of the warpgroup owns
-    // rows/cols per PTX spec: warp w = tid/32 owns rows w*16..w*16+15;
-    // within a warp, lane l: row = (l/4) + w*16 base... standard mapping:
-    //   acc index i in [0,64): 8 groups of 8: i = g*8 + j
-    //   row = w*16 + (l/4) + (j/2)*8? — use the documented m64nN mapping:
-    //   each thread holds 64 values: for g in 0..7 (n-blocks of 16 cols):
-    //     row = w*16 + l/4,  col = g*16 + (l%4)*2 + (0/1)
-    //     plus second row block: row += 8 for j in {4..7}
+    // ---- write C: PTX m64nN accumulator fragment mapping (pyptx/PTX spec):
+    //   frag_row = w*16 + lane/4, frag_col = (lane%4)*2
+    //   per column group g (8 cols wide): 4 regs
+    //     acc[g*4+0] -> (frag_row,   frag_col + g*8)
+    //     acc[g*4+1] -> (frag_row,   frag_col + g*8 + 1)
+    //     acc[g*4+2] -> (frag_row+8, frag_col + g*8)
+    //     acc[g*4+3] -> (frag_row+8, frag_col + g*8 + 1)
     const int w = tid / 32;
     const int l = tid % 32;
     const int rowBase = blockM * WBM + w * 16 + (l / 4);
     const int colBase = blockN * WBN + (l % 4) * 2;
     #pragma unroll
-    for (int g = 0; g < 8; g++) {
-        #pragma unroll
-        for (int j = 0; j < 8; j += 2) {
-            const int r = rowBase + ((j / 4) ? 8 : 0);
-            const int c = colBase + g * 16 + (j % 4);
-            C[(size_t)r * N + c]           = acc[g * 8 + j];
-            C[(size_t)r * N + c + 1]       = acc[g * 8 + j + 1];
-        }
+    for (int g = 0; g < 16; g++) {
+        C[(size_t)(rowBase) * N + colBase + g * 8]      = acc[g * 4 + 0];
+        C[(size_t)(rowBase) * N + colBase + g * 8 + 1]  = acc[g * 4 + 1];
+        C[(size_t)(rowBase + 8) * N + colBase + g * 8]  = acc[g * 4 + 2];
+        C[(size_t)(rowBase + 8) * N + colBase + g * 8 + 1] = acc[g * 4 + 3];
     }
 }
 
