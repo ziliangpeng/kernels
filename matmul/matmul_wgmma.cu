@@ -66,6 +66,12 @@ __device__ __forceinline__ void wgmma_commit() {
 __device__ __forceinline__ void wgmma_wait0() {
     asm volatile("wgmma.wait_group.sync.aligned 0;\n");
 }
+// wait until at most N wgmma groups are pending (N=1: previous group done,
+// its SMEM buffers free to overwrite while the current group still runs)
+template <int N>
+__device__ __forceinline__ void wgmma_wait() {
+    asm volatile("wgmma.wait_group.sync.aligned %0;\n" :: "n"(N));
+}
 
 // ---- converter kernels ----------------------------------------------------
 
