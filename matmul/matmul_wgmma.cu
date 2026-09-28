@@ -156,18 +156,20 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
         WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
 
+        // EXPERIMENT v4-synch: no pipelining — wait full completion, then
+        // load next tile into the SAME buffer (single-buffer semantics).
+        wgmma_wait0();
+        __syncthreads();
         if (k0 + WBK < N) {
-            wgmma_wait<1>();          // this wg's previous wgmma done
-            __syncthreads();          // ALL wgs' previous reads done (buf^1 free)
             if (ldA) {
                 const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)lrow * N + k0 + WBK + lchunk * 8);
-                *reinterpret_cast<uint4 *>(A_s[buf ^ 1] + loff) = *src;
+                *reinterpret_cast<uint4 *>(A_s[buf] + loff) = *src;
             } else {
                 const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)lrow * N + k0 + WBK + lchunk * 8);
-                *reinterpret_cast<uint4 *>(B_s[buf ^ 1] + loff) = *src;
+                *reinterpret_cast<uint4 *>(B_s[buf] + loff) = *src;
             }
             fence_proxy_async();
-            __syncthreads();          // loads visible to async proxy
+            __syncthreads();
         }
     }
     wgmma_wait0();
