@@ -42,6 +42,7 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_cublas_bf16.h"
 #include "matmul_cublas_fp16.h"
 #include "matmul_warptile_dbuf_f16.h"
+#include "matmul_wgmma.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -230,6 +231,7 @@ void print_usage(const char *program_name) {
     printf("  cublas_bf16:   cuBLAS BF16 Tensor Core (Ampere+ GPUs)\n");
     printf("  cublas_fp16:   cuBLAS FP16 Tensor Core, FP32 compute (FP16 ladder ceiling)\n");
     printf("  dbuf_f16:      Warp tiling + cp.async double buffering, FP16 storage\n");
+    printf("  wgmma:         Hopper warp-group Tensor Core (wgmma.mma_async), FP16 in / FP32 accum\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -911,6 +913,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWarptileTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "dbuf_f16") == 0) {
         kernel = new MatmulWarptileDbufF16<DTypeTraitsHalf>(N, blockDim);
+    } else if (strcmp(method, "wgmma") == 0) {
+        kernel = new MatmulWgmma(N, blockDim);
     }
 
     if (kernel) {
