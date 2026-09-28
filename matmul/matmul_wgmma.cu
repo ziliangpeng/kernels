@@ -286,7 +286,7 @@ __global__ __launch_bounds__(256) void matmulWgmmaKernel(
     for (int s = 0; s < STAGES - 1; s++) {
         cp_async16(A_s[s] + loffA, Atile + (size_t)lrow * N + s * WBK + lchunk * 8);
         cp_async16(B_s[s] + boff,         Btile + (size_t)brow * N + s * WBK);
-        cp_async16(B_s[s] + boff + 1024,  Btile + (size_t)brow * N + s * WBK + 8);
+        cp_async16(B_s[s] + boff + 4096,  Btile + (size_t)brow * N + s * WBK + 8);
         cp_async_commit();
     }
 
@@ -324,7 +324,7 @@ __global__ __launch_bounds__(256) void matmulWgmmaKernel(
             __syncthreads();          // ALL wgs done reading that stage
             cp_async16(A_s[ks / WBK % STAGES] + loffA, Atile + (size_t)lrow * N + ks + lchunk * 8);
             cp_async16(B_s[ks / WBK % STAGES] + boff,         Btile + (size_t)brow * N + ks);
-            cp_async16(B_s[ks / WBK % STAGES] + boff + 1024,  Btile + (size_t)brow * N + ks + 8);
+            cp_async16(B_s[ks / WBK % STAGES] + boff + 4096,  Btile + (size_t)brow * N + ks + 8);
             cp_async_commit();
         }
     }
