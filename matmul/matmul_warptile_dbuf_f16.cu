@@ -70,7 +70,9 @@ loadTileCpAsync16(const typename Traits::T *A, const typename Traits::T *B, int 
         const int row = f / N8;      // k
         const int col8 = f % N8;     // 8-half column group
         const int col = col8 * 8;
-        const T *src = B + (size_t)(tileIdx + row) * N + blockCol * BN + col;
+        // B is pre-advanced by blockCol*BN at kernel entry (kernel line ~132);
+        // do NOT add blockCol*BN again here (FP32 original computes src WITHOUT it).
+        const T *src = B + (size_t)(tileIdx + row) * N + col;
         const bool rowOk = (tileIdx + row) < N;
         const int colGlobal = blockCol * BN + col;
         if (rowOk && colGlobal + 7 < N &&
