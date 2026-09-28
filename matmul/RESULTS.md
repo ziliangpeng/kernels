@@ -27,11 +27,13 @@
 | 10a | warptile **autotuned** | f32:(64,128,8,8,4,32,64) / f16:(128,128,16,8,4,32,64) | 37.71ᵇ | 32.39ᵇ | **0.859x** | — | +34% (f32, pruned space) / +9% (f16) |
 | 12 | warptile + dbuf (cp.async) | f32:(128,256,8,64,64,2,8,4) / f16:(128,256,16,64,64,2,8,4) | 37.60ᵇ | 34.16ᵉ | 0.908x | — | +34% (f32) / +2% (f16) |
 | 9a | **WMMA fragment API** (naive TC, GMEM-direct fragments) | 16,16,16 | — | 27.55ᶠ | — | 27.56 (bf16) | first TC data point |
-| 9c | **WGMMA v2** (m64n64k16, single-buffer, unoptimized feed) | 64,64,16 | — | 104.36ᵍ | — | — | first TC number; 2.65x scalar king |
-| 9c | **WGMMA v4** (128x128 CTA, 4 warpgroups, dbuf) | 128,128,16 | — | 135.82 | — | — | +30% over v2; LDG direct load |
-| 9c | **WGMMA v5.1** (cp.async, 4-stage pipeline) | 128,128,16 | — | 142.42 | — | — | depth—not async—hides latency |
-| 9c | **WGMMA v6** (m64n128k16, 2 wgs, 4-stage) | 128,128,16 | — | **164.83** | — | — | +16%; 72% of HBM cap |
-| 9c | WGMMA v7 (m64n256k16, 128x256 CTA, 3-stage) | 128,256,16 | — | 162.73 | — | — | flat vs v6 -> NOT bandwidth-bound; latency/sync is the remaining gap |
+| 9c | `wgmma_v2` (m64n64k16, 1 wg, single-buffer) | 64,64,16 | — | 104.34 | — | — | first TC number; the reference |
+| 9c | `wgmma_v3` (v2 + dbuf + wait_group 1) | 64,64,16 | — | 100.27 | — | — | null: 64-tile is HBM-bound |
+| 9c | `wgmma_v4` (128x128 CTA, 4 wgs, dbuf) | 128,128,16 | — | 135.08 | — | — | one macro x 4 quadrants |
+| 9c | `wgmma_v5` (v4 + cp.async, 2-stage) | 128,128,16 | — | 130.57 | — | — | negative: async alone buys nothing |
+| 9c | `wgmma_v5_1` (cp.async, 4-stage) | 128,128,16 | — | 142.46 | — | — | depth—not async—hides latency |
+| 9c | `wgmma_v6` (m64n128k16, 2 wgs, 4-stage) | 128,128,16 | — | **163.17** | — | — | champ; 71% of HBM cap |
+| 9c | `wgmma_v7` (m64n256k16, 128x256 CTA) | 128,256,16 | — | 163.41 | — | — | same-node flat vs v6: NOT bandwidth-bound |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
@@ -119,6 +121,12 @@ Sweep CSVs live in `matmul/`: `1d-autotune-f32/f16-gcp5-h100-2026-09-26.csv`,
    fixed 2026-09-27).
 4. Build flags matter: `-dc` cost 30-60% on this kernel set
    (docs/kb/nvcc-dc-perf-cliff.md). All numbers above are no-dc builds.
+5. WGMMA v2-v7 ladder re-measured 2026-09-29 on ONE node (h100-0-3), one
+   process per method, each version its own single-instance TU kernel
+   (`wgmma_v2`..`wgmma_v7`) — cleanest measurement of the family; v6 163.17
+   vs v7 163.41 confirms the "bigger tile gains nothing" result same-node.
+   Earlier cross-node numbers (104.36/135.82/142.42/164.83/162.73) are
+   superseded by the same-node rows.
 
 ## Methodology note: H100 non-Tensor FP16 rate (verified 2026-09-28, GH100 whitepaper)
 
