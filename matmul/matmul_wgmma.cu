@@ -128,8 +128,10 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
 
     // Interleave atoms: (row/8)*128 + chunk*1024 + (row%8)*16, chunk = k/8.
     // A 128x16 tile = 2 quadrants of 64x16; quadrant footprint 2048B.
-    __shared__ __align__(128) unsigned char A_s[2][WBM * WBK * 2];
-    __shared__ __align__(128) unsigned char B_s[2][WBN * WBK * 2];
+    // v5.1: STAGE-deep pipeline (per-stage 4KB per matrix; 4 stages = 32KB).
+    constexpr int STAGES = 4;
+    __shared__ __align__(128) unsigned char A_s[STAGES][WBM * WBK * 2];
+    __shared__ __align__(128) unsigned char B_s[STAGES][WBN * WBK * 2];
 
     const int blockM = blockIdx.y;
     const int blockN = blockIdx.x;
@@ -153,13 +155,17 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
     #pragma unroll
     for (int i = 0; i < 32; i++) acc[i] = 0.0f;
 
-    // prologue: cp.async tile 0 -> buf 0, commit
-    cp_async16(ldA ? A_s[0] + loff : B_s[0] + loff,
-               Gsrc + (size_t)lrow * N + lchunk * 8);
-    cp_async_commit();
+    // prologue: cp.async tiles 0..STAGES-2 -> stages 0..STAGES-2, one group
+    // per stage (so wait_group<N> counts STAGES-1-N pending groups).
+    #pragma unroll
+    for (int s = 0; s < STAGES - 1; s++) {
+        cp_async16(ldA ? A_s[s] + loff : B_s[s] + loff,
+                   Gsrc + (size_t)lrow * N + s * WBK + lchunk * 8);
+        cp_async_commit();
+    }
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
-        const int buf = (k0 / WBK) & 1;
+        const int buf = k0 / WBK % STAGES;
         // Quadrant base: a 64x16 quadrant's atoms span 2048B (2 K-atoms x
         // LBO 1024); rows 64-127's quadrant starts at +2048.
         const unsigned char *Aq = A_s[buf] + wgM * 2048;
@@ -167,9 +173,10 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
         uint64_t descA = make_smem_desc(Aq, 1024, 128);
         uint64_t descB = make_smem_desc(Bq, 1024, 128);
 
-        // wait for the cp.async group staging THIS buf, make it visible to
-        // the async proxy, then issue wgmma.
-        cp_async_wait<0>();
+        // wait until THIS stage's cp.async group has landed (at most
+        // STAGES-1 groups may still be pending: the ones issued for stages
+        // AFTER this one), make it visible to the async proxy, issue wgmma.
+        cp_async_wait<STAGES - 1>();
         __syncthreads();
         fence_proxy_async();
 
@@ -177,13 +184,14 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
         WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
 
-        // stage k+1 into buf^1 with cp.async while wgmma k runs —
-        // no waiting for wgmma here; the cp.async group overlaps it.
-        if (k0 + WBK < N) {
-            wgmma_wait<1>();          // previous wgmma group done -> buf^1 reads finished
-            __syncthreads();          // ALL wgs done reading buf^1
-            cp_async16(ldA ? A_s[buf ^ 1] + loff : B_s[buf ^ 1] + loff,
-                       Gsrc + (size_t)lrow * N + k0 + WBK + lchunk * 8);
+        // issue cp.async for stage k+STAGES-1 while the pipeline drains —
+        // keeps STAGES-1 copies in flight at all times.
+        const int ks = k0 + (STAGES - 1) * WBK;
+        if (ks < N) {
+            wgmma_wait<1>();          // wgmma from 2 iterations ago done -> its stage reusable
+            __syncthreads();          // ALL wgs done reading that stage
+            cp_async16(ldA ? A_s[ks / WBK % STAGES] + loff : B_s[ks / WBK % STAGES] + loff,
+                       Gsrc + (size_t)lrow * N + ks + lchunk * 8);
             cp_async_commit();
         }
     }
