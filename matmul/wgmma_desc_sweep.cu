@@ -34,33 +34,38 @@ __device__ __forceinline__ uint64_t make_desc(const void *ptr, uint32_t lbo, uin
 template <int LAYOUT>
 __global__ void wgmmaTest(const __half *A, const __half *Bt, float *C, int N,
                           uint32_t lboA, uint32_t sboA, uint32_t lboB, uint32_t sboB) {
+    // K-LOOP version: single 64x16 buffer, reloaded per k-tile, wgmma per
+    // step, accumulate — mirrors the main kernel's structure exactly.
     __shared__ __align__(128) unsigned char sA[64 * 16 * 2];
     __shared__ __align__(128) unsigned char sB[64 * 16 * 2];
     const int tid = threadIdx.x;
-    // stage A (64x16) and Bt (64x16) per layout
-    for (int e = tid; e < 64 * 16; e += 128) {
-        int m = e / 16, k = e % 16;
-        __half v = A[m * N + k];
-        int off;
-        if (LAYOUT == 0) off = (m / 8) * 128 + (k / 8) * 1024 + (m % 8) * 16 + (k % 8) * 2;
-        else if (LAYOUT == 1) off = m * 32 + k * 2;
-        else off = (k / 8) * 1024 + (m / 8) * 128 + (m % 8) * 16 + (k % 8) * 2;
-        *reinterpret_cast<__half *>(sA + off) = v;
-        __half w = Bt[m * N + k];  // Bt is [N][K]; here 64x16 slice (N=K=64)
-        if (LAYOUT == 0) off = (m / 8) * 128 + (k / 8) * 1024 + (m % 8) * 16 + (k % 8) * 2;
-        else if (LAYOUT == 1) off = m * 32 + k * 2;
-        else off = (k / 8) * 1024 + (m / 8) * 128 + (m % 8) * 16 + (k % 8) * 2;
-        *reinterpret_cast<__half *>(sB + off) = w;
-    }
-    __syncthreads();
     asm volatile("wgmma.fence.sync.aligned;\n");
     float acc[32];
     for (int i = 0; i < 32; i++) acc[i] = 0.f;
-    uint64_t da = make_desc(sA, lboA, sboA);
-    uint64_t db = make_desc(sB, lboB, sboB);
-    WGMMA_CALL(acc, da, db, 1);
-    asm volatile("wgmma.commit_group.sync.aligned;\n");
-    asm volatile("wgmma.wait_group.sync.aligned 0;\n");
+    for (int k0 = 0; k0 < N; k0 += 16) {
+        for (int e = tid; e < 64 * 16; e += 128) {
+            int m = e / 16, k = e % 16;
+            __half v = A[m * N + k0 + k];
+            int off;
+            if (LAYOUT == 0) off = (m / 8) * 128 + (k / 8) * 1024 + (m % 8) * 16 + (k % 8) * 2;
+            else if (LAYOUT == 1) off = m * 32 + k * 2;
+            else off = (k / 8) * 1024 + (m / 8) * 128 + (m % 8) * 16 + (k % 8) * 2;
+            *reinterpret_cast<__half *>(sA + off) = v;
+            __half w = Bt[m * N + k0 + k];
+            if (LAYOUT == 0) off = (m / 8) * 128 + (k / 8) * 1024 + (m % 8) * 16 + (k % 8) * 2;
+            else if (LAYOUT == 1) off = m * 32 + k * 2;
+            else off = (k / 8) * 1024 + (m / 8) * 128 + (m % 8) * 16 + (k % 8) * 2;
+            *reinterpret_cast<__half *>(sB + off) = w;
+        }
+        __syncthreads();
+        uint64_t da = make_desc(sA, lboA, sboA);
+        uint64_t db = make_desc(sB, lboB, sboB);
+        asm volatile("wgmma.fence.sync.aligned;\n");
+        WGMMA_CALL(acc, da, db, 1);
+        asm volatile("wgmma.commit_group.sync.aligned;\n");
+        asm volatile("wgmma.wait_group.sync.aligned 0;\n");
+        __syncthreads();
+    }
     // epilogue (m64n64: 8 col groups)
     const int w = tid / 32, l = tid % 32;
     const int rowBase = w * 16 + (l / 4);
