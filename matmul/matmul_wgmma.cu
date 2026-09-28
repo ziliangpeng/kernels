@@ -76,6 +76,22 @@ template <int N>
 __device__ __forceinline__ void wgmma_wait() {
     asm volatile("wgmma.wait_group.sync.aligned %0;\n" :: "n"(N));
 }
+// ---- cp.async (Ampere-style 16B copies, v5) -------------------------------
+//
+// cp.async writes participate in the GENERIC proxy (unlike TMA); wgmma reads
+// SMEM via the async proxy — so the v4-verified fence.proxy.async ordering
+// is kept between copy completion and wgmma issue.
+__device__ __forceinline__ void cp_async16(void *smem, const void *gmem) {
+    uint32_t dst = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 16;\n" :: "r"(dst), "l"(gmem));
+}
+__device__ __forceinline__ void cp_async_commit() {
+    asm volatile("cp.async.commit_group;\n");
+}
+template <int N>
+__device__ __forceinline__ void cp_async_wait() {
+    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
+}
 
 // ---- converter kernels ----------------------------------------------------
 
@@ -111,7 +127,7 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
     float * __restrict__ C, int N) {
 
     // Interleave atoms: (row/8)*128 + chunk*1024 + (row%8)*16, chunk = k/8.
-    // 64-row periodic: quadrant base offset = wgM/wgN * 1024.
+    // A 128x16 tile = 2 quadrants of 64x16; quadrant footprint 2048B.
     __shared__ __align__(128) unsigned char A_s[2][WBM * WBK * 2];
     __shared__ __align__(128) unsigned char B_s[2][WBN * WBK * 2];
 
@@ -121,35 +137,26 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
     const int wg = tid / 128;          // warpgroup 0..3
     const int wgM = wg / 2, wgN = wg % 2;
 
-    // Load mapping: threads 0..255 stage A, 256..511 stage B (each 128 rows
-    // x 2 uint4 chunks). e = tid%256: row = e/2, chunk = e%2.
-    // A 64x16 quadrant occupies 2048B (2 K-atoms x LBO=1024), so rows 64-127
-    // form a SECOND quadrant at +2048 — NOT +1024 (that was v4 bug #2: I
-    // confused the 64-row atom-grid periodicity with the quadrant footprint).
-    // k-atom stride stays 1024 = LBO (sweep-verified).
+    // v5: cp.async staged loads. Each thread issues ONE 16B cp.async (256
+    // threads for A + 256 for B cover each 128x16 half-tile: row = e/2,
+    // chunk = e%2 gives 128 rows x 2 k-atoms x 16B).
     const int lrow = (tid % 256) / 2;
     const int lchunk = (tid % 256) % 2;
     const unsigned loff = (lrow / 64) * 2048 + ((lrow % 64) / 8) * 128 +
                           lchunk * 1024 + (lrow % 8) * 16;
     const bool ldA = tid < 256;
+    const __half *Atile = A + (size_t)(blockM * WBM) * N;
+    const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
+    const __half *Gsrc = ldA ? Atile : Btile;
 
     float acc[32];
     #pragma unroll
     for (int i = 0; i < 32; i++) acc[i] = 0.0f;
 
-    const __half *Atile = A + (size_t)(blockM * WBM) * N;
-    const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
-
-    // prologue: stage 0 -> buf 0
-    if (ldA) {
-        const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)lrow * N + lchunk * 8);
-        *reinterpret_cast<uint4 *>(A_s[0] + loff) = *src;
-    } else {
-        const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)lrow * N + lchunk * 8);
-        *reinterpret_cast<uint4 *>(B_s[0] + loff) = *src;
-    }
-    fence_proxy_async();
-    __syncthreads();
+    // prologue: cp.async tile 0 -> buf 0, commit
+    cp_async16(ldA ? A_s[0] + loff : B_s[0] + loff,
+               Gsrc + (size_t)lrow * N + lchunk * 8);
+    cp_async_commit();
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
         const int buf = (k0 / WBK) & 1;
@@ -159,28 +166,29 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
         const unsigned char *Bq = B_s[buf] + wgN * 2048;
         uint64_t descA = make_smem_desc(Aq, 1024, 128);
         uint64_t descB = make_smem_desc(Bq, 1024, 128);
+
+        // wait for the cp.async group staging THIS buf, make it visible to
+        // the async proxy, then issue wgmma.
+        cp_async_wait<0>();
+        __syncthreads();
+        fence_proxy_async();
+
         wgmma_fence();
         WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
 
-        // v4 pipeline (restored; the synch experiment had its own buffer
-        // bug — it loaded into buf while the next iteration reads buf^1).
-        // wait_group 1 = previous wgmma done -> buf^1 free to overwrite.
+        // stage k+1 into buf^1 with cp.async while wgmma k runs —
+        // no waiting for wgmma here; the cp.async group overlaps it.
         if (k0 + WBK < N) {
-            wgmma_wait<1>();
-            __syncthreads();          // ALL wgs' previous reads done
-            if (ldA) {
-                const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)lrow * N + k0 + WBK + lchunk * 8);
-                *reinterpret_cast<uint4 *>(A_s[buf ^ 1] + loff) = *src;
-            } else {
-                const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)lrow * N + k0 + WBK + lchunk * 8);
-                *reinterpret_cast<uint4 *>(B_s[buf ^ 1] + loff) = *src;
-            }
-            fence_proxy_async();
-            __syncthreads();          // loads visible to async proxy
+            wgmma_wait<1>();          // previous wgmma group done -> buf^1 reads finished
+            __syncthreads();          // ALL wgs done reading buf^1
+            cp_async16(ldA ? A_s[buf ^ 1] + loff : B_s[buf ^ 1] + loff,
+                       Gsrc + (size_t)lrow * N + k0 + WBK + lchunk * 8);
+            cp_async_commit();
         }
     }
     wgmma_wait0();
+    cp_async_wait<0>();
 
     // epilogue (per-quadrant, sweep-verified m64n64 mapping)
     const int w = (tid % 128) / 32;
