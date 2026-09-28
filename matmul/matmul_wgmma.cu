@@ -102,8 +102,9 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
 
     // Canonical no-swizzle interleave (sweep-verified): core matrix = 8x8
     // halfs (128B) contiguous; atom (mi, ki) at mi*128 + ki*1024 bytes.
-    __shared__ __align__(128) unsigned char A_s[WBM * WBK * 2];
-    __shared__ __align__(128) unsigned char B_s[WBN * WBK * 2];
+    // DOUBLE-BUFFERED (v3): load tile k+1 into buf^1 while wgmma runs on buf.
+    __shared__ __align__(128) unsigned char A_s[2][WBM * WBK * 2];
+    __shared__ __align__(128) unsigned char B_s[2][WBN * WBK * 2];
 
     const int blockM = blockIdx.y;
     const int blockN = blockIdx.x;
@@ -120,33 +121,42 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     const __half *Atile = A + (size_t)(blockM * WBM) * N;
     const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
 
-    wgmma_fence();
+    // ---- v3 pipeline: prologue loads tile 0; steady state issues wgmma on
+    // buf, then (wait_group 1 = previous wgmma done) loads tile k+1 into
+    // buf^1 while the current wgmma runs. No per-step wait_group 0.
+    {
+        // load tile 0 -> buf 0
+        const uint4 *srcA = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + aCol);
+        uint4 *dstA = reinterpret_cast<uint4 *>(A_s[0] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+        dstA[0] = srcA[0];
+        const uint4 *srcB = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + aCol);
+        uint4 *dstB = reinterpret_cast<uint4 *>(B_s[0] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+        dstB[0] = srcB[0];
+        fence_proxy_async();
+        __syncthreads();
+    }
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
-        // A row aRow, k-half-chunk aCol (16B): dst = interleave offset
-        {
-            const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + aCol);
-            uint4 *dst = reinterpret_cast<uint4 *>(A_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
-            *dst = *src;
-        }
-        // B (Bt rows blockN*64..+64, same 64x16 shape)
-        {
-            const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + k0 + aCol);
-            uint4 *dst = reinterpret_cast<uint4 *>(B_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
-            *dst = *src;
-        }
-        __syncthreads();
-        fence_proxy_async();
-
-        uint64_t descA = make_smem_desc(A_s, 1024, 128);
-        uint64_t descB = make_smem_desc(B_s, 1024, 128);
+        const int buf = (k0 / WBK) & 1;
+        uint64_t descA = make_smem_desc(A_s[buf], 1024, 128);
+        uint64_t descB = make_smem_desc(B_s[buf], 1024, 128);
         wgmma_fence();
         WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
-        wgmma_wait0();
 
-        __syncthreads();
+        if (k0 + WBK < N) {
+            wgmma_wait<1>();  // previous wgmma done -> buf^1 free to overwrite
+            const uint4 *srcA = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + WBK + aCol);
+            uint4 *dstA = reinterpret_cast<uint4 *>(A_s[buf ^ 1] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            dstA[0] = srcA[0];
+            const uint4 *srcB = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + k0 + WBK + aCol);
+            uint4 *dstB = reinterpret_cast<uint4 *>(B_s[buf ^ 1] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            dstB[0] = srcB[0];
+            fence_proxy_async();
+            __syncthreads();
+        }
     }
+    wgmma_wait0();
 
     // epilogue (sweep-verified m64n64): frag_row = w*16 + lane/4,
     // frag_col = (lane%4)*2; 8 col groups x 4 regs.
