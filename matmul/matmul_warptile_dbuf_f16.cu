@@ -233,6 +233,7 @@ MatmulWarptileDbufF16<Traits>::MatmulWarptileDbufF16(int N, int blockDim,
                                                      int TM, int TN,
                                                      int NUM_THREADS)
     : N(N), blockDim(blockDim) {
+    using T = typename Traits::T;
     cfg[0] = BM; cfg[1] = BN; cfg[2] = BK; cfg[3] = WM; cfg[4] = WN;
     cfg[5] = WNITER; cfg[6] = TM; cfg[7] = TN; cfg[8] = NUM_THREADS;
     cudaCheckError(cudaMalloc(&d_A16, (size_t)N * N * sizeof(T)));
@@ -248,6 +249,7 @@ MatmulWarptileDbufF16<Traits>::~MatmulWarptileDbufF16() {
 template <typename Traits>
 void MatmulWarptileDbufF16<Traits>::execute(const float *d_A, const float *d_B,
                                             float *d_C) {
+    using T = typename Traits::T;
     // Convert FP32 storage -> 16-bit storage each execute() (N^2 elements vs
     // N^3 FLOPs = 0.02% of work at N=4096; kept inside execute for API purity,
     // matching how other typed kernels handle their input conversion).
