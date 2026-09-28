@@ -144,21 +144,18 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
     wgmma_fence();
 
     for (int k0 = 0; k0 < N; k0 += WBK) {
-        // ---- load A_s: rows 0..63, cols k0..k0+15 (2 threads/row, 8 halfs)
+        // ---- load A_s: rows 0..63, cols k0..k0+15 (2 threads/row, 8 halfs = 16B)
         {
-            const __half4 *src = reinterpret_cast<const __half4 *>(Atile + (size_t)aRow * N + k0 + aCol);
-            __half4 *dst = reinterpret_cast<__half4 *>(&A_s[aRow][aCol]);
-            dst[0] = src[0];
-            dst[1] = src[1];
+            const uint4 *src = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + aCol);
+            uint4 *dst = reinterpret_cast<uint4 *>(&A_s[aRow][aCol]);
+            *dst = *src;
         }
-        // ---- load B_s: 128 rows x 16 halfs (one row per thread, 4 half4)
+        // ---- load B_s: 128 rows x 16 halfs (one row per thread, 2 x 16B)
         {
-            const __half4 *src = reinterpret_cast<const __half4 *>(Btile + (size_t)bRow * N + k0);
-            __half4 *dst = reinterpret_cast<__half4 *>(&B_s[bRow][0]);
+            const uint4 *src = reinterpret_cast<const uint4 *>(Btile + (size_t)bRow * N + k0);
+            uint4 *dst = reinterpret_cast<uint4 *>(&B_s[bRow][0]);
             dst[0] = src[0];
             dst[1] = src[1];
-            dst[2] = src[2];
-            dst[3] = src[3];
         }
         __syncthreads();
 
