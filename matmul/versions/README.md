@@ -14,6 +14,7 @@ narrative. Read bottom-up for the teaching arc.
 | v5 | matmul_wgmma_v5.cu | 16f4769..16f4769 | v4 + cp.async 16B, 2-stage | 130.04 | staging goes async; 2 stages too shallow to help |
 | v5.1 | matmul_wgmma_v5.1.cu | 9373920..ec4644f | 4-stage pipeline, 3 copies in flight | 142.42 | depth (not async-ness) hides latency; wait-depth counting bug |
 | v6 | matmul_wgmma_v6.cu | f1feb44..dbc4ed1 | m64n128k16, 2 wgs, 4-stage | **164.83** | wgmma instruction count halved; **B layout follows macro shape** (full-128-row atoms, LBO=2048) |
+| v7 | matmul_wgmma_v7.cu | e0c18af..d1c95f4 | m64n256k16, 128x256 CTA, 3-stage | 162.73 | bigger tile bought NOTHING (AI 85 vs 64) -> v6's gap is latency/sync, not bandwidth; staging-granularity change without re-derived offsets = 2 bugs |
 
 ## Per-version notes (what to look at when reading the code)
 
@@ -53,6 +54,13 @@ it.**
 time are only i+1, i+2 (i+3 issues after the wait) — depth is min(2,
 tilesLeft), clamped at the tail. Counting by stage-array size over-permits
 and reads unlanded tiles.
+
+**v7** — the controlled experiment that DISPROVES the bandwidth theory:
+128x256 CTA (AI 85, roofline ~290T) landed flat vs v6. Two staging-offset
+bugs en route (lchunk residue, +1024 vs +4096) share one root cause: changed
+staging granularity, reused stale offset constants. Conclusion for the
+road: remaining gap is barriers + issue rate, so the next levers are TMA
+bulk copies and warp specialization, not bigger tiles.
 
 **v6** — instruction-count reduction: one m64n128k16 per K-step per
 warpgroup (2 wgs x 64x128 strips). The B operand's SMEM layout must follow
