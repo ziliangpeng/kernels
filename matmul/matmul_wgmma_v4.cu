@@ -204,7 +204,7 @@ void MatmulWgmmaV4::execute(const float *d_A, const float *d_B, float *d_C) {
     dim3 tb((N + 31) / 32, (N + 31) / 32);
     wgmmaV4_transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
 
-    dim3 grid(N / WBN, N / WV4BM);
+    dim3 grid(N / WV4BN, N / WV4BM);
     matmulWgmmaV4Kernel<<<grid, 512>>>(d_A16, d_Bt16, d_C, N);
     cudaCheckError(cudaGetLastError());
 }

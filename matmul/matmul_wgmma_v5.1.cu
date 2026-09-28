@@ -177,7 +177,7 @@ __global__ __launch_bounds__(512) void matmulWgmmaV51Kernel(
 
         // issue cp.async for stage k+STAGES-1 while the pipeline drains —
         // keeps STAGES-1 copies in flight at all times.
-        const int ks = k0 + (STAGES - 1) * WBK;
+        const int ks = k0 + (STAGES - 1) * WV51BK;
         if (ks < N) {
             wgmma_wait<1>();          // wgmma from 2 iterations ago done -> its stage reusable
             __syncthreads();          // ALL wgs done reading that stage
@@ -224,7 +224,7 @@ void MatmulWgmmaV51::execute(const float *d_A, const float *d_B, float *d_C) {
     dim3 tb((N + 31) / 32, (N + 31) / 32);
     wgmmaV51_transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
 
-    dim3 grid(N / WBN, N / WV51BM);
+    dim3 grid(N / WV51BN, N / WV51BM);
     matmulWgmmaV51Kernel<<<grid, 512>>>(d_A16, d_Bt16, d_C, N);
     cudaCheckError(cudaGetLastError());
 }

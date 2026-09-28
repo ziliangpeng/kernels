@@ -192,7 +192,7 @@ void MatmulWgmmaV3::execute(const float *d_A, const float *d_B, float *d_C) {
     dim3 tb((N + 31) / 32, (N + 31) / 32);
     wgmmaV3_transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
 
-    dim3 grid(N / WBN, N / WV3BM);
+    dim3 grid(N / WV3BN, N / WV3BM);
     matmulWgmmaV3Kernel<<<grid, 128>>>(d_A16, d_Bt16, d_C, N);
     cudaCheckError(cudaGetLastError());
 }
