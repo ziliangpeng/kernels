@@ -717,6 +717,8 @@ void benchmark_all_methods(int blockDim, bool verify) {
 }
 
 // Matrix multiplication operation (single method mode)
+void dbuf16Autotune(int N, int num_iterations);  // matmul_warptile_dbuf_f16.cu
+
 void matmul_op(int N, int blockDim, bool verify, const char *method) {
     // Detect GPU and get peak performance (for MFU calculation)
     double peak_gflops = get_gpu_peak_gflops();
@@ -909,6 +911,7 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWarptileTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "dbuf_f16") == 0) {
         kernel = new MatmulWarptileDbufF16<DTypeTraitsHalf>(N, blockDim);
+    }
 
     if (kernel) {
         // Class-based API: Time ONLY kernel execution (no setup/teardown overhead)
