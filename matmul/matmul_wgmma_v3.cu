@@ -1,22 +1,10 @@
-// Rung 9c: Hopper WGMMA — v4, CTA tile 128x128, 4 warpgroups (2x2).
-//
-// Instruction: wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 (same
-// sweep-verified macro as v2/v3). Each warpgroup computes a 64x64 quadrant;
-// wgM = wg/2 picks the A half, wgN = wg%2 the B half.
-//
-// Key layout fact (v4): the no-swizzle interleave is 64-row periodic —
-// row r+8 shifts the atom offset by exactly +1024B = one LBO unit — so the
-// quadrant descriptors are simply base+1024 with the SAME LBO=1024/SBO=128.
-//
-// Pipeline (from v3, now cross-warpgroup safe): stage k+1 loads while the
-// 4 warpgroups' wgmma run on stage k. wait_group 1 is per-warpgroup, so a
-// __syncthreads() after it guarantees ALL warpgroups' previous reads are
-// done before the double-buffer flip is overwritten.
-//
-// Roofline: AI = 2*128*128*16 / ((128+128)*16*2) = 64 FLOP/B -> ~230T cap
-// at 3.35TB/s HBM (v3 measured ~91% of its own 115T cap: bandwidth-bound).
+// Kernel "wgmma_v3" — v2 + double-buffered SMEM + wgmma.wait_group 1 lag
+// pipeline (load tile k+1 while wgmma k runs). Perf null result: the
+// 64x64 tile is HBM-bandwidth-bound, so latency hiding had nothing to
+// feed. Also the version that exposed the fake-BUILD-OK failure mode
+// (undefined wgmma_wait<1> compiled to nothing; bench ran v2 binary).
 
-#include "matmul_wgmma.h"
+#include "matmul_wgmma_v3.h"
 #include "cuda_utils.h"
 #include "dtype_traits.h"
 #include <cuda_runtime.h>
@@ -76,33 +64,17 @@ template <int N>
 __device__ __forceinline__ void wgmma_wait() {
     asm volatile("wgmma.wait_group.sync.aligned %0;\n" :: "n"(N));
 }
-// ---- cp.async (Ampere-style 16B copies, v5) -------------------------------
-//
-// cp.async writes participate in the GENERIC proxy (unlike TMA); wgmma reads
-// SMEM via the async proxy — so the v4-verified fence.proxy.async ordering
-// is kept between copy completion and wgmma issue.
-__device__ __forceinline__ void cp_async16(void *smem, const void *gmem) {
-    uint32_t dst = static_cast<uint32_t>(__cvta_generic_to_shared(smem));
-    asm volatile("cp.async.ca.shared.global [%0], [%1], 16;\n" :: "r"(dst), "l"(gmem));
-}
-__device__ __forceinline__ void cp_async_commit() {
-    asm volatile("cp.async.commit_group;\n");
-}
-template <int N>
-__device__ __forceinline__ void cp_async_wait() {
-    asm volatile("cp.async.wait_group %0;\n" :: "n"(N));
-}
 
 // ---- converter kernels ----------------------------------------------------
 
-__global__ void convertF32ToF16(const float * __restrict__ in,
+__global__ void wgmmaV3_convertF32ToF16(const float * __restrict__ in,
                                 __half * __restrict__ out, int n) {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i < n) out[i] = __float2half(in[i]);
 }
 
 // B: [K][N] row-major -> Bt: [N][K] (K-major)
-__global__ void transposeB(const __half * __restrict__ B,
+__global__ void wgmmaV3_transposeB(const __half * __restrict__ B,
                            __half * __restrict__ Bt, int N) {
     __shared__ __half tile[32][33];
     int x = blockIdx.x * 32 + (threadIdx.x % 32);
@@ -116,85 +88,80 @@ __global__ void transposeB(const __half * __restrict__ B,
 
 // ---- main kernel ----------------------------------------------------------
 //
-// Grid: (N/128, N/128). 512 threads = 4 warpgroups, 2x2 quadrant split.
+// Grid: (N/64, N/64). One warpgroup per 64x64 output tile.
 
-constexpr int WBM = 128;
-constexpr int WBN = 128;
-constexpr int WBK = 16;
+constexpr int WV3BM = 64;
+constexpr int WV3BN = 64;
+constexpr int WV3BK = 16;
 
-__global__ __launch_bounds__(512) void matmulWgmmaKernel(
+__global__ __launch_bounds__(128) void matmulWgmmaV3Kernel(
     const __half * __restrict__ A, const __half * __restrict__ Bt,
     float * __restrict__ C, int N) {
 
-    // Interleave atoms: (row/8)*128 + chunk*1024 + (row%8)*16, chunk = k/8.
-    // A 128x16 tile = 2 quadrants of 64x16; quadrant footprint 2048B.
-    __shared__ __align__(128) unsigned char A_s[2][WBM * WBK * 2];
-    __shared__ __align__(128) unsigned char B_s[2][WBN * WBK * 2];
+    // Canonical no-swizzle interleave (sweep-verified): core matrix = 8x8
+    // halfs (128B) contiguous; atom (mi, ki) at mi*128 + ki*1024 bytes.
+    // DOUBLE-BUFFERED (v3): load tile k+1 into buf^1 while wgmma runs on buf.
+    __shared__ __align__(128) unsigned char A_s[2][WV3BM * WV3BK * 2];
+    __shared__ __align__(128) unsigned char B_s[2][WV3BN * WV3BK * 2];
 
     const int blockM = blockIdx.y;
     const int blockN = blockIdx.x;
     const int tid = threadIdx.x;
-    const int wg = tid / 128;          // warpgroup 0..3
-    const int wgM = wg / 2, wgN = wg % 2;
 
-    // v5: cp.async staged loads. Each thread issues ONE 16B cp.async (256
-    // threads for A + 256 for B cover each 128x16 half-tile: row = e/2,
-    // chunk = e%2 gives 128 rows x 2 k-atoms x 16B).
-    const int lrow = (tid % 256) / 2;
-    const int lchunk = (tid % 256) % 2;
-    const unsigned loff = (lrow / 64) * 2048 + ((lrow % 64) / 8) * 128 +
-                          lchunk * 1024 + (lrow % 8) * 16;
-    const bool ldA = tid < 256;
-    const __half *Atile = A + (size_t)(blockM * WBM) * N;
-    const __half *Btile = Bt + (size_t)(blockN * WBN) * N;
-    const __half *Gsrc = ldA ? Atile : Btile;
+    // load mapping (both tiles 64x16): row=tid/2, 8-half chunk=tid%2
+    const int aRow = tid / 2;
+    const int aCol = (tid % 2) * 8;
 
     float acc[32];
     #pragma unroll
     for (int i = 0; i < 32; i++) acc[i] = 0.0f;
 
-    // prologue: cp.async tile 0 -> buf 0, commit
-    cp_async16(ldA ? A_s[0] + loff : B_s[0] + loff,
-               Gsrc + (size_t)lrow * N + lchunk * 8);
-    cp_async_commit();
+    const __half *Atile = A + (size_t)(blockM * WV3BM) * N;
+    const __half *Btile = Bt + (size_t)(blockN * WV3BN) * N;
 
-    for (int k0 = 0; k0 < N; k0 += WBK) {
-        const int buf = (k0 / WBK) & 1;
-        // Quadrant base: a 64x16 quadrant's atoms span 2048B (2 K-atoms x
-        // LBO 1024); rows 64-127's quadrant starts at +2048.
-        const unsigned char *Aq = A_s[buf] + wgM * 2048;
-        const unsigned char *Bq = B_s[buf] + wgN * 2048;
-        uint64_t descA = make_smem_desc(Aq, 1024, 128);
-        uint64_t descB = make_smem_desc(Bq, 1024, 128);
-
-        // wait for the cp.async group staging THIS buf, make it visible to
-        // the async proxy, then issue wgmma.
-        cp_async_wait<0>();
-        __syncthreads();
+    // ---- v3 pipeline: prologue loads tile 0; steady state issues wgmma on
+    // buf, then (wait_group 1 = previous wgmma done) loads tile k+1 into
+    // buf^1 while the current wgmma runs. No per-step wait_group 0.
+    {
+        // load tile 0 -> buf 0
+        const uint4 *srcA = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + aCol);
+        uint4 *dstA = reinterpret_cast<uint4 *>(A_s[0] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+        dstA[0] = srcA[0];
+        const uint4 *srcB = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + aCol);
+        uint4 *dstB = reinterpret_cast<uint4 *>(B_s[0] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+        dstB[0] = srcB[0];
         fence_proxy_async();
+        __syncthreads();
+    }
 
+    for (int k0 = 0; k0 < N; k0 += WV3BK) {
+        const int buf = (k0 / WV3BK) & 1;
+        uint64_t descA = make_smem_desc(A_s[buf], 1024, 128);
+        uint64_t descB = make_smem_desc(B_s[buf], 1024, 128);
         wgmma_fence();
         WGMMA_M64N64K16(acc, descA, descB, 1);
         wgmma_commit();
 
-        // stage k+1 into buf^1 with cp.async while wgmma k runs —
-        // no waiting for wgmma here; the cp.async group overlaps it.
-        if (k0 + WBK < N) {
-            wgmma_wait<1>();          // previous wgmma group done -> buf^1 reads finished
-            __syncthreads();          // ALL wgs done reading buf^1
-            cp_async16(ldA ? A_s[buf ^ 1] + loff : B_s[buf ^ 1] + loff,
-                       Gsrc + (size_t)lrow * N + k0 + WBK + lchunk * 8);
-            cp_async_commit();
+        if (k0 + WV3BK < N) {
+            wgmma_wait<1>();  // previous wgmma done -> buf^1 free to overwrite
+            const uint4 *srcA = reinterpret_cast<const uint4 *>(Atile + (size_t)aRow * N + k0 + WV3BK + aCol);
+            uint4 *dstA = reinterpret_cast<uint4 *>(A_s[buf ^ 1] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            dstA[0] = srcA[0];
+            const uint4 *srcB = reinterpret_cast<const uint4 *>(Btile + (size_t)aRow * N + k0 + WV3BK + aCol);
+            uint4 *dstB = reinterpret_cast<uint4 *>(B_s[buf ^ 1] + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            dstB[0] = srcB[0];
+            fence_proxy_async();
+            __syncthreads();
         }
     }
     wgmma_wait0();
-    cp_async_wait<0>();
 
-    // epilogue (per-quadrant, sweep-verified m64n64 mapping)
-    const int w = (tid % 128) / 32;
+    // epilogue (sweep-verified m64n64): frag_row = w*16 + lane/4,
+    // frag_col = (lane%4)*2; 8 col groups x 4 regs.
+    const int w = tid / 32;
     const int l = tid % 32;
-    const int rowBase = blockM * WBM + wgM * 64 + w * 16 + (l / 4);
-    const int colBase = blockN * WBN + wgN * 64 + (l % 4) * 2;
+    const int rowBase = blockM * WV3BM + w * 16 + (l / 4);
+    const int colBase = blockN * WV3BN + (l % 4) * 2;
     #pragma unroll
     for (int g = 0; g < 8; g++) {
         C[(size_t)(rowBase) * N + colBase + g * 8]      = acc[g * 4 + 0];
@@ -206,26 +173,26 @@ __global__ __launch_bounds__(512) void matmulWgmmaKernel(
 
 // ---- host wrapper ---------------------------------------------------------
 
-MatmulWgmma::MatmulWgmma(int N, int blockDim) : N(N), blockDim(blockDim) {
+MatmulWgmmaV3::MatmulWgmmaV3(int N, int blockDim) : N(N), blockDim(blockDim) {
     cudaCheckError(cudaMalloc(&d_A16, (size_t)N * N * sizeof(__half)));
     cudaCheckError(cudaMalloc(&d_B16, (size_t)N * N * sizeof(__half)));
     cudaCheckError(cudaMalloc(&d_Bt16, (size_t)N * N * sizeof(__half)));
 }
 
-MatmulWgmma::~MatmulWgmma() {
+MatmulWgmmaV3::~MatmulWgmmaV3() {
     cudaFree(d_A16);
     cudaFree(d_B16);
     cudaFree(d_Bt16);
 }
 
-void MatmulWgmma::execute(const float *d_A, const float *d_B, float *d_C) {
+void MatmulWgmmaV3::execute(const float *d_A, const float *d_B, float *d_C) {
     int n = N * N;
-    convertF32ToF16<<<(n + 255) / 256, 256>>>(d_A, d_A16, n);
-    convertF32ToF16<<<(n + 255) / 256, 256>>>(d_B, d_B16, n);
+    wgmmaV3_convertF32ToF16<<<(n + 255) / 256, 256>>>(d_A, d_A16, n);
+    wgmmaV3_convertF32ToF16<<<(n + 255) / 256, 256>>>(d_B, d_B16, n);
     dim3 tb((N + 31) / 32, (N + 31) / 32);
-    transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
+    wgmmaV3_transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
 
-    dim3 grid(N / WBN, N / WBM);
-    matmulWgmmaKernel<<<grid, 512>>>(d_A16, d_Bt16, d_C, N);
+    dim3 grid(N / WBN, N / WV3BM);
+    matmulWgmmaV3Kernel<<<grid, 128>>>(d_A16, d_Bt16, d_C, N);
     cudaCheckError(cudaGetLastError());
 }

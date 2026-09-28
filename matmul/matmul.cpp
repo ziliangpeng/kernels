@@ -43,6 +43,13 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_cublas_fp16.h"
 #include "matmul_warptile_dbuf_f16.h"
 #include "matmul_wgmma.h"
+#include "matmul_wgmma_v2.h"
+#include "matmul_wgmma_v3.h"
+#include "matmul_wgmma_v4.h"
+#include "matmul_wgmma_v5.h"
+#include "matmul_wgmma_v5.1.h"
+#include "matmul_wgmma_v6.h"
+#include "matmul_wgmma_v7.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -231,7 +238,14 @@ void print_usage(const char *program_name) {
     printf("  cublas_bf16:   cuBLAS BF16 Tensor Core (Ampere+ GPUs)\n");
     printf("  cublas_fp16:   cuBLAS FP16 Tensor Core, FP32 compute (FP16 ladder ceiling)\n");
     printf("  dbuf_f16:      Warp tiling + cp.async double buffering, FP16 storage\n");
-    printf("  wgmma:         Hopper warp-group Tensor Core (wgmma.mma_async), FP16 in / FP32 accum\n");
+    printf("  wgmma:         Hopper warp-group Tensor Core (wgmma.mma_async), FP16 in / FP32 accum (latest, = v7)\n");
+    printf("  wgmma_v2:      WGMMA m64n64k16, 1 warpgroup, single-buffer (the reference)\n");
+    printf("  wgmma_v3:      v2 + double-buffer + wait_group-1 lag pipeline\n");
+    printf("  wgmma_v4:      128x128 CTA, 4 warpgroups 2x2 quadrants\n");
+    printf("  wgmma_v5:      v4 + cp.async staging, 2-stage\n");
+    printf("  wgmma_v5_1:    v5 + 4-stage pipeline (depth hides latency)\n");
+    printf("  wgmma_v6:      m64n128k16, 2 warpgroups, 4-stage\n");
+    printf("  wgmma_v7:      128x256 CTA, m64n256k16 (bandwidth theory disproved)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -915,6 +929,20 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWarptileDbufF16<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "wgmma") == 0) {
         kernel = new MatmulWgmma(N, blockDim);
+    } else if (strcmp(method, "wgmma_v2") == 0) {
+        kernel = new MatmulWgmmaV2(N, blockDim);
+    } else if (strcmp(method, "wgmma_v3") == 0) {
+        kernel = new MatmulWgmmaV3(N, blockDim);
+    } else if (strcmp(method, "wgmma_v4") == 0) {
+        kernel = new MatmulWgmmaV4(N, blockDim);
+    } else if (strcmp(method, "wgmma_v5") == 0) {
+        kernel = new MatmulWgmmaV5(N, blockDim);
+    } else if (strcmp(method, "wgmma_v5_1") == 0) {
+        kernel = new MatmulWgmmaV51(N, blockDim);
+    } else if (strcmp(method, "wgmma_v6") == 0) {
+        kernel = new MatmulWgmmaV6(N, blockDim);
+    } else if (strcmp(method, "wgmma_v7") == 0) {
+        kernel = new MatmulWgmmaV7(N, blockDim);
     }
 
     if (kernel) {
