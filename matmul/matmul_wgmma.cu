@@ -54,6 +54,12 @@ __device__ __forceinline__ uint64_t make_smem_desc(const void *ptr, uint32_t lbo
 __device__ __forceinline__ void wgmma_fence() {
     asm volatile("wgmma.fence.sync.aligned;\n");
 }
+__device__ __forceinline__ void fence_proxy_async() {
+    // Orders prior SMEM writes (generic proxy) against subsequent wgmma
+    // async-proxy reads of that SMEM. Required by PTX; __syncthreads alone
+    // does NOT order the async proxy.
+    asm volatile("fence.proxy.async.shared::cta;\n");
+}
 __device__ __forceinline__ void wgmma_commit() {
     asm volatile("wgmma.commit_group.sync.aligned;\n");
 }
@@ -130,6 +136,7 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
             *dst = *src;
         }
         __syncthreads();
+        fence_proxy_async();
 
         uint64_t descA = make_smem_desc(A_s, 1024, 128);
         uint64_t descB = make_smem_desc(B_s, 1024, 128);
