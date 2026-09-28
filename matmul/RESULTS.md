@@ -27,6 +27,7 @@
 | 10a | warptile **autotuned** | f32:(64,128,8,8,4,32,64) / f16:(128,128,16,8,4,32,64) | 37.71ᵇ | 32.39ᵇ | **0.859x** | — | +34% (f32, pruned space) / +9% (f16) |
 | 12 | warptile + dbuf (cp.async) | f32:(128,256,8,64,64,2,8,4) / f16:(128,256,16,64,64,2,8,4) | 37.60ᵇ | 34.16ᵉ | 0.908x | — | +34% (f32) / +2% (f16) |
 | 9a | **WMMA fragment API** (naive TC, GMEM-direct fragments) | 16,16,16 | — | 27.55ᶠ | — | 27.56 (bf16) | first TC data point |
+| 9c | **WGMMA v2** (m64n64k16, single-buffer, unoptimized feed) | 64,64,16 | — | 104.36ᵍ | — | — | first TC number; 2.65x scalar king |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
