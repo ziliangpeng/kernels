@@ -103,7 +103,7 @@ __global__ void transposeB(const __half * __restrict__ B,
     __syncthreads();
     int xx = blockIdx.y * 32 + (threadIdx.x % 32);
     int yy = blockIdx.x * 32 + (threadIdx.x / 32);
-    if (xx < N && yy < N) Bt[yy * N + xx] = tile[threadIdx.x % 32][threadIdx.x / 32];
+    if (xx < N && yy < N) Bt[yy * N + xx] = tile[threadIdx.x / 32][threadIdx.x % 32];
 }
 
 // ---- main kernel ----------------------------------------------------------
@@ -160,8 +160,8 @@ __global__ __launch_bounds__(128) void matmulWgmmaKernel(
         __syncthreads();
 
         // ---- one wgmma over this K-slice
-        uint64_t descA = make_smem_desc(&A_s[0][0], 16, WBM * 2 * 8);
-        uint64_t descB = make_smem_desc(&B_s[0][0], 16, WBN * 2 * 8);
+        uint64_t descA = make_smem_desc(&A_s[0][0], 16, 8 * WBK * 2);  // LBO=16B, SBO=8 rows x 32B
+        uint64_t descB = make_smem_desc(&B_s[0][0], 16, 8 * WBK * 2);  // same pitch
         wgmma_fence();
         WGMMA_M64N128K16_F32F16F16(acc, descA, descB, 1);
         wgmma_commit();
