@@ -903,6 +903,9 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWarptileTyped<DTypeTraitsHalf>(N, blockDim);
     } else if (strcmp(method, "dbuf_f16") == 0) {
         kernel = new MatmulWarptileDbufF16<DTypeTraitsHalf>(N, blockDim);
+    } else if (strcmp(method, "dbuf16_autotune") == 0) {
+        dbuf16Autotune(N, 100);
+        return;
     }
 
     if (kernel) {

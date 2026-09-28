@@ -228,6 +228,91 @@ __global__ void convertKernelF16(const float * __restrict__ in,
     if (i < n) out[i] = Traits::from_float(in[i]);
 }
 
+
+// ---------------------------------------------------------------------------
+// In-process autotuner over the 16 winner-family configs. Converts A/B to
+// FP16 ONCE, then per config: warmup 10 + event-timed 100 iters, one CSV line
+// each (fflush, resumable), cudaGetLastError gating, 150ms cooldown between
+// configs (power stability, cf. 1D sweep lesson).
+// ---------------------------------------------------------------------------
+void dbuf16Autotune(int N, int num_iterations) {
+    using T = typename DTypeTraitsHalf::T;
+    float *d_A, *d_B, *d_C;
+    T *d_A16, *d_B16;
+    cudaCheckError(cudaMalloc(&d_A, (size_t)N * N * sizeof(float)));
+    cudaCheckError(cudaMalloc(&d_B, (size_t)N * N * sizeof(float)));
+    cudaCheckError(cudaMalloc(&d_C, (size_t)N * N * sizeof(float)));
+    cudaCheckError(cudaMalloc(&d_A16, (size_t)N * N * sizeof(T)));
+    cudaCheckError(cudaMalloc(&d_B16, (size_t)N * N * sizeof(T)));
+    {
+        float *h = (float *)malloc((size_t)N * N * sizeof(float));
+        for (long long i = 0; i < (long long)N * N; ++i)
+            h[i] = (float)((i * 1103515245 + 12345) % 1000) / 1000.0f - 0.5f;
+        cudaCheckError(cudaMemcpy(d_A, h, (size_t)N * N * sizeof(float), cudaMemcpyHostToDevice));
+        cudaCheckError(cudaMemcpy(d_B, h, (size_t)N * N * sizeof(float), cudaMemcpyHostToDevice));
+        free(h);
+    }
+    convertKernelF16<DTypeTraitsHalf><<<(N * N + 255) / 256, 256>>>(d_A, d_A16, N * N);
+    convertKernelF16<DTypeTraitsHalf><<<(N * N + 255) / 256, 256>>>(d_B, d_B16, N * N);
+    cudaDeviceSynchronize();
+
+    static const int CFG[16][9] = {
+        {128, 256, 8, 64, 64, 2, 8, 4, 256},
+        {128, 128, 8, 64, 64, 2, 8, 4, 128},
+        {128, 128, 16, 64, 64, 2, 8, 4, 128},
+        {128, 128, 16, 64, 32, 1, 8, 4, 256},
+        {128, 128, 16, 64, 64, 1, 8, 4, 128},
+        {128, 256, 16, 64, 64, 2, 8, 4, 256},
+        {128, 256, 8, 64, 32, 1, 8, 4, 512},
+        {128, 256, 8, 64, 64, 1, 8, 4, 256},
+        {64, 128, 16, 64, 64, 1, 8, 4, 64},
+        {128, 128, 8, 64, 32, 1, 8, 4, 256},
+        {128, 128, 16, 64, 64, 2, 16, 4, 128},
+        {128, 256, 16, 64, 64, 2, 16, 4, 256},
+        {128, 128, 16, 64, 64, 2, 8, 8, 128},
+        {128, 256, 8, 64, 64, 2, 16, 4, 256},
+        {128, 128, 8, 64, 64, 2, 16, 4, 128},
+        {64, 64, 16, 32, 64, 1, 8, 4, 64},
+    };
+
+    printf("cfg,BM,BN,BK,WM,WN,WNITER,TM,TN,NT,GFLOPS\n");
+    double best = -1.0; int bestIdx = -1;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start); cudaEventCreate(&stop);
+    for (int i = 0; i < 16; ++i) {
+        const int *c = CFG[i];
+        // launch via a temp kernel object (uses the dispatch macro chain)
+        MatmulWarptileDbufF16<DTypeTraitsHalf> k(N, 256, c[0], c[1], c[2], c[3],
+                                                 c[4], c[5], c[6], c[7], c[8]);
+        // warmup 10
+        for (int w = 0; w < 10; ++w) k.execute(d_A, d_B, d_C);
+        cudaDeviceSynchronize();
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,LAUNCH_FAIL\n", i, c[0], c[1],
+                   c[2], c[3], c[4], c[5], c[6], c[7], c[8]);
+            fflush(stdout);
+            continue;
+        }
+        cudaEventRecord(start);
+        for (int it = 0; it < num_iterations; ++it) k.execute(d_A, d_B, d_C);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float ms;
+        cudaEventElapsedTime(&ms, start, stop);
+        const double gflops = (2.0 * N * N * N - (double)N * N) / (ms / num_iterations) / 1e6;
+        printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.1f\n", i, c[0], c[1], c[2], c[3],
+               c[4], c[5], c[6], c[7], c[8], gflops);
+        fflush(stdout);
+        if (gflops > best) { best = gflops; bestIdx = i; }
+        usleep(150000);  // cooldown
+    }
+    const int *c = CFG[bestIdx];
+    printf("# BEST BM=%d BN=%d BK=%d WM=%d WN=%d WNITER=%d TM=%d TN=%d NT=%d: %.1f GFLOPS (%.2f TFLOPS)\n",
+           c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], best, best / 1000.0);
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C); cudaFree(d_A16); cudaFree(d_B16);
+}
+
 template <typename Traits>
 MatmulWarptileDbufF16<Traits>::MatmulWarptileDbufF16(int N, int blockDim,
                                                      int BM, int BN, int BK,
