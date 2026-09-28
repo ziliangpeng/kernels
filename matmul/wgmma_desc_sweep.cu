@@ -74,7 +74,7 @@ __global__ void wgmmaTest(const __half *A, const __half *Bt, float *C, int N,
     }
 }
 
-int main() {
+int main(int argc, char **argv) {
     const int N = 64;
     std::vector<__half> hA(N * N), hB(N * N), hBt(N * N);
     std::vector<float> A(N * N), B(N * N), ref(N * N, 0.f), got(N * N, 0.f);
