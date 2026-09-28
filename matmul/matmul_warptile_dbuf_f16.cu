@@ -288,7 +288,7 @@ void MatmulWarptileDbufF16<Traits>::execute(const float *d_A, const float *d_B,
     LAUNCH_DBUF16(128, 128, 16, 64, 64, 2, 8, 8, 128)
     LAUNCH_DBUF16(128, 256, 8, 64, 64, 2, 16, 4, 256)
     LAUNCH_DBUF16(128, 128, 8, 64, 64, 2, 16, 4, 128)
-    LAUNCH_DBUF16(64, 64, 16, 64, 64, 1, 8, 4, 64)
+    LAUNCH_DBUF16(64, 64, 16, 32, 64, 1, 8, 4, 64)
 #undef LAUNCH_DBUF16
 
     fprintf(stderr,
