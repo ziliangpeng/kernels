@@ -58,7 +58,7 @@ __device__ __forceinline__ uint64_t make_desc_sw(const void *ptr, uint32_t lbo,
           "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),                 \
           "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),                 \
           "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])                  \
-        : "l"(da), "l"(db));
+        : "l"(da), "l"(db), "n"(1));
 
 __device__ __forceinline__ void mbar_init(uint64_t *bar, uint32_t count) {
     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
