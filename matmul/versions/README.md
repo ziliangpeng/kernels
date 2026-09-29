@@ -3,12 +3,12 @@
 Each WGMMA version lives as its own registered kernel — same status as every
 other rung in this repo:
 
-    ./matmul_bench --method wgmma_v2   # (v2, v3, v4, v5, v5_1, v6, v7)
+    ./matmul_bench --method wgmma_v2   # (v2, v3, v4, v5, v5_1, v6, v7, v8)
 
-Files: `../matmul_wgmma_v{2,3,4,5,5.1,6,7}.{h,cu}` (v1 was never verify-PASS and has no kernel file; see it in git history). The working-tree file
+Files: `../matmul_wgmma_v{2,3,4,5,5.1,6,7,8}.{h,cu}` (v1 was never verify-PASS and has no kernel file; see it in git history). The working-tree file
 `../matmul_wgmma.cu` is the development head (currently = v7); version
 snapshots in this folder are retired — the git history of each kernel file
-carries the full blame trail. Narrative worklogs: `../wgmma-v{2,4,5,6,7}-*.md`.
+carries the full blame trail. Narrative worklogs: `../wgmma-v{2,4,5,6,7,8}-*.md`.
 
 ## Per-version notes (what to look at when reading the code)
 
@@ -62,6 +62,15 @@ the macro's traversal: m64n128 walks 16 n-atoms x SBO=128 = 2048B per
 k-chunk, so B atoms are (r/8)*128 + chunk*2048 with descriptor LBO=2048
 (A keeps the 64-row quadrant layout, LBO=1024). Rule: **operand layout is a
 property of the macro shape, not of the tile.**
+
+**v8** — warp specialization, first contact: producer warpgroup issues all
+staging (cp.async), two consumer warpgroups run m64n256k16; mbarrier
+full/free pipeline replaces every steady-state __syncthreads. Correct but
+deliberately serialized (consumer wgmma_wait<0> before releasing the
+stage) — 150.52T vs v7's 163.4T is partly node spread, partly that
+serialization. The 4-round bug chain (per-cycle phase math, by-value
+parity param, branch-scoped __syncthreads deadlock, half-staged A) is the
+warp-spec first-lesson set; see `../wgmma-v8-2026-09-29.md`.
 
 ## Roofline ladder so far
 
