@@ -193,18 +193,20 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
         }
         __syncthreads();   // one-time init barrier (before steady state)
 
-        // phases: full[s] completes on even phases for stage s, s+STAGES...
-        uint32_t full_phase = 0, free_phase = 0;
+        // Phase math (v8 deadlock fix): a stage's barriers complete once per
+        // CYCLE (STAGES laps), not per lap. At cycle c = lap / STAGES:
+        //   - fill #c+1 of stage s completes full_bar[s] phase c -> consumer
+        //     waits parity (c & 1)
+        //   - release #c completes free_bar[s] phase c-1 -> producer's wait
+        //     at cycle c (c >= 1) uses parity ((c-1) & 1)
+        // Parities are DERIVED from the lap index — never flipped by hand
+        // (the per-lap flip was the deadlock: it inverted every 3 laps).
+        for (int k0 = 0, lap = 0; k0 < N; k0 += W8BK, lap++) {
+            const int s = lap % W8STAGES;
 
-        for (int k0 = 0; k0 < N; k0 += W8BK) {
-            const int s = (k0 / W8BK) % W8STAGES;
-
-            // wait until consumers are done with this stage (skip on the
-            // first STAGES laps: stages start free)
-            const int lap = k0 / W8BK;
             if (lap >= W8STAGES) {
-                uint32_t fp = free_phase;
-                w8_mbar_trywait(&free_bar[s], fp);
+                const uint32_t c = lap / W8STAGES;
+                w8_mbar_trywait(&free_bar[s], (c - 1) & 1);
             }
 
             w8_cp_async16(A_s[s] + aoff, Atile + (size_t)alrow * N + k0 + alchunk * 8);
@@ -214,13 +216,9 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
             w8_cp_async16(B_s[s] + boff1 + 4096, Btile + (size_t)(brow0 + 1) * N + k0 + 8);
             w8_cp_async_commit();
 
-            // make THIS stage's copies complete + async-proxy-visible, then
-            // arrive at full[s]
             w8_cp_async_wait<0>();
             w8_fence_proxy_async();
             w8_mbar_arrive(&full_bar[s]);
-
-            if (lap >= W8STAGES) free_phase ^= 1;
         }
     } else {
         // ---- consumers (wg1, wg2): wgmma on 64-row strips ----
@@ -233,14 +231,12 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
         #pragma unroll
         for (int i = 0; i < 128; i++) acc[i] = 0.0f;
 
-        uint32_t full_phase = 0, free_phase = 0;
+        for (int k0 = 0, lap = 0; k0 < N; k0 += W8BK, lap++) {
+            const int s = lap % W8STAGES;
 
-        for (int k0 = 0; k0 < N; k0 += W8BK) {
-            const int s = (k0 / W8BK) % W8STAGES;
-
-            // wait for this stage to be full
-            uint32_t fp = full_phase;
-            w8_mbar_trywait(&full_bar[s], fp);
+            // fill #c+1 of this stage completes full_bar[s] phase c
+            const uint32_t c = lap / W8STAGES;
+            w8_mbar_trywait(&full_bar[s], c & 1);
 
             const unsigned char *Aq = A_s[s] + cm * 2048;
             const unsigned char *Bq = B_s[s];
@@ -251,19 +247,14 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
             W8_M64N256K16(acc, descA, descB, 1);
             w8_wgmma_commit();
 
-            // release this stage once the PREVIOUS wgmma (which read it) is
-            // done: with 1 group in flight, after commit the previous group
-            // is complete iff wait<1> returns; then stage s-? ... simplest
-            // correct: wait<1> then arrive free[s] (releases the stage the
-            // PREVIOUS iteration consumed).
-            w8_wgmma_wait<1>();
+            // correctness-first: wait for THIS wgmma to fully complete, then
+            // release the stage it read. (No wgmma overlap across stages;
+            // pipeline slack comes from the producer running ahead.)
+            w8_wgmma_wait0();
             if (ct == 0) {
-                const int prev_s = (s + W8STAGES - 1) % W8STAGES;
-                w8_mbar_arrive(&free_bar[prev_s]);
+                w8_mbar_arrive(&free_bar[s]);
             }
-            full_phase ^= 1;
         }
-        w8_wgmma_wait0();
 
         // epilogue (v7-verified m64n256 mapping): row = cm*64 + w*16 + l/4
         const int rowBase = blockM * W8BM + cm * 64 + w * 16 + (l / 4);
