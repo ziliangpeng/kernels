@@ -142,7 +142,14 @@ constexpr int W9STAGES = 3;
 // too big -> stage A/B in ONE 64-k buffer each per stage but with 2-stage
 // depth for B? Simplify: STAGES=2 (A 2x16KB + B 2x32KB = 96KB <= 100KB ok).
 
-extern __shared__ __align__(1024) unsigned char w9_smem[];
+// Dynamic SMEM base is only 16B-aligned by default; SWIZZLE_128B TMA
+// destinations must be 1024B-aligned — align manually (v9 bug #1: verify
+// FAIL 0.55 with 327T — swizzle pattern misaligned vs the data).
+extern __shared__ __align__(16) unsigned char w9_raw[];
+__device__ unsigned char *w9_smem_ptr() {
+    return (unsigned char *)(((uintptr_t)w9_raw + 1023) & ~(uintptr_t)1023);
+}
+#define w9_smem w9_smem_ptr()
 
 __global__ __launch_bounds__(384) void matmulWgmmaV9Kernel(
     const __grid_constant__ CUtensorMap tmA,
