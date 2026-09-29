@@ -187,12 +187,16 @@ __global__ __launch_bounds__(384) void matmulWgmmaV9Kernel(
                 }
                 // expect_tx: A 2 boxes x 8KB + B 4 boxes x 8KB = 48KB
                 w9_mbar_expect_tx(&full_bar[s], 6 * 64 * 128);
-                w9_tma_2d(&tmA, A_s + s * 128 * 128, &full_bar[s], 0, blockM * 128);
-                w9_tma_2d(&tmA, A_s + s * 128 * 128 + 64 * 128, &full_bar[s], 0, blockM * 128 + 64);
-                w9_tma_2d(&tmB, B_s + s * 256 * 128, &full_bar[s], 0, blockN * 256);
-                w9_tma_2d(&tmB, B_s + s * 256 * 128 + 64 * 128, &full_bar[s], 0, blockN * 256 + 64);
-                w9_tma_2d(&tmB, B_s + s * 256 * 128 + 128 * 128, &full_bar[s], 0, blockN * 256 + 128);
-                w9_tma_2d(&tmB, B_s + s * 256 * 128 + 192 * 128, &full_bar[s], 0, blockN * 256 + 192);
+                // x = k0 (inner dim advance), y = row offset — the x=0
+                // constant was v9 bug #2: every stage loaded k=0..63 and the
+                // K loop accumulated the same slice N/64 times (maxrel ~0.5
+                // with correct magnitude = wrong accumulation signature).
+                w9_tma_2d(&tmA, A_s + s * 128 * 128, &full_bar[s], k0, blockM * 128);
+                w9_tma_2d(&tmA, A_s + s * 128 * 128 + 64 * 128, &full_bar[s], k0, blockM * 128 + 64);
+                w9_tma_2d(&tmB, B_s + s * 256 * 128, &full_bar[s], k0, blockN * 256);
+                w9_tma_2d(&tmB, B_s + s * 256 * 128 + 64 * 128, &full_bar[s], k0, blockN * 256 + 64);
+                w9_tma_2d(&tmB, B_s + s * 256 * 128 + 128 * 128, &full_bar[s], k0, blockN * 256 + 128);
+                w9_tma_2d(&tmB, B_s + s * 256 * 128 + 192 * 128, &full_bar[s], k0, blockN * 256 + 192);
             }
         }
     } else {
