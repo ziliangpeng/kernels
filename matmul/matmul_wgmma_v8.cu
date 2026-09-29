@@ -106,15 +106,15 @@ __device__ __forceinline__ void w8_mbar_arrive(uint64_t *bar) {
     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
     asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];\n" :: "r"(addr));
 }
-// returns true (in p) when the barrier's CURRENT phase has completed
-__device__ __forceinline__ void w8_mbar_trywait(uint64_t *bar, uint32_t &p) {
+// spins until the barrier completes the given phase parity
+__device__ __forceinline__ void w8_mbar_trywait(uint64_t *bar, uint32_t p) {
     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
     asm volatile(
         "{\n"
-        ".reg .pred p;\n"
+        ".reg .pred P;\n"
         "LAB_WAIT:\n"
-        "mbarrier.try_wait.parity.shared::cta.b64 p, [%0], %1;\n"
-        "@p bra DONE;\n"
+        "mbarrier.try_wait.parity.shared::cta.b64 P, [%0], %1;\n"
+        "@P bra DONE;\n"
         "bra LAB_WAIT;\n"
         "DONE:\n"
         "}\n" :: "r"(addr), "r"(p));
