@@ -34,6 +34,7 @@
 | 9c | `wgmma_v5_1` (cp.async, 4-stage) | 128,128,16 | — | 142.46 | — | — | depth—not async—hides latency |
 | 9c | `wgmma_v6` (m64n128k16, 2 wgs, 4-stage) | 128,128,16 | — | **163.17** | — | — | champ; 71% of HBM cap |
 | 9c | `wgmma_v7` (m64n256k16, 128x256 CTA) | 128,256,16 | — | 163.41 | — | — | same-node flat vs v6: NOT bandwidth-bound |
+| 9c | `wgmma_v8` (warp spec: producer wg + 2 consumers, mbarrier) | 128,256,16 | — | 150.52 | — | — | PASS but wait<0>-serialized (correctness-first); cross-node |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
