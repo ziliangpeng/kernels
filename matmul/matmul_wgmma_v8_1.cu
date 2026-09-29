@@ -252,12 +252,15 @@ __global__ __launch_bounds__(384) void matmulWgmmaV81Kernel(
             W81_M64N256K16(acc, descA, descB, 1);
             w81_wgmma_commit();
 
-            // correctness-first: wait for THIS wgmma to fully complete, then
-            // release the stage it read. (No wgmma overlap across stages;
-            // pipeline slack comes from the producer running ahead.)
-            w81_wgmma_wait0();
-            if (ct == 0) {
-                w81_mbar_arrive(&free_bar[s]);
+            // v8.1 overlap: lap i's wgmma is in flight; wait<1> proves lap
+            // i-1's wgmma completed — it read stage (i-1)%STAGES, so that
+            // stage is now free for the producer to refill.
+            if (lap >= 1) {
+                w81_wgmma_wait<1>();
+                if (ct == 0) {
+                    const int prev_s = (lap - 1) % W8STAGES;
+                    w81_mbar_arrive(&free_bar[prev_s]);
+                }
             }
         }
 
