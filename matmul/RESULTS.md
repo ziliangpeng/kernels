@@ -36,6 +36,7 @@
 | 9c | `wgmma_v7` (m64n256k16, 128x256 CTA) | 128,256,16 | — | 163.41 | — | — | same-node flat vs v6: NOT bandwidth-bound |
 | 9c | `wgmma_v8` (warp spec: producer wg + 2 consumers, mbarrier) | 128,256,16 | — | 150.52 | — | — | PASS but wait<0>-serialized (correctness-first); cross-node |
 | 9c | `wgmma_v8_1` (v8 + wgmma overlap, wait<1> release) | 128,256,16 | — | 145.78 | — | — | overlap LOST 5T vs serialized v8 — consumer spin-wait starves SMSPs; warp-spec on this shape is a dead end without TMA |
+| 9c | `wgmma_v9` (TMA bulk + SWIZZLE_128B, warp-spec) | 128,256,16 | — | **305.02** | — | — | +87% vs v6; TMA×swizzle = designed pair (sweep-verified SBO=1024); 42% of cuBLAS |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |

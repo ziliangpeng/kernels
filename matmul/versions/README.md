@@ -72,6 +72,13 @@ serialization. The 4-round bug chain (per-cycle phase math, by-value
 parity param, branch-scoped __syncthreads deadlock, half-staged A) is the
 warp-spec first-lesson set; see `../wgmma-v8-2026-09-29.md`.
 
+**v9** — the TMA payoff: producer issues 6 TMA bulk instructions per 64-k
+stage (vs 768 per-thread cp.async); SWIZZLE_128B TMA boxes write exactly
+the layout the wgmma 128B-swizzle descriptor expects (sweep-verified
+SBO=1024, maxrel 0.0). 305.02T — +87% over v6 in one rung. Bug chain:
+dynamic-SMEM 1024B alignment, TMA x-coordinate hardcoded 0 (same slice
+accumulated N/64 times), explicit scale-d operand.
+
 ## Roofline ladder so far
 
 (v3 and v5 have no separate worklog — their results and lessons are in the
