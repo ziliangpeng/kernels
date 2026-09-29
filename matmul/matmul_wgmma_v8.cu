@@ -183,11 +183,12 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
     // ---- producer (wg0): stage tiles with cp.async ----
     if (wg == 0) {
         const int pt = tid % 128;              // producer thread 0..127
-        // A: 128 rows x 2 chunks (pt/2 = row, pt%2 = chunk)
-        const int alrow = pt / 2;
-        const int alchunk = pt % 2;
-        const unsigned aoff = (alrow / 64) * 2048 + ((alrow % 64) / 8) * 128 +
-                              alchunk * 1024 + (alrow % 8) * 16;
+        // A: each thread loads ONE full row (pt), BOTH k-chunks — 128 rows
+        // x 2 chunks = 256 copies (the old pt/2 mapping loaded only rows
+        // 0..63: A rows 64..127 never staged -> strip cm=1 read garbage).
+        const unsigned aoff0 = (pt / 64) * 2048 + ((pt % 64) / 8) * 128 +
+                               (pt % 8) * 16;          // k-chunk 0
+        const unsigned aoff1 = aoff0 + 1024;           // k-chunk 1
         // B: 256 rows; 128 threads cover 2 rows each (both k-chunks)
         const int brow0 = pt * 2;              // rows brow0, brow0+1
         const unsigned boff0 = (brow0 / 8) * 128 + (brow0 % 8) * 16;
@@ -212,7 +213,8 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
                 w8_mbar_trywait(&free_bar[s], (c - 1) & 1);
             }
 
-            w8_cp_async16(A_s[s] + aoff, Atile + (size_t)alrow * N + k0 + alchunk * 8);
+            w8_cp_async16(A_s[s] + aoff0, Atile + (size_t)pt * N + k0);
+            w8_cp_async16(A_s[s] + aoff1, Atile + (size_t)pt * N + k0 + 8);
             w8_cp_async16(B_s[s] + boff0, Btile + (size_t)brow0 * N + k0);
             w8_cp_async16(B_s[s] + boff0 + 4096, Btile + (size_t)brow0 * N + k0 + 8);
             w8_cp_async16(B_s[s] + boff1, Btile + (size_t)(brow0 + 1) * N + k0);
