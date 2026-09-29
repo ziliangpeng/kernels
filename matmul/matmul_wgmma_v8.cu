@@ -168,6 +168,18 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
     const int tid = threadIdx.x;
     const int wg = tid / 128;
 
+    // ---- one-time init (ALL threads pass the barrier — a __syncthreads
+    // inside the producer branch alone deadlocks: block barriers need every
+    // thread; this was the original v8 hang) ----
+    if (tid == 0) {
+        #pragma unroll
+        for (int s = 0; s < W8STAGES; s++) {
+            w8_mbar_init(&full_bar[s], 128);   // 128 producer threads
+            w8_mbar_init(&free_bar[s], 2);     // 2 consumer wgs
+        }
+    }
+    __syncthreads();
+
     // ---- producer (wg0): stage tiles with cp.async ----
     if (wg == 0) {
         const int pt = tid % 128;              // producer thread 0..127
@@ -183,15 +195,6 @@ __global__ __launch_bounds__(384) void matmulWgmmaV8Kernel(
 
         const __half *Atile = A + (size_t)(blockM * W8BM) * N;
         const __half *Btile = Bt + (size_t)(blockN * W8BN) * N;
-
-        if (pt == 0) {
-            #pragma unroll
-            for (int s = 0; s < W8STAGES; s++) {
-                w8_mbar_init(&full_bar[s], 128);   // all 128 producer threads
-                w8_mbar_init(&free_bar[s], 2);     // 2 consumer wgs
-            }
-        }
-        __syncthreads();   // one-time init barrier (before steady state)
 
         // Phase math (v8 deadlock fix): a stage's barriers complete once per
         // CYCLE (STAGES laps), not per lap. At cycle c = lap / STAGES:
