@@ -51,6 +51,7 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_wgmma_v6.h"
 #include "matmul_wgmma_v7.h"
 #include "matmul_wgmma_v8.h"
+#include "matmul_wgmma_v8_1.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -248,6 +249,7 @@ void print_usage(const char *program_name) {
     printf("  wgmma_v6:      m64n128k16, 2 warpgroups, 4-stage\n");
     printf("  wgmma_v7:      128x256 CTA, m64n256k16 (bandwidth theory disproved)\n");
     printf("  wgmma_v8:      warp specialization: producer wg + 2 consumer wgs, mbarrier pipeline\n");
+    printf("  wgmma_v8_1:    v8 + wgmma overlap (wait<1> releases previous stage)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -947,6 +949,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWgmmaV7(N, blockDim);
     } else if (strcmp(method, "wgmma_v8") == 0) {
         kernel = new MatmulWgmmaV8(N, blockDim);
+    } else if (strcmp(method, "wgmma_v8_1") == 0) {
+        kernel = new MatmulWgmmaV81(N, blockDim);
     }
 
     if (kernel) {
