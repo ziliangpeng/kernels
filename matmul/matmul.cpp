@@ -54,6 +54,7 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_wgmma_v8_1.h"
 #include "matmul_wgmma_v9.h"
 #include "matmul_wgmma_v9_1.h"
+#include "matmul_wgmma_v9_2.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -254,6 +255,7 @@ void print_usage(const char *program_name) {
     printf("  wgmma_v8_1:    v8 + wgmma overlap (wait<1> releases previous stage)\n");
     printf("  wgmma_v9:      TMA bulk copies + SWIZZLE_128B, warp-specialized\n");
     printf("  wgmma_v9_1:    v9 + consumer overlap (wait<1>) + 3-stage, CTA 128x128\n");
+    printf("  wgmma_v9_2:    v9 shape + 3-stage 144KB + overlap (227KB opt-in)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -959,6 +961,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWgmmaV9(N, blockDim);
     } else if (strcmp(method, "wgmma_v9_1") == 0) {
         kernel = new MatmulWgmmaV91(N, blockDim);
+    } else if (strcmp(method, "wgmma_v9_2") == 0) {
+        kernel = new MatmulWgmmaV92(N, blockDim);
     }
 
     if (kernel) {
