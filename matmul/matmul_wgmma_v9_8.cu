@@ -237,9 +237,9 @@ __global__ __launch_bounds__(384, 1) void matmulWgmmaV98Kernel(
             const int w = ct / 32;
             const int l = ct % 32;
 
-            float acc[64];
+            float acc[128];
             #pragma unroll
-            for (int x = 0; x < 64; x++) acc[x] = 0.0f;
+            for (int x = 0; x < 128; x++) acc[x] = 0.0f;
 
             for (int k0 = 0; k0 < N; k0 += 64) {
                 const long lap = (long)i * klaps + k0 / 64;
