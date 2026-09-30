@@ -167,7 +167,7 @@ __device__ unsigned char *w98_smem_ptr() {
 }
 #define w98_smem w98_smem_ptr()
 
-__global__ __launch_bounds__(384) void matmulWgmmaV98Kernel(
+__global__ __launch_bounds__(384, 1) void matmulWgmmaV98Kernel(
     const __grid_constant__ CUtensorMap tmA,
     const __grid_constant__ CUtensorMap tmB,
     const __grid_constant__ CUtensorMap tmC,
