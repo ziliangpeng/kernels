@@ -245,7 +245,11 @@ __global__ __launch_bounds__(384, 1) void matmulWgmmaV910Kernel(
                     w910_wgmma_commit();
                 }
                 w910_wgmma_wait1();
-                if (lap > 0) {
+                // release the PREVIOUS lap's stage. For lap == i*klaps (the
+                // first lap of tile i>0) this releases the previous tile's
+                // last stage — exactly-once across tiles (the old per-tile
+                // tail release double-arrived and corrupted the barrier).
+                if (lap > 0 || i > 0) {
                     const int prev = (int)((lap - 1) % STAGES);
                     if (ct == 0) w910_mbar_arrive(&free_bar[prev]);
                 }
@@ -284,11 +288,18 @@ __global__ __launch_bounds__(384, 1) void matmulWgmmaV910Kernel(
                 asm volatile("bar.sync %0, 128;\n" :: "r"(wg));
             }
 
-            // release the FINAL stage of this tile (global-lap indexed —
-            // v9_8 released with a local formula, wrong for i%3!=0)
-            const long lastlap = (long)i * klaps + (klaps - 1);
-            if (ct == 0) w910_mbar_arrive(&free_bar[(int)(lastlap % STAGES)]);
         }
+    }
+    // after the LAST tile of this CTA: release its final lap's stage
+    if (wg != 0 && ct == 0) {
+        const long lastlap = (long)((tiles - 1 - blockIdx.x) / gridDim.x + 1 - 1) * klaps + (klaps - 1);
+        // recompute robustly: the last tile this CTA processed
+        // (t_max = tiles-1 - ((tiles-1-blockIdx.x) % gridDim.x), i_max = (t_max - blockIdx.x)/gridDim.x)
+        const long tmax = (long)tiles - 1 - (((long)tiles - 1 - blockIdx.x) % (long)gridDim.x);
+        const long imax = (tmax - blockIdx.x) / (long)gridDim.x;
+        const long lastLapReal = imax * klaps + (klaps - 1);
+        (void)lastlap;
+        if (blockIdx.x < tiles) w910_mbar_arrive(&free_bar[(int)(lastLapReal % STAGES)]);
     }
 }
 
