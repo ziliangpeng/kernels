@@ -40,7 +40,7 @@
 | 9c | `wgmma_v9_1` (v9 + overlap + 3-stage, CTA 128x128) | 128,128,16 | — | 253.15 | — | — | -52T vs v9: shape cost (AI 85→64, m64n128 < m64n256 per-instr) swamped overlap gain; KEY: H100 opt-in SMEM is 227KB not 100KB |
 | 9c | `wgmma_v9_2` (v9 shape + 3-stage 144KB + overlap, 227KB opt-in) | 128,256,16 | — | **311.42** | — | — | +6.4T only: shape near-saturated at 2-stage; depth/overlap not the remaining bottleneck (wave quantization / L2 reuse next) |
 | 9c | `wgmma_v9_3` (v9.2 + GROUP_M=8 rasterization swizzle) | 128,256,16 | — | 309.49 | — | — | flat @4096 (tail-wave masks it) but +25.6T @N=8192 (452.4T, 59% of cuBLAS) — L2-reuse confirmed at scale |
-| 9c | `wgmma_v9_4` (2D 8m×2n rect swizzle) | 128,256,16 | — | FAIL* | — | 428.6 @8192 | negative: 2-col rects hurt B reuse (*ragged-N bijection bug, not fixed) |
+| 9c | `wgmma_v9_4` (2D 8m×2n rect swizzle) | 128,256,16 | — | FAIL* | — | 428.6 @8192 | INCOMPLETE (ragged-N bijection bug unfixed; 428.6 not a clean datapoint; trend negative but unfalsified) — relabeled per Fable review 2026-09-30 |
 | 9c | `wgmma_v9_5` (TMA epilogue: SMEM staging + bulk store) | 128,256,16 | — | 331.56 | 409.6 | 460.9 | +22T@4096 — C write amplification was real |
 | 9c | `wgmma_v9_6` (4-stage 192KB) | 128,256,16 | — | 336.67 | 433.4 | 491.9 | +27T@8192 — TMA latency headroom pays |
 | 9c | `wgmma_v9_7` (TMA epilogue + 4-stage) | 128,256,16 | — | **367.05** | **460.4** | **514.8** | synergy +57.6 vs +49.3 additive; 67.6% of cuBLAS @8192 |
