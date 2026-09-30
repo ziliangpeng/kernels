@@ -62,6 +62,7 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_wgmma_v9_7.h"
 #include "matmul_wgmma_v9_8.h"
 #include "matmul_wgmma_v9_9.h"
+#include "matmul_wgmma_v9_10.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -270,6 +271,7 @@ void print_usage(const char *program_name) {
     printf("  wgmma_v9_7:    TMA epilogue + 4-stage (v9.5 + v9.6 combined)\n");
     printf("  wgmma_v9_8:    persistent CTAs (132) + runtime G band swizzle\n");
     printf("  wgmma_v9_9:    setmaxnreg register rebalance (producer 40 / consumers 232)\n");
+    printf("  wgmma_v9_10:   persistent cooperative + async per-wg epilogue (Fable #2)\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -991,6 +993,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWgmmaV98(N, blockDim);
     } else if (strcmp(method, "wgmma_v9_9") == 0) {
         kernel = new MatmulWgmmaV99(N, blockDim);
+    } else if (strcmp(method, "wgmma_v9_10") == 0) {
+        kernel = new MatmulWgmmaV910(N, blockDim);
     }
 
     if (kernel) {
