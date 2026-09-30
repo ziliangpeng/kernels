@@ -47,6 +47,7 @@
 | 9c | `wgmma_v9_8` (persistent CTAs, runtime G) | 128,256,16 | — | 367.19 | 457.3 | 508.7 | negative: wave-quantization falsified; per-tile pipeline drain > wave savings; G-sweep confirms G=8 |
 | 9c | `wgmma_v9_9` (setmaxnreg 40/232 rebalance) | 128,256,16 | — | 368.93 | 461.1 | 511.4 | flat — consumers never register-starved (0 spill, 154 regs); Fable #1 falsified at this design point |
 | 9c | `wgmma_v9_10` (persistent cooperative + async epilogue) | 128,256,16 | — | 318.60 | 387.9 | 432.4 | NEGATIVE -13~16%: 1 CTA/SM + serialized epilogue loses v9.7's free CTA-rotation overlap; N=3072 hang unresolved; true ping-pong (per-wg tile streams, 224KB @ 2-stage) is the faithful Fable #2 |
+| 9c | `wgmma_v9_11` (1 fence + 1 commit group per lap) | 128,256,16 | — | 370.76 | 462.9 | 510.6 | flat — per-wgmma fence/commit was not the throttle; 1 wgmma in flight/lap already saturates math with TMA feeding |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
