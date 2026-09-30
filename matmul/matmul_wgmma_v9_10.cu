@@ -290,16 +290,14 @@ __global__ __launch_bounds__(384, 1) void matmulWgmmaV910Kernel(
 
         }
     }
-    // after the LAST tile of this CTA: release its final lap's stage
-    if (wg != 0 && ct == 0) {
-        const long lastlap = (long)((tiles - 1 - blockIdx.x) / gridDim.x + 1 - 1) * klaps + (klaps - 1);
-        // recompute robustly: the last tile this CTA processed
-        // (t_max = tiles-1 - ((tiles-1-blockIdx.x) % gridDim.x), i_max = (t_max - blockIdx.x)/gridDim.x)
-        const long tmax = (long)tiles - 1 - (((long)tiles - 1 - blockIdx.x) % (long)gridDim.x);
-        const long imax = (tmax - blockIdx.x) / (long)gridDim.x;
-        const long lastLapReal = imax * klaps + (klaps - 1);
-        (void)lastlap;
-        if (blockIdx.x < tiles) w910_mbar_arrive(&free_bar[(int)(lastLapReal % STAGES)]);
+    // after this CTA's LAST tile: release its final lap's stage (the
+    // in-loop release only covers laps 1..n of each tile plus each tile's
+    // first lap; the very last lap of the very last tile is released here —
+    // exactly once, global-lap indexed)
+    if (wg != 0 && (tid % 128) == 0 && blockIdx.x < tiles) {
+        const long nTilesMine = (long)((tiles - 1 - blockIdx.x) / gridDim.x) + 1;
+        const long lastLap = (nTilesMine - 1) * klaps + (klaps - 1);
+        w910_mbar_arrive(&free_bar[(int)(lastLap % STAGES)]);
     }
 }
 
