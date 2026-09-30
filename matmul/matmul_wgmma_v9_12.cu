@@ -220,8 +220,7 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
     // cluster: 2 CTAs; rank 0 = even t (multicast leader), rank 1 = odd t
     // cluster rank via PTX (CUDA 12.4 lacks the __cluster_ctarank intrinsic)
     uint32_t rank;
-    asm volatile("%%cluster_ctarank;
-" : "=r"(rank));
+    asm volatile("%cluster_ctarank;\n" : "=r"(rank));
     const uint32_t peer = rank ^ 1u;
     // band swizzle on the CLUSTER id: pairs (2c, 2c+1) share blockN
     const int NM = N / 128;
