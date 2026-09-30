@@ -216,7 +216,7 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
 
     // cluster: 2 CTAs; rank 0 = even t (multicast leader), rank 1 = odd t
     namespace cg = cooperative_groups;
-    const uint32_t rank = cg::cluster_group().block_rank();
+    const uint32_t rank = (uint32_t)cg::this_cluster().block_rank();
     const uint32_t peer = rank ^ 1u;
     // band swizzle on the CLUSTER id: pairs (2c, 2c+1) share blockN
     const int NM = N / 128;
