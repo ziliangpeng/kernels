@@ -79,6 +79,13 @@ SBO=1024, maxrel 0.0). 305.02T — +87% over v6 in one rung. Bug chain:
 dynamic-SMEM 1024B alignment, TMA x-coordinate hardcoded 0 (same slice
 accumulated N/64 times), explicit scale-d operand.
 
+**v9.4–v9.7 — parallel exploration burst**: v9.4 (2D rectangle swizzle)
+negative — narrow 2-column rectangles hurt B reuse. v9.5 TMA epilogue stages
+the accumulator tile in SMEM and bulk-stores it (kills scattered 8B C
+writes, +22T). v9.6 deepens the pipeline to 4 stages / 192KB (+27T @8192).
+v9.7 combines both — the wins compound (367/460/515T @ 4096/6144/8192,
+67.6% of cuBLAS at 8192).
+
 ## Roofline ladder so far
 
 (v3 and v5 have no separate worklog — their results and lessons are in the
