@@ -44,6 +44,7 @@
 | 9c | `wgmma_v9_5` (TMA epilogue: SMEM staging + bulk store) | 128,256,16 | — | 331.56 | 409.6 | 460.9 | +22T@4096 — C write amplification was real |
 | 9c | `wgmma_v9_6` (4-stage 192KB) | 128,256,16 | — | 336.67 | 433.4 | 491.9 | +27T@8192 — TMA latency headroom pays |
 | 9c | `wgmma_v9_7` (TMA epilogue + 4-stage) | 128,256,16 | — | **367.05** | **460.4** | **514.8** | synergy +57.6 vs +49.3 additive; 67.6% of cuBLAS @8192 |
+| 9c | `wgmma_v9_8` (persistent CTAs, runtime G) | 128,256,16 | — | 367.19 | 457.3 | 508.7 | negative: wave-quantization falsified; per-tile pipeline drain > wave savings; G-sweep confirms G=8 |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
