@@ -37,6 +37,7 @@
 | 9c | `wgmma_v8` (warp spec: producer wg + 2 consumers, mbarrier) | 128,256,16 | — | 150.52 | — | — | PASS but wait<0>-serialized (correctness-first); cross-node |
 | 9c | `wgmma_v8_1` (v8 + wgmma overlap, wait<1> release) | 128,256,16 | — | 145.78 | — | — | overlap LOST 5T vs serialized v8 — consumer spin-wait starves SMSPs; warp-spec on this shape is a dead end without TMA |
 | 9c | `wgmma_v9` (TMA bulk + SWIZZLE_128B, warp-spec) | 128,256,16 | — | **305.02** | — | — | +87% vs v6; TMA×swizzle = designed pair (sweep-verified SBO=1024); 42% of cuBLAS |
+| 9c | `wgmma_v9_1` (v9 + overlap + 3-stage, CTA 128x128) | 128,128,16 | — | 253.15 | — | — | -52T vs v9: shape cost (AI 85→64, m64n128 < m64n256 per-instr) swamped overlap gain; KEY: H100 opt-in SMEM is 227KB not 100KB |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
