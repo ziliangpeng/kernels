@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cooperative_groups.h>
 
 // ---- device helpers -------------------------------------------------------
 
@@ -158,16 +159,12 @@ __device__ __forceinline__ void w912_mbar_expect_tx_remote(uint64_t *bar, uint32
     asm volatile("mbarrier.arrive.expect_tx.shared::cluster.b64 _, [%0], %1;\n"
                  :: "r"(remote), "r"(bytes));
 }
-__device__ __forceinline__ void w912_mbar_wait_remote(uint64_t *bar, uint32_t parity,
-                                                      uint32_t peerRank) {
+__device__ __forceinline__ void w912_mbar_arrive_remote(uint64_t *bar,
+                                                       uint32_t dstRank) {
     uint32_t addr = static_cast<uint32_t>(__cvta_generic_to_shared(bar));
     uint32_t remote;
-    asm volatile("mapa.shared::cluster.u32 %0, %1, %2;\n" : "=r"(remote) : "r"(addr), "r"(peerRank));
-    asm volatile(
-        "{\n.reg .pred P;\n"
-        "W:\n"
-        "mbarrier.try_wait.parity.shared::cluster.b64 P, [%0], %1;\n"
-        "@P bra D;\nbra W;\nD:\n}\n" :: "r"(remote), "r"(parity));
+    asm volatile("mapa.shared::cluster.u32 %0, %1, %2;\n" : "=r"(remote) : "r"(addr), "r"(dstRank));
+    asm volatile("mbarrier.arrive.shared::cluster.b64 _, [%0];\n" :: "r"(remote));
 }
 __device__ __forceinline__ void w912_tma_store_2d(const CUtensorMap *map,
                                                   const void *src, int x, int y) {
@@ -218,9 +215,8 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
     uint64_t *free_bar = full_bar + STAGES;
 
     // cluster: 2 CTAs; rank 0 = even t (multicast leader), rank 1 = odd t
-    // cluster rank via PTX (CUDA 12.4 lacks the __cluster_ctarank intrinsic)
-    uint32_t rank;
-    asm volatile("%cluster_ctarank;\n" : "=r"(rank));
+    namespace cg = cooperative_groups;
+    const uint32_t rank = cg::cluster_group().block_rank();
     const uint32_t peer = rank ^ 1u;
     // band swizzle on the CLUSTER id: pairs (2c, 2c+1) share blockN
     const int NM = N / 128;
@@ -240,8 +236,10 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
     if (tid == 0) {
         #pragma unroll
         for (int s = 0; s < STAGES; s++) {
+            // leader's free_bar: released by BOTH CTAs' consumers (B stages
+            // are shared); follower's free_bar: its own consumers (A only)
             w912_mbar_init(&full_bar[s], 1);
-            w912_mbar_init(&free_bar[s], 2);
+            w912_mbar_init(&free_bar[s], rank == 0 ? 4 : 2);
         }
     }
     __syncthreads();
@@ -252,12 +250,10 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
                 const int s = lap % STAGES;
                 if (lap >= STAGES) {
                     const uint32_t c = lap / STAGES;
-                    // A stages: own consumers gate reuse (own free_bar)
+                    // stage ring reuse: local free_bar only. On the leader it
+                    // is arrived by both CTAs' consumers (B shared); on the
+                    // follower by its own consumers (A).
                     w912_mbar_wait(&free_bar[s], (c - 1) & 1);
-                    // B stages (multicast): the peer's consumers too
-                    if (rank == 0) {
-                        w912_mbar_wait_remote(&free_bar[s], (c - 1) & 1, peer);
-                    }
                 }
                 if (rank == 0) {
                     // leader: expect_tx on BOTH barriers (A+B local, A+B remote)
@@ -309,11 +305,28 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
             w912_wgmma_wait1();
             if (lap > 0) {
                 const int prev = (lap - 1) % STAGES;
-                if (ct == 0) w912_mbar_arrive(&free_bar[prev]);
+                if (ct == 0) {
+                    if (rank == 0) {
+                        // own ring (A+B, arrived by both CTAs -> count 4)
+                        w912_mbar_arrive(&free_bar[prev]);
+                    } else {
+                        // leader's free_bar (remote arrive for B) + own (A)
+                        w912_mbar_arrive_remote(&free_bar[prev], 0);
+                        w912_mbar_arrive(&free_bar[prev]);
+                    }
+                }
             }
         }
         w912_wgmma_wait0();
-        if (ct == 0) w912_mbar_arrive(&free_bar[(N / 64 - 1) % STAGES]);
+        if (ct == 0) {
+            const int lastS = (N / 64 - 1) % STAGES;
+            if (rank == 0) {
+                w912_mbar_arrive(&free_bar[lastS]);
+            } else {
+                w912_mbar_arrive_remote(&free_bar[lastS], 0);
+                w912_mbar_arrive(&free_bar[lastS]);
+            }
+        }
 
         // epilogue: identical to v9.7 (SMEM staging + 2 bulk stores)
         float *stage = reinterpret_cast<float *>(w912_smem);
