@@ -318,17 +318,8 @@ void MatmulWgmmaV95::makeMaps() {
                                          CU_TENSOR_MAP_SWIZZLE_128B,
                                          CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
                                          CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-    // C: [m][n] row-major f32 (d_C). Box {256 cols, 64 rows}, no swizzle.
-    cuuint64_t stridesC[1] = {(cuuint64_t)N * 4};
-    cuuint32_t boxC[2] = {256, 64};
-    CUresult r3 = cuTensorMapEncodeTiled(&tmC, CU_TENSOR_MAP_DATA_TYPE_FLOAT32, 2,
-                                         d_C, dims, stridesC, boxC, estr,
-                                         CU_TENSOR_MAP_INTERLEAVE_NONE,
-                                         CU_TENSOR_MAP_SWIZZLE_NONE,
-                                         CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
-                                         CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
-    mapsReady = (r1 == CUDA_SUCCESS && r2 == CUDA_SUCCESS && r3 == CUDA_SUCCESS);
-    if (!mapsReady) printf("TMA map encode FAILED: %d %d %d\n", (int)r1, (int)r2, (int)r3);
+    mapsReady = (r1 == CUDA_SUCCESS && r2 == CUDA_SUCCESS);
+    if (!mapsReady) printf("TMA map encode FAILED: %d %d\n", (int)r1, (int)r2);
 }
 
 MatmulWgmmaV95::MatmulWgmmaV95(int N, int blockDim) : N(N), blockDim(blockDim) {
@@ -352,6 +343,22 @@ void MatmulWgmmaV95::execute(const float *d_A, const float *d_B, float *d_C) {
 
     if (!mapsReady) makeMaps();
 
+    // tmC must be encoded per-execution (d_C is the runtime parameter)
+    static CUtensorMap tmClocal;
+    {
+        cuuint64_t dimsC[2] = {(cuuint64_t)N, (cuuint64_t)N};
+        cuuint64_t stridesC[1] = {(cuuint64_t)N * 4};
+        cuuint32_t boxC[2] = {256, 64};
+        cuuint32_t estrC[2] = {1, 1};
+        CUresult r3 = cuTensorMapEncodeTiled(&tmClocal, CU_TENSOR_MAP_DATA_TYPE_FLOAT32, 2,
+                                             d_C, dimsC, stridesC, boxC, estrC,
+                                             CU_TENSOR_MAP_INTERLEAVE_NONE,
+                                             CU_TENSOR_MAP_SWIZZLE_NONE,
+                                             CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+                                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r3 != CUDA_SUCCESS) printf("tmC encode FAILED: %d\n", (int)r3);
+    }
+
     static bool smemSet = false;
     if (!smemSet) {
         // v9.2: 3 stages x 48KB = 144KB; H100 opt-in max is 227KB (not 100KB)
@@ -362,6 +369,6 @@ void MatmulWgmmaV95::execute(const float *d_A, const float *d_B, float *d_C) {
 
     dim3 grid(N / W9BN, N / W9BM);
     const int smem = 3 * (128 * 64 * 2 + 256 * 64 * 2) + 3 * 2 * 8 + 1024;
-    matmulWgmmaV95Kernel<<<grid, 384, smem>>>(tmA, tmB, tmC, d_C, N);
+    matmulWgmmaV95Kernel<<<grid, 384, smem>>>(tmA, tmB, tmClocal, d_C, N);
     cudaCheckError(cudaGetLastError());
 }
