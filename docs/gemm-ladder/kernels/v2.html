@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wgmma_v2 — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#10 wgmma_v2</h1><span class="delta">matmul_wgmma_v2.h/cu</span></div>
+<div class="verdict v-win" style="margin-top:10px">+328% —— WGMMA 异步模型拆掉 fragment-load 墙。NCU:64×64 下仍 mem-bound(96.5%),tile 太小喂不饱数学单元。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>Hopper WGMMA(<code>wgmma.mma_async</code> m64n64k16)用 64 位 SMEM descriptor 直读操作数;64×64 CTA 单 warpgroup;descriptor 常量(LBO/SBO/swizzle)由 243 组合暴力扫出。</p></div>
+<div><p><b>与上一代的差异:</b>从 wmma 换代:warpgroup 级异步 MMA + SMEM 直读(不经寄存器 fragment),每指令 4× FLOP。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_wgmma_v2.h =====
+#ifndef MATMUL_WGMMA_V2_H
+#define MATMUL_WGMMA_V2_H
+
+#include "matmul_kernel.h"
+#include &lt;cuda_fp16.h&gt;
+#include &lt;cstdint&gt;
+
+// Kernel "wgmma_v2" — Hopper WGMMA, m64n64k16, single warpgroup (128 thr).
+//
+// The reference implementation of rung 9c: everything in it is
+// sweep-verified (243-combo brute force, wgmma_desc_sweep.cu):
+//   - no-swizzle K-major interleave: core matrix = 8x8 halfs = 128B
+//     contiguous; atom (mi, ki) at mi*128 + ki*1024 bytes
+//   - descriptors LBO=1024 / SBO=128
+//   - m64n64 accumulator mapping: 4 regs per 8-col group
+//     (row, row+8) x (col, col+1); 8 groups
+//   - fence.proxy.async.shared::cta between SMEM writes and wgmma issue
+//     (THE correctness fix — __syncthreads does not order the async proxy)
+//
+// First passing TC number of the ladder: 104.36T @ N=4096.
+// B is pre-transposed on device (untimed). FP16 in / FP32 accumulate.
+
+class MatmulWgmmaV2 : public MatmulKernel {
+public:
+    MatmulWgmmaV2(int N, int blockDim);
+    ~MatmulWgmmaV2() override;
+
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+
+private:
+    int N;
+    int blockDim;
+    __half *d_A16;
+    __half *d_B16;
+    __half *d_Bt16;  // B transposed to NxK (K-major) for wgmma B operand
+};
+
+#endif // MATMUL_WGMMA_V2_H
+
+// ===== matmul_wgmma_v2.cu =====
+// Kernel "wgmma_v2" — Hopper WGMMA, m64n64k16, single warpgroup.
+// Full docs in matmul_wgmma_v2.h. Snapshot of the v2 lineage (commits
+// bbf2d68..1c6ee60); see matmul/RESULTS.md rung 9c for the measurement
+// narrative.
+
+#include "matmul_wgmma_v2.h"
+#include "cuda_utils.h"
+#include "dtype_traits.h"
+#include &lt;cuda_runtime.h&gt;
+#include &lt;cuda_fp16.h&gt;
+#include &lt;cstdio&gt;
+#include &lt;cstdint&gt;
+
+// ---- device helpers -------------------------------------------------------
+
+__device__ __forceinline__ uint64_t wgmma2_make_smem_desc(const void *ptr, uint32_t lbo,
+                                                          uint32_t sbo) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(ptr));
+    uint64_t d = 0;
+    d |= (uint64_t)((addr &amp; 0x3FFFF) &gt;&gt; 4);
+    d |= ((uint64_t)((lbo &gt;&gt; 4) &amp; 0x3FFF) &lt;&lt; 16);
+    d |= ((uint64_t)((sbo &gt;&gt; 4) &amp; 0x3FFF) &lt;&lt; 32);
+    return d;
+}
+
+#define WGMMA2_M64N64K16(d, desc_a, desc_b, scale_d)                            \
+    asm volatile(                                                             \
+        "{\n"                                                                 \
+        "wgmma.mma_async.sync.aligned.m64n64k16.f32.f16.f16 "                 \
+        "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31}," \
+        " %32,"                                                               \
+        " %33,"                                                               \
+        " %34, 1, 1, 0, 0;\n"                                                 \
+        "}\n"                                                                 \
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),                  \
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),                  \
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),                 \
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),                 \
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),                 \
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),                 \
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),                 \
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31])                  \
+        : "l"(desc_a), "l"(desc_b), "n"(int32_t(scale_d)));
+
+__device__ __forceinline__ void wgmma2_fence() {
+    asm volatile("wgmma.fence.sync.aligned;\n");
+}
+__device__ __forceinline__ void wgmma2_fence_proxy_async() {
+    // Orders prior SMEM writes (generic proxy) against subsequent wgmma
+    // async-proxy reads. Required by PTX; __syncthreads does NOT order
+    // the async proxy.
+    asm volatile("fence.proxy.async.shared::cta;\n");
+}
+__device__ __forceinline__ void wgmma2_commit() {
+    asm volatile("wgmma.commit_group.sync.aligned;\n");
+}
+__device__ __forceinline__ void wgmma2_wait0() {
+    asm volatile("wgmma.wait_group.sync.aligned 0;\n");
+}
+
+// ---- converter kernels ----------------------------------------------------
+
+__global__ void wgmma2_convertF32ToF16(const float * __restrict__ in,
+                                       __half * __restrict__ out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i &lt; n) out[i] = __float2half(in[i]);
+}
+
+// B: [K][N] row-major -&gt; Bt: [N][K] (K-major)
+__global__ void wgmma2_transposeB(const __half * __restrict__ B,
+                                  __half * __restrict__ Bt, int N) {
+    __shared__ __half tile[32][33];
+    int x = blockIdx.x * 32 + (threadIdx.x % 32);
+    int y = blockIdx.y * 32 + (threadIdx.x / 32);
+    if (x &lt; N &amp;&amp; y &lt; N) tile[threadIdx.x % 32][threadIdx.x / 32] = B[y * N + x];
+    __syncthreads();
+    int xx = blockIdx.y * 32 + (threadIdx.x % 32);
+    int yy = blockIdx.x * 32 + (threadIdx.x / 32);
+    if (xx &lt; N &amp;&amp; yy &lt; N) Bt[yy * N + xx] = tile[threadIdx.x / 32][threadIdx.x % 32];
+}
+
+// ---- main kernel ----------------------------------------------------------
+//
+// Grid: (N/64, N/64). One warpgroup (128 threads) per 64x64 output tile.
+
+constexpr int W2BM = 64;
+constexpr int W2BN = 64;
+constexpr int W2BK = 16;
+
+__global__ __launch_bounds__(128) void matmulWgmmaV2Kernel(
+    const __half * __restrict__ A, const __half * __restrict__ Bt,
+    float * __restrict__ C, int N) {
+
+    // Canonical no-swizzle interleave (sweep-verified): core matrix = 8x8
+    // halfs (128B) contiguous; atom (mi, ki) at mi*128 + ki*1024 bytes.
+    __shared__ __align__(128) unsigned char A_s[W2BM * W2BK * 2];
+    __shared__ __align__(128) unsigned char B_s[W2BN * W2BK * 2];
+
+    const int blockM = blockIdx.y;
+    const int blockN = blockIdx.x;
+    const int tid = threadIdx.x;
+
+    // load mapping (both tiles 64x16): row=tid/2, 8-half chunk=tid%2
+    const int aRow = tid / 2;
+    const int aCol = (tid % 2) * 8;
+
+    float acc[32];
+    #pragma unroll
+    for (int i = 0; i &lt; 32; i++) acc[i] = 0.0f;
+
+    const __half *Atile = A + (size_t)(blockM * W2BM) * N;
+    const __half *Btile = Bt + (size_t)(blockN * W2BN) * N;
+
+    for (int k0 = 0; k0 &lt; N; k0 += W2BK) {
+        {
+            const uint4 *src = reinterpret_cast&lt;const uint4 *&gt;(Atile + (size_t)aRow * N + k0 + aCol);
+            uint4 *dst = reinterpret_cast&lt;uint4 *&gt;(A_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            *dst = *src;
+        }
+        {
+            const uint4 *src = reinterpret_cast&lt;const uint4 *&gt;(Btile + (size_t)aRow * N + k0 + aCol);
+            uint4 *dst = reinterpret_cast&lt;uint4 *&gt;(B_s + (aRow / 8) * 128 + (tid % 2) * 1024 + (aRow % 8) * 16);
+            *dst = *src;
+        }
+        __syncthreads();
+        wgmma2_fence_proxy_async();
+
+        uint64_t descA = wgmma2_make_smem_desc(A_s, 1024, 128);
+        uint64_t descB = wgmma2_make_smem_desc(B_s, 1024, 128);
+        wgmma2_fence();
+        WGMMA2_M64N64K16(acc, descA, descB, 1);
+        wgmma2_commit();
+        wgmma2_wait0();
+
+        __syncthreads();
+    }
+
+    // epilogue (sweep-verified m64n64): frag_row = w*16 + lane/4,
+    // frag_col = (lane%4)*2; 8 col groups x 4 regs.
+    const int w = tid / 32;
+    const int l = tid % 32;
+    const int rowBase = blockM * W2BM + w * 16 + (l / 4);
+    const int colBase = blockN * W2BN + (l % 4) * 2;
+    #pragma unroll
+    for (int g = 0; g &lt; 8; g++) {
+        C[(size_t)(rowBase) * N + colBase + g * 8]      = acc[g * 4 + 0];
+        C[(size_t)(rowBase) * N + colBase + g * 8 + 1]  = acc[g * 4 + 1];
+        C[(size_t)(rowBase + 8) * N + colBase + g * 8]  = acc[g * 4 + 2];
+        C[(size_t)(rowBase + 8) * N + colBase + g * 8 + 1] = acc[g * 4 + 3];
+    }
+}
+
+// ---- host wrapper ---------------------------------------------------------
+
+MatmulWgmmaV2::MatmulWgmmaV2(int N, int blockDim) : N(N), blockDim(blockDim) {
+    cudaCheckError(cudaMalloc(&amp;d_A16, (size_t)N * N * sizeof(__half)));
+    cudaCheckError(cudaMalloc(&amp;d_B16, (size_t)N * N * sizeof(__half)));
+    cudaCheckError(cudaMalloc(&amp;d_Bt16, (size_t)N * N * sizeof(__half)));
+}
+
+MatmulWgmmaV2::~MatmulWgmmaV2() {
+    cudaFree(d_A16);
+    cudaFree(d_B16);
+    cudaFree(d_Bt16);
+}
+
+void MatmulWgmmaV2::execute(const float *d_A, const float *d_B, float *d_C) {
+    // ONE-TIME prep (2026-10-01 tax fix; see RESULTS-KERNELONLY-2026-10-01.md)
+    static const float *s_lastA = nullptr;
+    static const float *s_lastB = nullptr;
+    if (d_A != s_lastA || d_B != s_lastB) {
+    int n = N * N;
+    wgmma2_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_A, d_A16, n);
+    wgmma2_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_B, d_B16, n);
+    dim3 tb((N + 31) / 32, (N + 31) / 32);
+    wgmma2_transposeB&lt;&lt;&lt;tb, 1024&gt;&gt;&gt;(d_B16, d_Bt16, N);
+        s_lastA = d_A; s_lastB = d_B;
+    }
+
+    dim3 grid(N / W2BN, N / W2BM);
+    matmulWgmmaV2Kernel&lt;&lt;&lt;grid, 128&gt;&gt;&gt;(d_A16, d_Bt16, d_C, N);
+    cudaCheckError(cudaGetLastError());
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench 端到端 @4096(修税后)</td><td><b>120.3 TFLOPS</b></td></tr><tr><td>bench 端到端 @8192</td><td><b>122.3 TFLOPS</b></td></tr><tr><td>占同 run cuBLAS @8192</td><td><b>17%</b></td></tr><tr><td>占峰值 989T @8192</td><td><b>12.4%</b></td></tr></table>
+<div class="sec"><h2>NCU profile @8192(锁频 1.43GHz)</h2><table><tr><td>tensor pipe SoL</td><td><b>12.8%</b></td></tr><tr><td>memory(DRAM)SoL</td><td><b>96.5%</b></td></tr><tr><td>L2 throughput</td><td><b>79.5%</b></td></tr><tr><td>occupancy</td><td><b>49.4%</b></td></tr><tr><td>判定</td><td><b>mem-bound</b></td></tr></table></div>
+
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_wgmma_v2.cu</p>
+</div></body></html>

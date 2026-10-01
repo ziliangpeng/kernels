@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>smem_tiling — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#3 smem_tiling</h1><span class="delta">matmul_smem.h/cu</span></div>
+<div class="verdict v-win" style="margin-top:10px">+57% —— 复用是第一个真正的乘数。FP16 变体 9.36T,首次 FP16 &gt; FP32(带宽受限区)。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>每个 block 算 C 的一个 tile,把 A/B tile 碎片 stage 进 shared memory,整个 block 复用同一份碎片;SMEM 加 padding 消 bank conflict。</p></div>
+<div><p><b>与上一代的差异:</b>数据复用:global load 摊到整个 tile 上。AI 翻倍。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_smem.h =====
+#ifndef MATMUL_SMEM_H
+#define MATMUL_SMEM_H
+
+#include "matmul_kernel.h"
+
+// Shared Memory Caching Optimization (Kernel 3 from siboehm.com)
+//
+// Key optimization: Cache tiles of A and B matrices in shared memory to reduce
+// global memory accesses. Each tile is loaded once from global memory and reused
+// multiple times from shared memory.
+//
+// TILING STRATEGY:
+// - BM x BK tile of A loaded to shared memory
+// - BK x BN tile of B loaded to shared memory
+// - Loop over K dimension in chunks of BK
+// - __syncthreads() required after each tile load
+//
+// SHARED MEMORY USAGE:
+// - As[BM][BK] + Bs[BK][BN] = 2 * BK * BM floats (for square tiles)
+// - With BM=BK=BN=32: 2 * 32 * 32 * 4 = 8KB per block
+//
+// PERFORMANCE:
+// Expected ~12.8% of cuBLAS (1.5x over coalesced) due to SMEM caching.
+
+class MatmulSmem : public MatmulKernel {
+private:
+    int N;         // Matrix dimension (N×N matrices)
+    int blockDim;  // Block dimension
+
+public:
+    MatmulSmem(int N, int blockDim);
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+    ~MatmulSmem() override;
+};
+
+#endif
+
+// ===== matmul_smem.cu =====
+#include "matmul_smem.h"
+#include "cuda_utils.h"
+#include &lt;cuda_runtime.h&gt;
+
+// Shared Memory Tiling kernel (Kernel 3)
+// Key optimization: Load tiles of A and B into shared memory to reduce
+// global memory accesses. Each element from GMEM is reused multiple times.
+
+#define SMEM_TILE 32
+
+__global__ void matmulSmemKernel(const float *A, const float *B, float *C, int N) {
+    // Shared memory for tiles
+    __shared__ float As[SMEM_TILE][SMEM_TILE];
+    __shared__ float Bs[SMEM_TILE][SMEM_TILE];
+
+    // Thread position within the block (using 2D thread indexing conceptually)
+    // We launch with 32x32 = 1024 threads, but CUDA limits to 1024 so this is exactly at limit
+    // Each thread handles one element in the tile
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+
+    // Block position in output grid
+    int blockRow = blockIdx.y;
+    int blockCol = blockIdx.x;
+
+    // Global row and column indices for this thread's output element
+    int row = blockRow * SMEM_TILE + ty;
+    int col = blockCol * SMEM_TILE + tx;
+
+    // Accumulator for this thread's output element
+    float sum = 0.0f;
+
+    // Loop over tiles along the K dimension
+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += SMEM_TILE) {
+        // Load tile of A into shared memory
+        // As[ty][tx] = A[row][tileIdx + tx]
+        int A_col = tileIdx + tx;
+        if (row &lt; N &amp;&amp; A_col &lt; N) {
+            As[ty][tx] = A[row * N + A_col];
+        } else {
+            As[ty][tx] = 0.0f;
+        }
+
+        // Load tile of B into shared memory
+        // Bs[ty][tx] = B[tileIdx + ty][col]
+        int B_row = tileIdx + ty;
+        if (B_row &lt; N &amp;&amp; col &lt; N) {
+            Bs[ty][tx] = B[B_row * N + col];
+        } else {
+            Bs[ty][tx] = 0.0f;
+        }
+
+        // Ensure all threads have loaded their data
+        __syncthreads();
+
+        // Compute partial dot product using shared memory
+        #pragma unroll
+        for (int k = 0; k &lt; SMEM_TILE; k++) {
+            sum += As[ty][k] * Bs[k][tx];
+        }
+
+        // Ensure all threads have finished using the tiles before loading new ones
+        __syncthreads();
+    }
+
+    // Write result to global memory
+    if (row &lt; N &amp;&amp; col &lt; N) {
+        C[row * N + col] = sum;
+    }
+}
+
+MatmulSmem::MatmulSmem(int N, int blockDim) : N(N), blockDim(blockDim) {
+    // No workspace needed
+}
+
+void MatmulSmem::execute(const float *d_A, const float *d_B, float *d_C) {
+    // Use 2D blocks with SMEM_TILE x SMEM_TILE threads
+    dim3 threads(SMEM_TILE, SMEM_TILE);  // 32x32 = 1024 threads
+    dim3 blocks((N + SMEM_TILE - 1) / SMEM_TILE,
+                (N + SMEM_TILE - 1) / SMEM_TILE);
+
+    matmulSmemKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);
+
+    cudaCheckError(cudaGetLastError());
+}
+
+MatmulSmem::~MatmulSmem() {
+    // No workspace to free
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench @4096(autotuned FP32)</td><td><b>8.99 TFLOPS</b></td></tr><tr><td>FP16 变体 @4096</td><td><b>9.36 TFLOPS</b></td></tr><tr><td>占 cuBLAS FP32(51.93T)</td><td><b>17.3%</b></td></tr></table>
+
+<div class="sec"><h2>Diff vs 上一代(matmul_coalesced)—— GitHub 风格</h2>
+<pre class="diff"><span class="dl-hdr">diff --git a/matmul_coalesced.{h,cu} b/matmul_smem.{h,cu}</span>
+<span class="dl-del">-// ===== matmul_coalesced.h =====</span>
+<span class="dl-del">-#ifndef MATMUL_COALESCED_H</span>
+<span class="dl-del">-#define MATMUL_COALESCED_H</span>
+<span class="dl-add">+// ===== matmul_smem.h =====</span>
+<span class="dl-add">+#ifndef MATMUL_SMEM_H</span>
+<span class="dl-add">+#define MATMUL_SMEM_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> #include "matmul_kernel.h"</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// Global Memory Coalescing Optimization (Kernel 2 from siboehm.com)</span>
+<span class="dl-add">+// Shared Memory Caching Optimization (Kernel 3 from siboehm.com)</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// Key optimization: Reorganize thread indexing so consecutive threads access</span>
+<span class="dl-del">-// consecutive memory locations in B matrix.</span>
+<span class="dl-add">+// Key optimization: Cache tiles of A and B matrices in shared memory to reduce</span>
+<span class="dl-add">+// global memory accesses. Each tile is loaded once from global memory and reused</span>
+<span class="dl-add">+// multiple times from shared memory.</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// MEMORY ACCESS PATTERN:</span>
+<span class="dl-del">-// - A matrix: Row is broadcast across threads (not coalesced, but cached)</span>
+<span class="dl-del">-// - B matrix: Coalesced reads (consecutive threads access consecutive columns)</span>
+<span class="dl-del">-// - C matrix: Coalesced writes</span>
+<span class="dl-add">+// TILING STRATEGY:</span>
+<span class="dl-add">+// - BM x BK tile of A loaded to shared memory</span>
+<span class="dl-add">+// - BK x BN tile of B loaded to shared memory</span>
+<span class="dl-add">+// - Loop over K dimension in chunks of BK</span>
+<span class="dl-add">+// - __syncthreads() required after each tile load</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+// SHARED MEMORY USAGE:</span>
+<span class="dl-add">+// - As[BM][BK] + Bs[BK][BN] = 2 * BK * BM floats (for square tiles)</span>
+<span class="dl-add">+// - With BM=BK=BN=32: 2 * 32 * 32 * 4 = 8KB per block</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-ctx"> // PERFORMANCE:</span>
+<span class="dl-del">-// Expected ~8.5% of cuBLAS (6.4x over naive) due to better memory access pattern.</span>
+<span class="dl-add">+// Expected ~12.8% of cuBLAS (1.5x over coalesced) due to SMEM caching.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-class MatmulCoalesced : public MatmulKernel {</span>
+<span class="dl-add">+class MatmulSmem : public MatmulKernel {</span>
+<span class="dl-ctx"> private:</span>
+<span class="dl-ctx">     int N;         // Matrix dimension (N×N matrices)</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    MatmulCoalesced(int N, int blockDim);</span>
+<span class="dl-add">+    MatmulSmem(int N, int blockDim);</span>
+<span class="dl-ctx">     void execute(const float *d_A, const float *d_B, float *d_C) override;</span>
+<span class="dl-del">-    ~MatmulCoalesced() override;</span>
+<span class="dl-add">+    ~MatmulSmem() override;</span>
+<span class="dl-ctx"> };</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// ===== matmul_coalesced.cu =====</span>
+<span class="dl-del">-#include "matmul_coalesced.h"</span>
+<span class="dl-add">+// ===== matmul_smem.cu =====</span>
+<span class="dl-add">+#include "matmul_smem.h"</span>
+<span class="dl-ctx"> #include "cuda_utils.h"</span>
+<span class="dl-ctx"> #include &lt;cuda_runtime.h&gt;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// Global Memory Coalescing kernel (Kernel 2)</span>
+<span class="dl-del">-// Key insight: Change thread indexing so consecutive threads access consecutive</span>
+<span class="dl-del">-// memory locations in B matrix, enabling coalesced memory access.</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// In naive kernel:</span>
+<span class="dl-del">-//   row = blockIdx.y * blockDim.y + threadIdx.y</span>
+<span class="dl-del">-//   col = blockIdx.x * blockDim.x + threadIdx.x</span>
+<span class="dl-del">-// This causes threads in the same warp to access B[k][col] with consecutive cols,</span>
+<span class="dl-del">-// which is fine, but we can do better by ensuring all memory accesses are optimal.</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// The key fix: ensure thread indexing maps to memory layout correctly.</span>
+<span class="dl-del">-// For row-major matrices, consecutive threads should access consecutive columns.</span>
+<span class="dl-add">+// Shared Memory Tiling kernel (Kernel 3)</span>
+<span class="dl-add">+// Key optimization: Load tiles of A and B into shared memory to reduce</span>
+<span class="dl-add">+// global memory accesses. Each element from GMEM is reused multiple times.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-__global__ void matmulCoalescedKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-del">-    // Use 1D block indexing mapped to 2D output</span>
+<span class="dl-del">-    // This ensures consecutive threads access consecutive memory</span>
+<span class="dl-del">-    const int BLOCKSIZE = 32;</span>
+<span class="dl-add">+#define SMEM_TILE 32</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Thread position within block</span>
+<span class="dl-del">-    int threadCol = threadIdx.x % BLOCKSIZE;</span>
+<span class="dl-del">-    int threadRow = threadIdx.x / BLOCKSIZE;</span>
+<span class="dl-add">+__global__ void matmulSmemKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-add">+    // Shared memory for tiles</span>
+<span class="dl-add">+    __shared__ float As[SMEM_TILE][SMEM_TILE];</span>
+<span class="dl-add">+    __shared__ float Bs[SMEM_TILE][SMEM_TILE];</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    // Thread position within the block (using 2D thread indexing conceptually)</span>
+<span class="dl-add">+    // We launch with 32x32 = 1024 threads, but CUDA limits to 1024 so this is exactly at limit</span>
+<span class="dl-add">+    // Each thread handles one element in the tile</span>
+<span class="dl-add">+    int tx = threadIdx.x;</span>
+<span class="dl-add">+    int ty = threadIdx.y;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     // Block position in output grid</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    // Global position</span>
+<span class="dl-del">-    int row = blockRow * BLOCKSIZE + threadRow;</span>
+<span class="dl-del">-    int col = blockCol * BLOCKSIZE + threadCol;</span>
+<span class="dl-add">+    // Global row and column indices for this thread's output element</span>
+<span class="dl-add">+    int row = blockRow * SMEM_TILE + ty;</span>
+<span class="dl-add">+    int col = blockCol * SMEM_TILE + tx;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Boundary check</span>
+<span class="dl-del">-    if (row &lt; N &amp;&amp; col &lt; N) {</span>
+<span class="dl-del">-        float sum = 0.0f;</span>
+<span class="dl-add">+    // Accumulator for this thread's output element</span>
+<span class="dl-add">+    float sum = 0.0f;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Pointers to the start of the row in A and start of matrix B</span>
+<span class="dl-del">-        const float *A_row = A + row * N;</span>
+<span class="dl-del">-        const float *B_col = B + col;</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-        // Compute dot product</span>
+<span class="dl-del">-        for (int k = 0; k &lt; N; k++) {</span>
+<span class="dl-del">-            // A[row][k] - threads in same warp access different rows (not coalesced for A)</span>
+<span class="dl-del">-            // B[k][col] - threads in same warp access consecutive cols (coalesced!)</span>
+<span class="dl-del">-            sum += A_row[k] * B_col[k * N];</span>
+<span class="dl-add">+    // Loop over tiles along the K dimension</span>
+<span class="dl-add">+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += SMEM_TILE) {</span>
+<span class="dl-add">+        // Load tile of A into shared memory</span>
+<span class="dl-add">+        // As[ty][tx] = A[row][tileIdx + tx]</span>
+<span class="dl-add">+        int A_col = tileIdx + tx;</span>
+<span class="dl-add">+        if (row &lt; N &amp;&amp; A_col &lt; N) {</span>
+<span class="dl-add">+            As[ty][tx] = A[row * N + A_col];</span>
+<span class="dl-add">+        } else {</span>
+<span class="dl-add">+            As[ty][tx] = 0.0f;</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-add">+        // Load tile of B into shared memory</span>
+<span class="dl-add">+        // Bs[ty][tx] = B[tileIdx + ty][col]</span>
+<span class="dl-add">+        int B_row = tileIdx + ty;</span>
+<span class="dl-add">+        if (B_row &lt; N &amp;&amp; col &lt; N) {</span>
+<span class="dl-add">+            Bs[ty][tx] = B[B_row * N + col];</span>
+<span class="dl-add">+        } else {</span>
+<span class="dl-add">+            Bs[ty][tx] = 0.0f;</span>
+<span class="dl-add">+        }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        // Ensure all threads have loaded their data</span>
+<span class="dl-add">+        __syncthreads();</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        // Compute partial dot product using shared memory</span>
+<span class="dl-add">+        #pragma unroll</span>
+<span class="dl-add">+        for (int k = 0; k &lt; SMEM_TILE; k++) {</span>
+<span class="dl-add">+            sum += As[ty][k] * Bs[k][tx];</span>
+<span class="dl-add">+        }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        // Ensure all threads have finished using the tiles before loading new ones</span>
+<span class="dl-add">+        __syncthreads();</span>
+<span class="dl-add">+    }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    // Write result to global memory</span>
+<span class="dl-add">+    if (row &lt; N &amp;&amp; col &lt; N) {</span>
+<span class="dl-ctx">         C[row * N + col] = sum;</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulCoalesced::MatmulCoalesced(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-add">+MatmulSmem::MatmulSmem(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-ctx">     // No workspace needed</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-void MatmulCoalesced::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-del">-    const int BLOCKSIZE = 32;</span>
+<span class="dl-add">+void MatmulSmem::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-add">+    // Use 2D blocks with SMEM_TILE x SMEM_TILE threads</span>
+<span class="dl-add">+    dim3 threads(SMEM_TILE, SMEM_TILE);  // 32x32 = 1024 threads</span>
+<span class="dl-add">+    dim3 blocks((N + SMEM_TILE - 1) / SMEM_TILE,</span>
+<span class="dl-add">+                (N + SMEM_TILE - 1) / SMEM_TILE);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Using 1D blocks with BLOCKSIZE*BLOCKSIZE threads</span>
+<span class="dl-del">-    dim3 threads(BLOCKSIZE * BLOCKSIZE);</span>
+<span class="dl-del">-    dim3 blocks((N + BLOCKSIZE - 1) / BLOCKSIZE,</span>
+<span class="dl-del">-                (N + BLOCKSIZE - 1) / BLOCKSIZE);</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-    matmulCoalescedKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-add">+    matmulSmemKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     cudaCheckError(cudaGetLastError());</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulCoalesced::~MatmulCoalesced() {</span>
+<span class="dl-add">+MatmulSmem::~MatmulSmem() {</span>
+<span class="dl-ctx">     // No workspace to free</span>
+<span class="dl-ctx"> }</span></pre>
+<p class="note">绿 = 新增行,红 = 删除行,灰 = 未变上下文(长段省略)。diff 基准选择代码血统最近的父代。</p></div>
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_smem.cu</p>
+</div></body></html>

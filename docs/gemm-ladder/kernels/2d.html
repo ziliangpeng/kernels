@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>2d_blocktile — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#5 2d_blocktile</h1><span class="delta">matmul_2d_blocktile.h/cu</span></div>
+<div class="verdict v-win" style="margin-top:10px">+74% —— AI 随两个复用轴乘积增长,每 FLOP load 再砍一半。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>每线程拥有 C 的二维子 tile(4×4):A 碎片喂 4 列、B 碎片喂 4 行,两个轴都复用。</p></div>
+<div><p><b>与上一代的差异:</b>第二维 register 复用,每线程输出从一条长成方阵。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_2d_blocktile.h =====
+#ifndef MATMUL_2D_BLOCKTILE_H
+#define MATMUL_2D_BLOCKTILE_H
+
+#include "matmul_kernel.h"
+
+// 2D Block Tiling Optimization (Kernel 5 from siboehm.com)
+//
+// Key optimization: Each thread computes a TM x TN tile of output elements,
+// using the outer product formulation in the innermost loop.
+//
+// CONFIGURATION:
+// - BM=128, BN=128, BK=8, TM=8, TN=8
+// - Each thread computes 8x8 = 64 C elements
+// - Threads per block: (BM/TM) * (BN/TN) = 16 * 16 = 256
+//
+// OUTER PRODUCT:
+// - Load TM elements of A column and TN elements of B row into registers
+// - Compute outer product: regC[i][j] += regA[i] * regB[j]
+// - This maximizes register reuse
+//
+// PERFORMANCE:
+// Expected ~68.7% of cuBLAS (1.9x over 1D blocktile) due to 2D tiling.
+
+class Matmul2DBlocktile : public MatmulKernel {
+private:
+    int N;         // Matrix dimension (N×N matrices)
+    int blockDim;  // Block dimension (unused, using fixed BM/BN/BK/TM/TN)
+
+public:
+    Matmul2DBlocktile(int N, int blockDim);
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+    ~Matmul2DBlocktile() override;
+};
+
+#endif
+
+// ===== matmul_2d_blocktile.cu =====
+#include "matmul_2d_blocktile.h"
+#include "cuda_utils.h"
+#include &lt;cuda_runtime.h&gt;
+
+// 2D Block Tiling kernel (Kernel 5)
+// Each thread computes a TM x TN = 8x8 = 64 element tile of C
+// Uses outer product formulation for maximum register reuse
+
+#define BM_2D 128
+#define BN_2D 128
+#define BK_2D 8
+#define TM_2D 8
+#define TN_2D 8
+
+// Threads per block: (BM/TM) * (BN/TN) = 16 * 16 = 256
+#define NUM_THREADS_2D ((BM_2D / TM_2D) * (BN_2D / TN_2D))
+
+__global__ void matmul2DBlocktileKernel(const float *A, const float *B, float *C, int N) {
+    // Shared memory for tiles
+    __shared__ float As[BM_2D][BK_2D];
+    __shared__ float Bs[BK_2D][BN_2D];
+
+    // Thread position in the output tile grid
+    const int threadCol = threadIdx.x % (BN_2D / TN_2D);  // 0-15
+    const int threadRow = threadIdx.x / (BN_2D / TN_2D);  // 0-15
+
+    // Block position in output
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+
+    // Move pointers to the block's starting position
+    A += blockRow * BM_2D * N;
+    B += blockCol * BN_2D;
+    C += blockRow * BM_2D * N + blockCol * BN_2D;
+
+    // Thread results: each thread computes TM x TN elements
+    float threadResults[TM_2D][TN_2D] = {{0.0f}};
+
+    // Registers for A and B values
+    float regA[TM_2D];
+    float regB[TN_2D];
+
+    // Calculate load indices
+    // We have 256 threads and need to load BM_2D * BK_2D = 128 * 8 = 1024 elements for A
+    // Each thread loads 1024/256 = 4 elements
+    const int strideA = NUM_THREADS_2D / BK_2D;  // 256 / 8 = 32 rows per iteration
+    const int strideB = NUM_THREADS_2D / BN_2D;  // 256 / 128 = 2 rows per iteration
+
+    const int innerRowA = threadIdx.x / BK_2D;
+    const int innerColA = threadIdx.x % BK_2D;
+    const int innerRowB = threadIdx.x / BN_2D;
+    const int innerColB = threadIdx.x % BN_2D;
+
+    // Loop over K dimension in chunks of BK
+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK_2D) {
+        // Load tile of A into shared memory (each thread loads multiple elements)
+        for (int loadOffset = 0; loadOffset &lt; BM_2D; loadOffset += strideA) {
+            int row = innerRowA + loadOffset;
+            if (blockRow * BM_2D + row &lt; N &amp;&amp; tileIdx + innerColA &lt; N) {
+                As[row][innerColA] = A[row * N + innerColA];
+            } else {
+                As[row][innerColA] = 0.0f;
+            }
+        }
+
+        // Load tile of B into shared memory (each thread loads multiple elements)
+        for (int loadOffset = 0; loadOffset &lt; BK_2D; loadOffset += strideB) {
+            int row = innerRowB + loadOffset;
+            if (tileIdx + row &lt; N &amp;&amp; blockCol * BN_2D + innerColB &lt; N) {
+                Bs[row][innerColB] = B[row * N + innerColB];
+            } else {
+                Bs[row][innerColB] = 0.0f;
+            }
+        }
+
+        __syncthreads();
+
+        // Move pointers for next iteration
+        A += BK_2D;
+        B += BK_2D * N;
+
+        // Compute using outer product
+        #pragma unroll
+        for (int dotIdx = 0; dotIdx &lt; BK_2D; dotIdx++) {
+            // Load A column into registers
+            #pragma unroll
+            for (int i = 0; i &lt; TM_2D; i++) {
+                regA[i] = As[threadRow * TM_2D + i][dotIdx];
+            }
+
+            // Load B row into registers
+            #pragma unroll
+            for (int j = 0; j &lt; TN_2D; j++) {
+                regB[j] = Bs[dotIdx][threadCol * TN_2D + j];
+            }
+
+            // Outer product
+            #pragma unroll
+            for (int i = 0; i &lt; TM_2D; i++) {
+                #pragma unroll
+                for (int j = 0; j &lt; TN_2D; j++) {
+                    threadResults[i][j] += regA[i] * regB[j];
+                }
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Write results to global memory
+    #pragma unroll
+    for (int i = 0; i &lt; TM_2D; i++) {
+        #pragma unroll
+        for (int j = 0; j &lt; TN_2D; j++) {
+            int globalRow = blockRow * BM_2D + threadRow * TM_2D + i;
+            int globalCol = blockCol * BN_2D + threadCol * TN_2D + j;
+            if (globalRow &lt; N &amp;&amp; globalCol &lt; N) {
+                C[(threadRow * TM_2D + i) * N + threadCol * TN_2D + j] = threadResults[i][j];
+            }
+        }
+    }
+}
+
+Matmul2DBlocktile::Matmul2DBlocktile(int N, int blockDim) : N(N), blockDim(blockDim) {
+    // No workspace needed
+}
+
+void Matmul2DBlocktile::execute(const float *d_A, const float *d_B, float *d_C) {
+    dim3 threads(NUM_THREADS_2D);
+    dim3 blocks((N + BN_2D - 1) / BN_2D,
+                (N + BM_2D - 1) / BM_2D);
+
+    matmul2DBlocktileKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);
+
+    cudaCheckError(cudaGetLastError());
+}
+
+Matmul2DBlocktile::~Matmul2DBlocktile() {
+    // No workspace to free
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench @4096(autotuned FP32)</td><td><b>33.78 TFLOPS</b></td></tr><tr><td>占 cuBLAS FP32(51.93T)</td><td><b>65.0%</b></td></tr></table>
+
+<div class="sec"><h2>Diff vs 上一代(matmul_1d_blocktile)—— GitHub 风格</h2>
+<pre class="diff"><span class="dl-hdr">diff --git a/matmul_1d_blocktile.{h,cu} b/matmul_2d_blocktile.{h,cu}</span>
+<span class="dl-del">-// ===== matmul_1d_blocktile.h =====</span>
+<span class="dl-del">-#ifndef MATMUL_1D_BLOCKTILE_H</span>
+<span class="dl-del">-#define MATMUL_1D_BLOCKTILE_H</span>
+<span class="dl-add">+// ===== matmul_2d_blocktile.h =====</span>
+<span class="dl-add">+#ifndef MATMUL_2D_BLOCKTILE_H</span>
+<span class="dl-add">+#define MATMUL_2D_BLOCKTILE_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> #include "matmul_kernel.h"</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// 1D Block Tiling Optimization (Kernel 4 from siboehm.com)</span>
+<span class="dl-add">+// 2D Block Tiling Optimization (Kernel 5 from siboehm.com)</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// Key optimization: Each thread computes multiple output elements (TM elements</span>
+<span class="dl-del">-// in a column of C), reducing thread management overhead and improving arithmetic</span>
+<span class="dl-del">-// intensity.</span>
+<span class="dl-add">+// Key optimization: Each thread computes a TM x TN tile of output elements,</span>
+<span class="dl-add">+// using the outer product formulation in the innermost loop.</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-ctx"> // CONFIGURATION:</span>
+<span class="dl-del">-// - BM=64, BN=64, BK=8, TM=8</span>
+<span class="dl-del">-// - Each thread computes 8 C elements in a column</span>
+<span class="dl-del">-// - Threads per block: (BM * BN) / TM = 64 * 64 / 8 = 512</span>
+<span class="dl-add">+// - BM=128, BN=128, BK=8, TM=8, TN=8</span>
+<span class="dl-add">+// - Each thread computes 8x8 = 64 C elements</span>
+<span class="dl-add">+// - Threads per block: (BM/TM) * (BN/TN) = 16 * 16 = 256</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// REGISTER USAGE:</span>
+<span class="dl-del">-// - threadResults[TM] array in registers for accumulation</span>
+<span class="dl-del">-// - Significantly improves arithmetic intensity</span>
+<span class="dl-add">+// OUTER PRODUCT:</span>
+<span class="dl-add">+// - Load TM elements of A column and TN elements of B row into registers</span>
+<span class="dl-add">+// - Compute outer product: regC[i][j] += regA[i] * regB[j]</span>
+<span class="dl-add">+// - This maximizes register reuse</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-ctx"> // PERFORMANCE:</span>
+<span class="dl-del">-// Expected ~36.5% of cuBLAS (2.8x over smem) due to increased work per thread.</span>
+<span class="dl-add">+// Expected ~68.7% of cuBLAS (1.9x over 1D blocktile) due to 2D tiling.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-class Matmul1DBlocktile : public MatmulKernel {</span>
+<span class="dl-add">+class Matmul2DBlocktile : public MatmulKernel {</span>
+<span class="dl-ctx"> private:</span>
+<span class="dl-ctx">     int N;         // Matrix dimension (N×N matrices)</span>
+<span class="dl-del">-    int blockDim;  // Block dimension (unused, using fixed BM/BN/BK/TM)</span>
+<span class="dl-add">+    int blockDim;  // Block dimension (unused, using fixed BM/BN/BK/TM/TN)</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> public:</span>
+<span class="dl-del">-    Matmul1DBlocktile(int N, int blockDim);</span>
+<span class="dl-add">+    Matmul2DBlocktile(int N, int blockDim);</span>
+<span class="dl-ctx">     void execute(const float *d_A, const float *d_B, float *d_C) override;</span>
+<span class="dl-del">-    ~Matmul1DBlocktile() override;</span>
+<span class="dl-add">+    ~Matmul2DBlocktile() override;</span>
+<span class="dl-ctx"> };</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// ===== matmul_1d_blocktile.cu =====</span>
+<span class="dl-del">-#include "matmul_1d_blocktile.h"</span>
+<span class="dl-add">+// ===== matmul_2d_blocktile.cu =====</span>
+<span class="dl-add">+#include "matmul_2d_blocktile.h"</span>
+<span class="dl-ctx"> #include "cuda_utils.h"</span>
+<span class="dl-ctx"> #include &lt;cuda_runtime.h&gt;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// 1D Block Tiling kernel (Kernel 4)</span>
+<span class="dl-del">-// Each thread computes TM elements in a column of C, increasing arithmetic intensity.</span>
+<span class="dl-del">-// This reduces the number of threads needed and improves register utilization.</span>
+<span class="dl-add">+// 2D Block Tiling kernel (Kernel 5)</span>
+<span class="dl-add">+// Each thread computes a TM x TN = 8x8 = 64 element tile of C</span>
+<span class="dl-add">+// Uses outer product formulation for maximum register reuse</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-#define BM_1D 64</span>
+<span class="dl-del">-#define BN_1D 64</span>
+<span class="dl-del">-#define BK_1D 8</span>
+<span class="dl-del">-#define TM_1D 8</span>
+<span class="dl-add">+#define BM_2D 128</span>
+<span class="dl-add">+#define BN_2D 128</span>
+<span class="dl-add">+#define BK_2D 8</span>
+<span class="dl-add">+#define TM_2D 8</span>
+<span class="dl-add">+#define TN_2D 8</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Number of threads per block: (BM/TM) * BN = 8 * 64 = 512</span>
+<span class="dl-del">-#define NUM_THREADS_1D ((BM_1D / TM_1D) * BN_1D)</span>
+<span class="dl-add">+// Threads per block: (BM/TM) * (BN/TN) = 16 * 16 = 256</span>
+<span class="dl-add">+#define NUM_THREADS_2D ((BM_2D / TM_2D) * (BN_2D / TN_2D))</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-__global__ void matmul1DBlocktileKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-add">+__global__ void matmul2DBlocktileKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-ctx">     // Shared memory for tiles</span>
+<span class="dl-del">-    __shared__ float As[BM_1D][BK_1D];</span>
+<span class="dl-del">-    __shared__ float Bs[BK_1D][BN_1D];</span>
+<span class="dl-add">+    __shared__ float As[BM_2D][BK_2D];</span>
+<span class="dl-add">+    __shared__ float Bs[BK_2D][BN_2D];</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Thread indices</span>
+<span class="dl-del">-    // Each thread is responsible for loading and computing</span>
+<span class="dl-del">-    const int threadCol = threadIdx.x % BN_1D;</span>
+<span class="dl-del">-    const int threadRow = threadIdx.x / BN_1D;</span>
+<span class="dl-add">+    // Thread position in the output tile grid</span>
+<span class="dl-add">+    const int threadCol = threadIdx.x % (BN_2D / TN_2D);  // 0-15</span>
+<span class="dl-add">+    const int threadRow = threadIdx.x / (BN_2D / TN_2D);  // 0-15</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     // Block position in output</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    A += blockRow * BM_1D * N;</span>
+<span class="dl-del">-    B += blockCol * BN_1D;</span>
+<span class="dl-del">-    C += blockRow * BM_1D * N + blockCol * BN_1D;</span>
+<span class="dl-add">+    A += blockRow * BM_2D * N;</span>
+<span class="dl-add">+    B += blockCol * BN_2D;</span>
+<span class="dl-add">+    C += blockRow * BM_2D * N + blockCol * BN_2D;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Thread results: each thread computes TM elements in a column</span>
+<span class="dl-del">-    float threadResults[TM_1D] = {0.0f};</span>
+<span class="dl-add">+    // Thread results: each thread computes TM x TN elements</span>
+<span class="dl-add">+    float threadResults[TM_2D][TN_2D] = {{0.0f}};</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Load indices for shared memory</span>
+<span class="dl-del">-    // For As: we need to load BM_1D * BK_1D elements = 64 * 8 = 512</span>
+<span class="dl-del">-    // For Bs: we need to load BK_1D * BN_1D elements = 8 * 64 = 512</span>
+<span class="dl-del">-    const int innerRowA = threadIdx.x / BK_1D;</span>
+<span class="dl-del">-    const int innerColA = threadIdx.x % BK_1D;</span>
+<span class="dl-del">-    const int innerRowB = threadIdx.x / BN_1D;</span>
+<span class="dl-del">-    const int innerColB = threadIdx.x % BN_1D;</span>
+<span class="dl-add">+    // Registers for A and B values</span>
+<span class="dl-add">+    float regA[TM_2D];</span>
+<span class="dl-add">+    float regB[TN_2D];</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    // Calculate load indices</span>
+<span class="dl-add">+    // We have 256 threads and need to load BM_2D * BK_2D = 128 * 8 = 1024 elements for A</span>
+<span class="dl-add">+    // Each thread loads 1024/256 = 4 elements</span>
+<span class="dl-add">+    const int strideA = NUM_THREADS_2D / BK_2D;  // 256 / 8 = 32 rows per iteration</span>
+<span class="dl-add">+    const int strideB = NUM_THREADS_2D / BN_2D;  // 256 / 128 = 2 rows per iteration</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    const int innerRowA = threadIdx.x / BK_2D;</span>
+<span class="dl-add">+    const int innerColA = threadIdx.x % BK_2D;</span>
+<span class="dl-add">+    const int innerRowB = threadIdx.x / BN_2D;</span>
+<span class="dl-add">+    const int innerColB = threadIdx.x % BN_2D;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     // Loop over K dimension in chunks of BK</span>
+<span class="dl-del">-    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK_1D) {</span>
+<span class="dl-del">-        // Load tile of A into shared memory</span>
+<span class="dl-del">-        if (blockRow * BM_1D + innerRowA &lt; N &amp;&amp; tileIdx + innerColA &lt; N) {</span>
+<span class="dl-del">-            As[innerRowA][innerColA] = A[innerRowA * N + innerColA];</span>
+<span class="dl-del">-        } else {</span>
+<span class="dl-del">-            As[innerRowA][innerColA] = 0.0f;</span>
+<span class="dl-add">+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK_2D) {</span>
+<span class="dl-add">+        // Load tile of A into shared memory (each thread loads multiple elements)</span>
+<span class="dl-add">+        for (int loadOffset = 0; loadOffset &lt; BM_2D; loadOffset += strideA) {</span>
+<span class="dl-add">+            int row = innerRowA + loadOffset;</span>
+<span class="dl-add">+            if (blockRow * BM_2D + row &lt; N &amp;&amp; tileIdx + innerColA &lt; N) {</span>
+<span class="dl-add">+                As[row][innerColA] = A[row * N + innerColA];</span>
+<span class="dl-add">+            } else {</span>
+<span class="dl-add">+                As[row][innerColA] = 0.0f;</span>
+<span class="dl-add">+            }</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Load tile of B into shared memory</span>
+<span class="dl-del">-        if (tileIdx + innerRowB &lt; N &amp;&amp; blockCol * BN_1D + innerColB &lt; N) {</span>
+<span class="dl-del">-            Bs[innerRowB][innerColB] = B[innerRowB * N + innerColB];</span>
+<span class="dl-del">-        } else {</span>
+<span class="dl-del">-            Bs[innerRowB][innerColB] = 0.0f;</span>
+<span class="dl-add">+        // Load tile of B into shared memory (each thread loads multiple elements)</span>
+<span class="dl-add">+        for (int loadOffset = 0; loadOffset &lt; BK_2D; loadOffset += strideB) {</span>
+<span class="dl-add">+            int row = innerRowB + loadOffset;</span>
+<span class="dl-add">+            if (tileIdx + row &lt; N &amp;&amp; blockCol * BN_2D + innerColB &lt; N) {</span>
+<span class="dl-add">+                Bs[row][innerColB] = B[row * N + innerColB];</span>
+<span class="dl-add">+            } else {</span>
+<span class="dl-add">+                Bs[row][innerColB] = 0.0f;</span>
+<span class="dl-add">+            }</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        A += BK_1D;</span>
+<span class="dl-del">-        B += BK_1D * N;</span>
+<span class="dl-add">+        A += BK_2D;</span>
+<span class="dl-add">+        B += BK_2D * N;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Compute TM elements</span>
+<span class="dl-add">+        // Compute using outer product</span>
+<span class="dl-ctx">         #pragma unroll</span>
+<span class="dl-del">-        for (int dotIdx = 0; dotIdx &lt; BK_1D; dotIdx++) {</span>
+<span class="dl-del">-            // Load B element once (same for all TM results)</span>
+<span class="dl-del">-            float tmpB = Bs[dotIdx][threadCol];</span>
+<span class="dl-add">+        for (int dotIdx = 0; dotIdx &lt; BK_2D; dotIdx++) {</span>
+<span class="dl-add">+            // Load A column into registers</span>
+<span class="dl-ctx">             #pragma unroll</span>
+<span class="dl-del">-            for (int resIdx = 0; resIdx &lt; TM_1D; resIdx++) {</span>
+<span class="dl-del">-                // Each thread computes TM consecutive rows</span>
+<span class="dl-del">-                threadResults[resIdx] += As[threadRow * TM_1D + resIdx][dotIdx] * tmpB;</span>
+<span class="dl-add">+            for (int i = 0; i &lt; TM_2D; i++) {</span>
+<span class="dl-add">+                regA[i] = As[threadRow * TM_2D + i][dotIdx];</span>
+<span class="dl-add">+            }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+            // Load B row into registers</span>
+<span class="dl-add">+            #pragma unroll</span>
+<span class="dl-add">+            for (int j = 0; j &lt; TN_2D; j++) {</span>
+<span class="dl-add">+                regB[j] = Bs[dotIdx][threadCol * TN_2D + j];</span>
+<span class="dl-add">+            }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+            // Outer product</span>
+<span class="dl-add">+            #pragma unroll</span>
+<span class="dl-add">+            for (int i = 0; i &lt; TM_2D; i++) {</span>
+<span class="dl-add">+                #pragma unroll</span>
+<span class="dl-add">+                for (int j = 0; j &lt; TN_2D; j++) {</span>
+<span class="dl-add">+                    threadResults[i][j] += regA[i] * regB[j];</span>
+<span class="dl-add">+                }</span>
+<span class="dl-ctx">             }</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    for (int resIdx = 0; resIdx &lt; TM_1D; resIdx++) {</span>
+<span class="dl-del">-        int globalRow = blockRow * BM_1D + threadRow * TM_1D + resIdx;</span>
+<span class="dl-del">-        int globalCol = blockCol * BN_1D + threadCol;</span>
+<span class="dl-del">-        if (globalRow &lt; N &amp;&amp; globalCol &lt; N) {</span>
+<span class="dl-del">-            C[(threadRow * TM_1D + resIdx) * N + threadCol] = threadResults[resIdx];</span>
+<span class="dl-add">+    for (int i = 0; i &lt; TM_2D; i++) {</span>
+<span class="dl-add">+        #pragma unroll</span>
+<span class="dl-add">+        for (int j = 0; j &lt; TN_2D; j++) {</span>
+<span class="dl-add">+            int globalRow = blockRow * BM_2D + threadRow * TM_2D + i;</span>
+<span class="dl-add">+            int globalCol = blockCol * BN_2D + threadCol * TN_2D + j;</span>
+<span class="dl-add">+            if (globalRow &lt; N &amp;&amp; globalCol &lt; N) {</span>
+<span class="dl-add">+                C[(threadRow * TM_2D + i) * N + threadCol * TN_2D + j] = threadResults[i][j];</span>
+<span class="dl-add">+            }</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-Matmul1DBlocktile::Matmul1DBlocktile(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-add">+Matmul2DBlocktile::Matmul2DBlocktile(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-ctx">     // No workspace needed</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-void Matmul1DBlocktile::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-del">-    dim3 threads(NUM_THREADS_1D);</span>
+<span class="dl-del">-    dim3 blocks((N + BN_1D - 1) / BN_1D,</span>
+<span class="dl-del">-                (N + BM_1D - 1) / BM_1D);</span>
+<span class="dl-add">+void Matmul2DBlocktile::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-add">+    dim3 threads(NUM_THREADS_2D);</span>
+<span class="dl-add">+    dim3 blocks((N + BN_2D - 1) / BN_2D,</span>
+<span class="dl-add">+                (N + BM_2D - 1) / BM_2D);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    matmul1DBlocktileKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-add">+    matmul2DBlocktileKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     cudaCheckError(cudaGetLastError());</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-Matmul1DBlocktile::~Matmul1DBlocktile() {</span>
+<span class="dl-add">+Matmul2DBlocktile::~Matmul2DBlocktile() {</span>
+<span class="dl-ctx">     // No workspace to free</span>
+<span class="dl-ctx"> }</span></pre>
+<p class="note">绿 = 新增行,红 = 删除行,灰 = 未变上下文(长段省略)。diff 基准选择代码血统最近的父代。</p></div>
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_2d_blocktile.cu</p>
+</div></body></html>

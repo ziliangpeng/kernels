@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wmma — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#9 wmma</h1><span class="delta">matmul_wmma.h/cu</span></div>
+<div class="verdict v-neg" style="margin-top:10px">28.1T &lt; SIMT 39.1T —— 裸 tensor core 没管线打不过精调 SIMT。NCU:mem 98.9% / tensor 4.4%,fragment load 主导,MMA 延迟完全没藏。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>第一次用 tensor core:<code>wmma</code> API,16×16×16 fragment,<code>load_matrix_sync</code>/<code>mma_sync</code>/<code>store_matrix_sync</code>,FP16 输入 FP32 累加。</p></div>
+<div><p><b>与上一代的差异:</b>计算从 FMA 换 tensor core;无 pipeline、无 swizzle。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_wmma.h =====
+#ifndef MATMUL_WMMA_H_
+#define MATMUL_WMMA_H_
+
+#include "matmul_kernel.h"
+#include &lt;cuda_fp16.h&gt;
+
+class MatmulWMMA : public MatmulKernel {
+private:
+    half *d_A_fp16;  // FP16 buffer for matrix A
+    half *d_B_fp16;  // FP16 buffer for matrix B
+    float *d_C_fp32; // FP32 buffer for accumulator
+    int N;
+
+public:
+    MatmulWMMA(int N, int blockDim);
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+    ~MatmulWMMA() override;
+};
+
+#endif  // MATMUL_WMMA_H_
+
+// ===== matmul_wmma.cu =====
+#include "matmul_wmma.h"
+#include "cuda_utils.h"
+#include &lt;mma.h&gt;
+#include &lt;iostream&gt;
+#include &lt;stdexcept&gt;
+
+// FP32 to FP16 conversion kernel
+__global__ void convertFP32ToFP16(const float* input, half* output, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx &lt; size) {
+        output[idx] = __float2half(input[idx]);
+    }
+}
+
+// WMMA matmul kernel using Tensor Cores
+__global__ void matmulWMMAKernel(const half* A, const half* B, float* C, int N) {
+    // WMMA tile dimensions
+    const int WMMA_M = 16;
+    const int WMMA_N = 16;
+    const int WMMA_K = 16;
+
+    // Calculate warp position
+    int warpM = (blockIdx.y * blockDim.y + threadIdx.y);
+    int warpN = (blockIdx.x * blockDim.x + threadIdx.x) / warpSize;
+
+    // Bounds check
+    if (warpM * WMMA_M &gt;= N || warpN * WMMA_N &gt;= N) return;
+
+    // Declare WMMA fragments
+    nvcuda::wmma::fragment&lt;nvcuda::wmma::matrix_a, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major&gt; a_frag;
+    nvcuda::wmma::fragment&lt;nvcuda::wmma::matrix_b, WMMA_M, WMMA_N, WMMA_K, half, nvcuda::wmma::row_major&gt; b_frag;
+    nvcuda::wmma::fragment&lt;nvcuda::wmma::accumulator, WMMA_M, WMMA_N, WMMA_K, float&gt; c_frag;
+
+    // Initialize accumulator to zero
+    nvcuda::wmma::fill_fragment(c_frag, 0.0f);
+
+    // Compute C = A × B by iterating over K dimension
+    for (int k = 0; k &lt; N; k += WMMA_K) {
+        int aRow = warpM * WMMA_M;
+        int aCol = k;
+        int bRow = k;
+        int bCol = warpN * WMMA_N;
+
+        // Load fragments from A and B (both row-major)
+        nvcuda::wmma::load_matrix_sync(a_frag, A + aRow * N + aCol, N);
+        nvcuda::wmma::load_matrix_sync(b_frag, B + bRow * N + bCol, N);
+
+        // Perform matrix multiply-accumulate
+        nvcuda::wmma::mma_sync(c_frag, a_frag, b_frag, c_frag);
+    }
+
+    // Store result
+    int cRow = warpM * WMMA_M;
+    int cCol = warpN * WMMA_N;
+    nvcuda::wmma::store_matrix_sync(C + cRow * N + cCol, c_frag, N, nvcuda::wmma::mem_row_major);
+}
+
+// Constructor: Allocate FP16 buffers
+MatmulWMMA::MatmulWMMA(int N, int blockDim) : N(N) {
+    // Check compute capability
+    cudaDeviceProp prop;
+    cudaGetDeviceProperties(&amp;prop, 0);
+    if (prop.major &lt; 7) {
+        std::cerr &lt;&lt; "WMMA requires compute capability 7.0+ (Volta or newer)" &lt;&lt; std::endl;
+        std::cerr &lt;&lt; "Current GPU: " &lt;&lt; prop.name &lt;&lt; " (SM " &lt;&lt; prop.major &lt;&lt; "." &lt;&lt; prop.minor &lt;&lt; ")" &lt;&lt; std::endl;
+        throw std::runtime_error("WMMA requires compute capability 7.0+ (Volta or newer)");
+    }
+
+    // Check matrix dimension compatibility
+    if (N % 16 != 0) {
+        std::cerr &lt;&lt; "WMMA kernel requires matrix dimension N to be a multiple of 16" &lt;&lt; std::endl;
+        std::cerr &lt;&lt; "Current N: " &lt;&lt; N &lt;&lt; std::endl;
+        throw std::runtime_error("WMMA kernel requires matrix dimension N to be a multiple of 16");
+    }
+
+    // Allocate FP16 buffers for input matrices
+    cudaCheckError(cudaMalloc(&amp;d_A_fp16, N * N * sizeof(half)));
+    cudaCheckError(cudaMalloc(&amp;d_B_fp16, N * N * sizeof(half)));
+    cudaCheckError(cudaMalloc(&amp;d_C_fp32, N * N * sizeof(float)));
+}
+
+// Execute: Convert to FP16, run WMMA, copy result
+void MatmulWMMA::execute(const float *d_A, const float *d_B, float *d_C) {
+    // ONE-TIME prep (2026-10-01 tax fix; see RESULTS-KERNELONLY-2026-10-01.md)
+    static const float *s_lastA = nullptr;
+    static const float *s_lastB = nullptr;
+    if (d_A != s_lastA || d_B != s_lastB) {
+        // Convert FP32 inputs to FP16
+        int threads = 256;
+        int blocks = (N * N + threads - 1) / threads;
+        convertFP32ToFP16&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_A_fp16, N * N);
+        convertFP32ToFP16&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_B, d_B_fp16, N * N);
+        cudaCheckError(cudaGetLastError());
+        s_lastA = d_A; s_lastB = d_B;
+    }
+
+    // Zero output buffer to avoid garbage in uncomputed tiles
+    cudaCheckError(cudaMemset(d_C_fp32, 0, N * N * sizeof(float)));
+
+    // Configure WMMA kernel
+    // Each warp handles one 16×16 output tile
+    // Each block has 16 warps arranged as 4×4, handling a 64×64 output region
+    dim3 blockDim(128, 4);  // 512 threads = 16 warps per block
+    dim3 gridDim((N + 63) / 64, (N + 63) / 64);  // Grid based on 64×64 tiles per block
+
+    matmulWMMAKernel&lt;&lt;&lt;gridDim, blockDim&gt;&gt;&gt;(d_A_fp16, d_B_fp16, d_C_fp32, N);
+    cudaCheckError(cudaGetLastError());
+
+    // Copy result back (WMMA outputs to FP32)
+    cudaCheckError(cudaMemcpy(d_C, d_C_fp32, N * N * sizeof(float), cudaMemcpyDeviceToDevice));
+}
+
+// Destructor: Free FP16 buffers
+MatmulWMMA::~MatmulWMMA() {
+    cudaFree(d_A_fp16);
+    cudaFree(d_B_fp16);
+    cudaFree(d_C_fp32);
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench 端到端 @4096(修税后)</td><td><b>28.1 TFLOPS</b></td></tr><tr><td>bench 端到端 @8192</td><td><b>29.3 TFLOPS</b></td></tr><tr><td>占同 run cuBLAS @8192</td><td><b>4%</b></td></tr><tr><td>占峰值 989T @8192</td><td><b>3.0%</b></td></tr></table>
+<div class="sec"><h2>NCU profile @8192(锁频 1.43GHz)</h2><table><tr><td>tensor pipe SoL</td><td><b>4.4%</b></td></tr><tr><td>memory(DRAM)SoL</td><td><b>98.9%</b></td></tr><tr><td>L2 throughput</td><td><b>19.4%</b></td></tr><tr><td>occupancy</td><td><b>74.4%</b></td></tr><tr><td>判定</td><td><b>pure DRAM-bound</b></td></tr></table></div>
+
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_wmma.cu</p>
+</div></body></html>

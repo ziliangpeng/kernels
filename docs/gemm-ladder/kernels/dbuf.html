@@ -1,0 +1,973 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>warptile_dbuf — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#8 warptile_dbuf</h1><span class="delta">matmul_warptile_dbuf.h/cu</span></div>
+<div class="verdict v-flat" style="margin-top:10px">−0.3% 持平 —— 单变量负结果:AI 这么低时是 SMEM-bandwidth-bound,async 造不出带宽。教训:async 本身不买账,深度才买账。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>warptile + <code>cp.async</code> double buffering:数学消费 stage 0 的同时 copy engine 填 stage 1。</p></div>
+<div><p><b>与上一代的差异:</b>加异步 copy pipeline 做 latency hiding(Ampere 特性)。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_warptile_dbuf.h =====
+#ifndef MATMUL_WARPTILE_DBUF_H
+#define MATMUL_WARPTILE_DBUF_H
+
+#include "matmul_kernel.h"
+
+// Warp Tiling + cp.async double buffering (Simon rung 12)
+// Adds async GMEM-&gt;SMEM copies (cuda::memcpy_async + cuda::barrier) on top of
+// the warptile kernel, overlapping the next tile's load with the current
+// tile's compute.
+
+class MatmulWarptileDbuf : public MatmulKernel {
+public:
+    MatmulWarptileDbuf(int N, int blockDim);
+    ~MatmulWarptileDbuf() override;
+
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+
+private:
+    int N;
+    int blockDim;
+};
+
+#endif // MATMUL_WARPTILE_DBUF_H
+
+// ===== matmul_warptile_dbuf.cu =====
+#include "matmul_warptile_dbuf.h"
+#include "cuda_utils.h"
+#include "dbuf_config.h"
+#include &lt;cuda_runtime.h&gt;
+#include &lt;cstdint&gt;
+// Config array for the in-process autotuner (generated by gen_dbuf_dispatch.py)
+#include "dbuf_configs.inc"
+
+// Warp Tiling + cp.async double buffering (Simon rung 12, raw PTX flavor)
+// — AUTOTUNABLE (templated) version.
+//
+// Algorithm identical to the original hardcoded kernel (verified correct at
+// N=512/1000/2048/4096, +16.5% vs warptile on H100). Every tiling dimension
+// is now a template parameter so the autotuner can sweep them:
+//
+//   BM, BN, BK  : thread-block tile
+//   WM, WN      : warp tile inside the block tile
+//   WNITER      : warp-subtile iterations along N
+//   TM, TN      : per-thread register tile
+//   NUM_THREADS : threads per block (must satisfy (BM/WM)*(BN/WN)*32)
+//
+// Derived (constexpr, Simon's parameterization):
+//   WMITER = (WM*WN) / (32*TM*TN*WNITER)   warp-subtile iterations along M
+//   WSUBM  = WM / WMITER,  WSUBN = WN / WNITER
+//
+// Pipeline mechanics (unchanged): cp.async.ca (A, 4B, transposed on store) +
+// cp.async.cg (B, 16B float4) into double-buffered SMEM; commit_group per
+// tile; wait_group 1 completes the current tile while the next tile's copies
+// keep flying. OOB handled by cp.async src-size zero-fill.
+//
+// Load mapping is flat-strided (works for ANY valid config, coalesced):
+//   A: consecutive threads -&gt; consecutive k (within a row of the A tile)
+//   B: consecutive threads -&gt; consecutive float4 (within a k-row of B tile)
+
+__device__ __forceinline__ void cp_async_4(float *smem_dst, const float *gmem_src,
+                                           int src_bytes) {
+    const unsigned smem_addr =
+        static_cast&lt;unsigned&gt;(__cvta_generic_to_shared(smem_dst));
+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4, %2;\n" ::"r"(smem_addr),
+                 "l"(gmem_src), "r"(src_bytes));
+}
+
+__device__ __forceinline__ void cp_async_16(float *smem_dst, const float *gmem_src,
+                                            int src_bytes) {
+    const unsigned smem_addr =
+        static_cast&lt;unsigned&gt;(__cvta_generic_to_shared(smem_dst));
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(smem_addr),
+                 "l"(gmem_src), "r"(src_bytes));
+}
+
+__device__ __forceinline__ void cp_async_commit() {
+    asm volatile("cp.async.commit_group;\n");
+}
+
+template &lt;int Pending&gt;
+__device__ __forceinline__ void cp_async_wait() {
+    asm volatile("cp.async.wait_group %0;\n" ::"n"(Pending));
+}
+
+// Load one K-tile of A (transposed) and B into SMEM buffer `buf` via cp.async.
+template &lt;int BM, int BN, int BK, int NUM_THREADS&gt;
+__device__ __forceinline__ void
+loadTileCpAsync(const float *A, const float *B, int N, int blockRow, int blockCol,
+                int tileIdx, int buf, float (*As)[2][BK][BM], float (*Bs)[2][BK][BN]) {
+    // A tile: BM x BK, transposed into As[buf][k][m].
+    for (int e = threadIdx.x; e &lt; BM * BK; e += NUM_THREADS) {
+        const int row = e / BK;  // m
+        const int k = e % BK;
+        const bool inBounds = (blockRow * BM + row) &lt; N &amp;&amp; (tileIdx + k) &lt; N;
+        cp_async_4(&amp;(*As)[buf][k][row],
+                   inBounds ? &amp;A[row * N + tileIdx + k] : A,
+                   inBounds ? 4 : 0);
+    }
+    // B tile: BK x BN, 16B chunks into Bs[buf][k][n]. B is pre-advanced by
+    // blockCol*BN; column indices are tile-local.
+    constexpr int N4 = BN / 4;
+    for (int f = threadIdx.x; f &lt; BK * N4; f += NUM_THREADS) {
+        const int row = f / N4;      // k
+        const int col4 = f % N4;     // float4 column within the tile
+        const int colGlobal = blockCol * BN + col4 * 4;
+        const float *src = &amp;B[(tileIdx + row) * N + col4 * 4];
+        const bool rowOk = (tileIdx + row) &lt; N;
+        if (rowOk &amp;&amp; colGlobal + 3 &lt; N &amp;&amp;
+            (reinterpret_cast&lt;uintptr_t&gt;(src) &amp; 15) == 0) {
+            cp_async_16(&amp;(*Bs)[buf][row][col4 * 4], src, 16);
+        } else {
+            #pragma unroll
+            for (int e4 = 0; e4 &lt; 4; ++e4) {
+                const bool ok = rowOk &amp;&amp; (colGlobal + e4) &lt; N;
+                cp_async_4(&amp;(*Bs)[buf][row][col4 * 4 + e4],
+                           ok ? &amp;src[e4] : B, ok ? 4 : 0);
+            }
+        }
+    }
+}
+
+template &lt;int BM, int BN, int BK, int WM, int WN, int WNITER, int TM, int TN,
+          int NUM_THREADS&gt;
+__global__ void __launch_bounds__(NUM_THREADS)
+matmulWarptileDbufKernelT(const float *A, const float *B, float *C, int N) {
+    constexpr int WMITER = (WM * WN) / (32 * TM * TN * WNITER);
+    constexpr int WSUBM = WM / WMITER;
+    constexpr int WSUBN = WN / WNITER;
+    constexpr int THREADS_N = WSUBN / TN;     // warp threads along N
+
+    static_assert(BM % WM == 0, "BM must be divisible by WM");
+    static_assert(BN % WN == 0, "BN must be divisible by WN");
+    static_assert(WN % WNITER == 0, "WN must be divisible by WNITER");
+    static_assert(WSUBN % TN == 0, "WSUBN must be divisible by TN");
+    static_assert(WSUBM % TM == 0, "WSUBM must be divisible by TM");
+    static_assert(32 % THREADS_N == 0, "warp threads along N must divide 32");
+    static_assert((BM / WM) * (BN / WN) == NUM_THREADS / 32,
+                  "warp tiles must exactly cover the block tile");
+    static_assert(WM * WN == 32 * TM * TN * WMITER * WNITER,
+                  "thread tiles must exactly cover the warp tile");
+
+    __shared__ __align__(16) float As[2][BK][BM];
+    __shared__ __align__(16) float Bs[2][BK][BN];
+
+    const int warpId = threadIdx.x / 32;
+    const int laneId = threadIdx.x % 32;
+    const int numWarpsN = BN / WN;
+    const int warpCol = warpId % numWarpsN;
+    const int warpRow = warpId / numWarpsN;
+    const int threadColInWarp = laneId % THREADS_N;
+    const int threadRowInWarp = laneId / THREADS_N;
+
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+
+    A += blockRow * BM * N;
+    B += blockCol * BN;
+    C += blockRow * BM * N + blockCol * BN;
+
+    float threadResults[WMITER * TM][WNITER * TN] = {{0.0f}};
+    float regM[WMITER * TM];
+    float regN[WNITER * TN];
+
+    // Prologue: K-tile 0 into buffer 0.
+    loadTileCpAsync&lt;BM, BN, BK, NUM_THREADS&gt;(A, B, N, blockRow, blockCol, 0, 0,
+                                             &amp;As, &amp;Bs);
+    cp_async_commit();
+
+    int bufIdx = 0;
+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK) {
+        const bool hasNext = (tileIdx + BK) &lt; N;
+        if (hasNext) {
+            loadTileCpAsync&lt;BM, BN, BK, NUM_THREADS&gt;(
+                A, B, N, blockRow, blockCol, tileIdx + BK, 1 - bufIdx, &amp;As, &amp;Bs);
+            cp_async_commit();
+        }
+
+        if (hasNext) {
+            cp_async_wait&lt;1&gt;();
+        } else {
+            cp_async_wait&lt;0&gt;();
+        }
+        __syncthreads();
+
+        const float (*AsBuf)[BM] = As[bufIdx];
+        const float (*BsBuf)[BN] = Bs[bufIdx];
+
+        #pragma unroll
+        for (int dotIdx = 0; dotIdx &lt; BK; dotIdx++) {
+            #pragma unroll
+            for (int wSubRow = 0; wSubRow &lt; WMITER; wSubRow++) {
+                #pragma unroll
+                for (int i = 0; i &lt; TM; i++) {
+                    regM[wSubRow * TM + i] =
+                        AsBuf[dotIdx][warpRow * WM + wSubRow * WSUBM +
+                                      threadRowInWarp * TM + i];
+                }
+            }
+            #pragma unroll
+            for (int wSubCol = 0; wSubCol &lt; WNITER; wSubCol++) {
+                #pragma unroll
+                for (int j = 0; j &lt; TN; j++) {
+                    regN[wSubCol * TN + j] =
+                        BsBuf[dotIdx][warpCol * WN + wSubCol * WSUBN +
+                                      threadColInWarp * TN + j];
+                }
+            }
+            #pragma unroll
+            for (int i = 0; i &lt; WMITER * TM; i++) {
+                #pragma unroll
+                for (int j = 0; j &lt; WNITER * TN; j++) {
+                    threadResults[i][j] += regM[i] * regN[j];
+                }
+            }
+        }
+
+        __syncthreads();
+        bufIdx = 1 - bufIdx;
+    }
+
+    // Write results
+    #pragma unroll
+    for (int wSubRow = 0; wSubRow &lt; WMITER; wSubRow++) {
+        #pragma unroll
+        for (int i = 0; i &lt; TM; i++) {
+            const int globalRow = blockRow * BM + warpRow * WM +
+                                  wSubRow * WSUBM + threadRowInWarp * TM + i;
+            if (globalRow &lt; N) {
+                #pragma unroll
+                for (int wSubCol = 0; wSubCol &lt; WNITER; wSubCol++) {
+                    #pragma unroll
+                    for (int j = 0; j &lt; TN; j++) {
+                        const int globalCol = blockCol * BN + warpCol * WN +
+                                              wSubCol * WSUBN +
+                                              threadColInWarp * TN + j;
+                        if (globalCol &lt; N) {
+                            C[(warpRow * WM + wSubRow * WSUBM +
+                               threadRowInWarp * TM + i) * N +
+                              (warpCol * WN + wSubCol * WSUBN +
+                               threadColInWarp * TN + j)] =
+                                threadResults[wSubRow * TM + i][wSubCol * TN + j];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launch. Config comes from g_dbuf (set by CLI flags / defaults).
+// The dispatch table over the sweep space is generated by
+// scripts/gen_dbuf_dispatch.py into dbuf_dispatch.inc — the generator is the
+// single source of truth for both the dispatch table and the sweep list.
+// ---------------------------------------------------------------------------
+
+void launchWarptileDbuf(const float *d_A, const float *d_B, float *d_C, int N,
+                        int BM, int BN, int BK, int WM, int WN, int WNITER,
+                        int TM, int TN, int NUM_THREADS) {
+    dim3 threads(NUM_THREADS);
+    dim3 blocks((N + BN - 1) / BN, (N + BM - 1) / BM);
+#include "dbuf_dispatch.inc"
+    fprintf(stderr,
+            "warptile_dbuf: unsupported config BM=%d BN=%d BK=%d WM=%d WN=%d "
+            "WNITER=%d TM=%d TN=%d NT=%d (regenerate dbuf_dispatch.inc)\n",
+            BM, BN, BK, WM, WN, WNITER, TM, TN, NUM_THREADS);
+    exit(1);
+}
+
+// Default = autotune winner on H100 (a-h100-cluster, 2026-09-26, sweep of 1360 configs,
+// see matmul/dbuf-sweep-an-h100-node-26.csv): 37.60T vs 32.49T for the
+// original hardcoded config.
+DbufConfig g_dbuf = {128, 256, 8, 64, 64, 2, 8, 4, 256};
+
+// ---------------------------------------------------------------------------
+// In-process autotuner: sweep every config in DBUF_CONFIGS in one CUDA
+// session. Matrices are allocated once; each config gets warmup + event-
+// timed iterations; one CSV line per config is printed (fflush) so the
+// sweep survives preemption (stdout can be teed to a file and is resumable
+// by grepping already-done configs).
+// ---------------------------------------------------------------------------
+void dbufAutotune(int N, int num_iterations) {
+    float *d_A, *d_B, *d_C;
+    cudaCheckError(cudaMalloc(&amp;d_A, (size_t)N * N * sizeof(float)));
+    cudaCheckError(cudaMalloc(&amp;d_B, (size_t)N * N * sizeof(float)));
+    cudaCheckError(cudaMalloc(&amp;d_C, (size_t)N * N * sizeof(float)));
+    {
+        // deterministic initialization on host, copied once
+        float *h = (float *)malloc((size_t)N * N * sizeof(float));
+        for (long long i = 0; i &lt; (long long)N * N; ++i) h[i] =
+            (float)((i * 1103515245 + 12345) % 1000) / 1000.0f - 0.5f;
+        cudaCheckError(cudaMemcpy(d_A, h, (size_t)N * N * sizeof(float),
+                                  cudaMemcpyHostToDevice));
+        cudaCheckError(cudaMemcpy(d_B, h, (size_t)N * N * sizeof(float),
+                                  cudaMemcpyHostToDevice));
+        free(h);
+    }
+
+    printf("BM,BN,BK,WM,WN,WNITER,TM,TN,NT,GFLOPS\n");
+    double best = -1.0;
+    int bestIdx = -1;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&amp;start);
+    cudaEventCreate(&amp;stop);
+
+    for (int i = 0; i &lt; NUM_DBUF_CONFIGS; ++i) {
+        const int *c = DBUF_CONFIGS[i];
+        g_dbuf = {c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]};
+
+        // warmup (also compiles/loads the kernel variant)
+        for (int w = 0; w &lt; 3; ++w) launchWarptileDbuf(d_A, d_B, d_C, N,
+            g_dbuf.BM, g_dbuf.BN, g_dbuf.BK, g_dbuf.WM, g_dbuf.WN,
+            g_dbuf.WNITER, g_dbuf.TM, g_dbuf.TN, g_dbuf.NUM_THREADS);
+        cudaDeviceSynchronize();
+        cudaError_t err = cudaGetLastError();
+        if (err != cudaSuccess) {
+            printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,LAUNCH_FAIL\n", c[0], c[1],
+                   c[2], c[3], c[4], c[5], c[6], c[7], c[8]);
+            fflush(stdout);
+            continue;
+        }
+
+        cudaEventRecord(start);
+        for (int it = 0; it &lt; num_iterations; ++it)
+            launchWarptileDbuf(d_A, d_B, d_C, N, g_dbuf.BM, g_dbuf.BN,
+                g_dbuf.BK, g_dbuf.WM, g_dbuf.WN, g_dbuf.WNITER, g_dbuf.TM,
+                g_dbuf.TN, g_dbuf.NUM_THREADS);
+        cudaEventRecord(stop);
+        cudaEventSynchronize(stop);
+        float ms;
+        cudaEventElapsedTime(&amp;ms, start, stop);
+        const double gflops =
+            (2.0 * N * N * N - (double)N * N) / (ms / num_iterations) / 1e6;
+
+        printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,%.1f\n", c[0], c[1], c[2], c[3],
+               c[4], c[5], c[6], c[7], c[8], gflops);
+        fflush(stdout);
+        if (gflops &gt; best) {
+            best = gflops;
+            bestIdx = i;
+        }
+    }
+
+    const int *c = DBUF_CONFIGS[bestIdx];
+    printf("# BEST BM=%d BN=%d BK=%d WM=%d WN=%d WNITER=%d TM=%d TN=%d NT=%d: "
+           "%.1f GFLOPS (%.2f TFLOPS)\n",
+           c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], best,
+           best / 1000.0);
+    // leave the best config installed in g_dbuf
+    g_dbuf = {c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]};
+
+    cudaFree(d_A);
+    cudaFree(d_B);
+    cudaFree(d_C);
+    cudaEventDestroy(start);
+    cudaEventDestroy(stop);
+}
+
+MatmulWarptileDbuf::MatmulWarptileDbuf(int N, int blockDim)
+    : N(N), blockDim(blockDim) {}
+
+void MatmulWarptileDbuf::execute(const float *d_A, const float *d_B, float *d_C) {
+    launchWarptileDbuf(d_A, d_B, d_C, N, g_dbuf.BM, g_dbuf.BN, g_dbuf.BK,
+                       g_dbuf.WM, g_dbuf.WN, g_dbuf.WNITER, g_dbuf.TM,
+                       g_dbuf.TN, g_dbuf.NUM_THREADS);
+    cudaCheckError(cudaGetLastError());
+}
+
+MatmulWarptileDbuf::~MatmulWarptileDbuf() {}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench @4096(autotuned FP32)</td><td><b>37.60 TFLOPS</b></td></tr><tr><td>占 cuBLAS FP32(51.93T)</td><td><b>72.4%</b></td></tr></table>
+
+<div class="sec"><h2>Diff vs 上一代(matmul_warptile)—— GitHub 风格</h2>
+<pre class="diff"><span class="dl-hdr">diff --git a/matmul_warptile.{h,cu} b/matmul_warptile_dbuf.{h,cu}</span>
+<span class="dl-del">-// ===== matmul_warptile.h =====</span>
+<span class="dl-del">-#ifndef MATMUL_WARPTILE_H</span>
+<span class="dl-del">-#define MATMUL_WARPTILE_H</span>
+<span class="dl-add">+// ===== matmul_warptile_dbuf.h =====</span>
+<span class="dl-add">+#ifndef MATMUL_WARPTILE_DBUF_H</span>
+<span class="dl-add">+#define MATMUL_WARPTILE_DBUF_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> #include "matmul_kernel.h"</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// Warp Tiling Optimization (Kernel 10 from siboehm.com)</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// Key optimization: Add warp-level tiling between block and thread levels.</span>
+<span class="dl-del">-// This organizes computation to maximize warp scheduler utilization.</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// THREE-LEVEL HIERARCHY:</span>
+<span class="dl-del">-// - Block tile: BM x BN (e.g., 128 x 128)</span>
+<span class="dl-del">-// - Warp tile: WM x WN (e.g., 64 x 64)</span>
+<span class="dl-del">-// - Thread tile: TM x TN (e.g., 8 x 8)</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// WARP ORGANIZATION:</span>
+<span class="dl-del">-// - Each warp (32 threads) computes a WM x WN tile</span>
+<span class="dl-del">-// - Warps are arranged to maximize scheduler efficiency</span>
+<span class="dl-del">-// - 4 warps per SM, each handling different output regions</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// PERFORMANCE:</span>
+<span class="dl-del">-// Expected ~93.7% of cuBLAS (1.1x over vectorized) - near peak performance.</span>
+<span class="dl-add">+// Warp Tiling + cp.async double buffering (Simon rung 12)</span>
+<span class="dl-add">+// Adds async GMEM-&gt;SMEM copies (cuda::memcpy_async + cuda::barrier) on top of</span>
+<span class="dl-add">+// the warptile kernel, overlapping the next tile's load with the current</span>
+<span class="dl-add">+// tile's compute.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-class MatmulWarptile : public MatmulKernel {</span>
+<span class="dl-add">+class MatmulWarptileDbuf : public MatmulKernel {</span>
+<span class="dl-add">+public:</span>
+<span class="dl-add">+    MatmulWarptileDbuf(int N, int blockDim);</span>
+<span class="dl-add">+    ~MatmulWarptileDbuf() override;</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    void execute(const float *d_A, const float *d_B, float *d_C) override;</span>
+<span class="dl-add">+</span>
+<span class="dl-ctx"> private:</span>
+<span class="dl-del">-    int N;         // Matrix dimension (N×N matrices)</span>
+<span class="dl-del">-    int blockDim;  // Block dimension (unused, using fixed parameters)</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-public:</span>
+<span class="dl-del">-    MatmulWarptile(int N, int blockDim);</span>
+<span class="dl-del">-    void execute(const float *d_A, const float *d_B, float *d_C) override;</span>
+<span class="dl-del">-    ~MatmulWarptile() override;</span>
+<span class="dl-add">+    int N;</span>
+<span class="dl-add">+    int blockDim;</span>
+<span class="dl-ctx"> };</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-#endif</span>
+<span class="dl-add">+#endif // MATMUL_WARPTILE_DBUF_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// ===== matmul_warptile.cu =====</span>
+<span class="dl-del">-#include "matmul_warptile.h"</span>
+<span class="dl-add">+// ===== matmul_warptile_dbuf.cu =====</span>
+<span class="dl-add">+#include "matmul_warptile_dbuf.h"</span>
+<span class="dl-ctx"> #include "cuda_utils.h"</span>
+<span class="dl-add">+#include "dbuf_config.h"</span>
+<span class="dl-ctx"> #include &lt;cuda_runtime.h&gt;</span>
+<span class="dl-add">+#include &lt;cstdint&gt;</span>
+<span class="dl-add">+// Config array for the in-process autotuner (generated by gen_dbuf_dispatch.py)</span>
+<span class="dl-add">+#include "dbuf_configs.inc"</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Warp Tiling kernel (Kernel 10)</span>
+<span class="dl-del">-// Adds warp-level tiling between block and thread levels</span>
+<span class="dl-del">-// Three-level hierarchy: Block -&gt; Warp -&gt; Thread</span>
+<span class="dl-add">+// Warp Tiling + cp.async double buffering (Simon rung 12, raw PTX flavor)</span>
+<span class="dl-add">+// — AUTOTUNABLE (templated) version.</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+// Algorithm identical to the original hardcoded kernel (verified correct at</span>
+<span class="dl-add">+// N=512/1000/2048/4096, +16.5% vs warptile on H100). Every tiling dimension</span>
+<span class="dl-add">+// is now a template parameter so the autotuner can sweep them:</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+//   BM, BN, BK  : thread-block tile</span>
+<span class="dl-add">+//   WM, WN      : warp tile inside the block tile</span>
+<span class="dl-add">+//   WNITER      : warp-subtile iterations along N</span>
+<span class="dl-add">+//   TM, TN      : per-thread register tile</span>
+<span class="dl-add">+//   NUM_THREADS : threads per block (must satisfy (BM/WM)*(BN/WN)*32)</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+// Derived (constexpr, Simon's parameterization):</span>
+<span class="dl-add">+//   WMITER = (WM*WN) / (32*TM*TN*WNITER)   warp-subtile iterations along M</span>
+<span class="dl-add">+//   WSUBM  = WM / WMITER,  WSUBN = WN / WNITER</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+// Pipeline mechanics (unchanged): cp.async.ca (A, 4B, transposed on store) +</span>
+<span class="dl-add">+// cp.async.cg (B, 16B float4) into double-buffered SMEM; commit_group per</span>
+<span class="dl-add">+// tile; wait_group 1 completes the current tile while the next tile's copies</span>
+<span class="dl-add">+// keep flying. OOB handled by cp.async src-size zero-fill.</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+// Load mapping is flat-strided (works for ANY valid config, coalesced):</span>
+<span class="dl-add">+//   A: consecutive threads -&gt; consecutive k (within a row of the A tile)</span>
+<span class="dl-add">+//   B: consecutive threads -&gt; consecutive float4 (within a k-row of B tile)</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-#define BM_WARP 128</span>
+<span class="dl-del">-#define BN_WARP 128</span>
+<span class="dl-del">-#define BK_WARP 16</span>
+<span class="dl-del">-#define WM 64       // Warp tile M dimension</span>
+<span class="dl-del">-#define WN 64       // Warp tile N dimension</span>
+<span class="dl-del">-#define TM_WARP 8   // Thread tile M dimension</span>
+<span class="dl-del">-#define TN_WARP 4   // Thread tile N dimension</span>
+<span class="dl-del">-#define WARP_SIZE 32</span>
+<span class="dl-add">+__device__ __forceinline__ void cp_async_4(float *smem_dst, const float *gmem_src,</span>
+<span class="dl-add">+                                           int src_bytes) {</span>
+<span class="dl-add">+    const unsigned smem_addr =</span>
+<span class="dl-add">+        static_cast&lt;unsigned&gt;(__cvta_generic_to_shared(smem_dst));</span>
+<span class="dl-add">+    asm volatile("cp.async.ca.shared.global [%0], [%1], 4, %2;\n" ::"r"(smem_addr),</span>
+<span class="dl-add">+                 "l"(gmem_src), "r"(src_bytes));</span>
+<span class="dl-add">+}</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Warps per block: (BM/WM) * (BN/WN) = 2 * 2 = 4</span>
+<span class="dl-del">-#define WARPS_PER_BLOCK_X (BN_WARP / WN)  // 2</span>
+<span class="dl-del">-#define WARPS_PER_BLOCK_Y (BM_WARP / WM)  // 2</span>
+<span class="dl-del">-#define NUM_WARPS (WARPS_PER_BLOCK_X * WARPS_PER_BLOCK_Y)  // 4</span>
+<span class="dl-add">+__device__ __forceinline__ void cp_async_16(float *smem_dst, const float *gmem_src,</span>
+<span class="dl-add">+                                            int src_bytes) {</span>
+<span class="dl-add">+    const unsigned smem_addr =</span>
+<span class="dl-add">+        static_cast&lt;unsigned&gt;(__cvta_generic_to_shared(smem_dst));</span>
+<span class="dl-add">+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(smem_addr),</span>
+<span class="dl-add">+                 "l"(gmem_src), "r"(src_bytes));</span>
+<span class="dl-add">+}</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Threads per warp tile: (WM/TM) * (WN/TN) = 8 * 16 = 128</span>
+<span class="dl-del">-// But we only have 32 threads per warp, so each thread computes multiple tiles</span>
+<span class="dl-del">-// Threads per warp compute: (WM*WN) / (TM*TN*32) = 4096 / 1024 = 4 tiles each? No...</span>
+<span class="dl-del">-// Let's recalculate:</span>
+<span class="dl-del">-// - Warp produces WM x WN = 64 x 64 = 4096 elements</span>
+<span class="dl-del">-// - Each thread produces TM x TN = 8 x 4 = 32 elements</span>
+<span class="dl-del">-// - So we need 4096/32 = 128 threads, but warp has only 32</span>
+<span class="dl-del">-// - So each thread computes (128/32) = 4 sets of TM x TN</span>
+<span class="dl-add">+__device__ __forceinline__ void cp_async_commit() {</span>
+<span class="dl-add">+    asm volatile("cp.async.commit_group;\n");</span>
+<span class="dl-add">+}</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-#define WARP_ITER_M (WM / (TM_WARP * (WARP_SIZE / (WN / TN_WARP))))  // iterations in M</span>
+<span class="dl-del">-#define WARP_ITER_N (WN / TN_WARP / (WARP_SIZE / (WN / TN_WARP)))   // No extra iter in N</span>
+<span class="dl-add">+template &lt;int Pending&gt;</span>
+<span class="dl-add">+__device__ __forceinline__ void cp_async_wait() {</span>
+<span class="dl-add">+    asm volatile("cp.async.wait_group %0;\n" ::"n"(Pending));</span>
+<span class="dl-add">+}</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Simpler approach: each thread in warp handles multiple TM x TN tiles</span>
+<span class="dl-del">-// Warp layout: 8 threads in N direction (handling 8 * TN = 32 cols)</span>
+<span class="dl-del">-//              4 threads in M direction (handling 4 * TM = 32 rows)</span>
+<span class="dl-del">-// But we need 64x64, so each thread does 2x2 = 4 tiles in M direction</span>
+<span class="dl-del">-#define WARP_THREAD_M 4   // Threads in M direction per warp</span>
+<span class="dl-del">-#define WARP_THREAD_N 8   // Threads in N direction per warp (4*8 = 32)</span>
+<span class="dl-del">-#define WARP_SUBTILE_M 2  // Each thread computes this many TM-tiles in M</span>
+<span class="dl-del">-#define WARP_SUBTILE_N 2  // Each thread computes this many TN-tiles in N</span>
+<span class="dl-add">+// Load one K-tile of A (transposed) and B into SMEM buffer `buf` via cp.async.</span>
+<span class="dl-add">+template &lt;int BM, int BN, int BK, int NUM_THREADS&gt;</span>
+<span class="dl-add">+__device__ __forceinline__ void</span>
+<span class="dl-add">+loadTileCpAsync(const float *A, const float *B, int N, int blockRow, int blockCol,</span>
+<span class="dl-add">+                int tileIdx, int buf, float (*As)[2][BK][BM], float (*Bs)[2][BK][BN]) {</span>
+<span class="dl-add">+    // A tile: BM x BK, transposed into As[buf][k][m].</span>
+<span class="dl-add">+    for (int e = threadIdx.x; e &lt; BM * BK; e += NUM_THREADS) {</span>
+<span class="dl-add">+        const int row = e / BK;  // m</span>
+<span class="dl-add">+        const int k = e % BK;</span>
+<span class="dl-add">+        const bool inBounds = (blockRow * BM + row) &lt; N &amp;&amp; (tileIdx + k) &lt; N;</span>
+<span class="dl-add">+        cp_async_4(&amp;(*As)[buf][k][row],</span>
+<span class="dl-add">+                   inBounds ? &amp;A[row * N + tileIdx + k] : A,</span>
+<span class="dl-add">+                   inBounds ? 4 : 0);</span>
+<span class="dl-add">+    }</span>
+<span class="dl-add">+    // B tile: BK x BN, 16B chunks into Bs[buf][k][n]. B is pre-advanced by</span>
+<span class="dl-add">+    // blockCol*BN; column indices are tile-local.</span>
+<span class="dl-add">+    constexpr int N4 = BN / 4;</span>
+<span class="dl-add">+    for (int f = threadIdx.x; f &lt; BK * N4; f += NUM_THREADS) {</span>
+<span class="dl-add">+        const int row = f / N4;      // k</span>
+<span class="dl-add">+        const int col4 = f % N4;     // float4 column within the tile</span>
+<span class="dl-add">+        const int colGlobal = blockCol * BN + col4 * 4;</span>
+<span class="dl-add">+        const float *src = &amp;B[(tileIdx + row) * N + col4 * 4];</span>
+<span class="dl-add">+        const bool rowOk = (tileIdx + row) &lt; N;</span>
+<span class="dl-add">+        if (rowOk &amp;&amp; colGlobal + 3 &lt; N &amp;&amp;</span>
+<span class="dl-add">+            (reinterpret_cast&lt;uintptr_t&gt;(src) &amp; 15) == 0) {</span>
+<span class="dl-add">+            cp_async_16(&amp;(*Bs)[buf][row][col4 * 4], src, 16);</span>
+<span class="dl-add">+        } else {</span>
+<span class="dl-add">+            #pragma unroll</span>
+<span class="dl-add">+            for (int e4 = 0; e4 &lt; 4; ++e4) {</span>
+<span class="dl-add">+                const bool ok = rowOk &amp;&amp; (colGlobal + e4) &lt; N;</span>
+<span class="dl-add">+                cp_async_4(&amp;(*Bs)[buf][row][col4 * 4 + e4],</span>
+<span class="dl-add">+                           ok ? &amp;src[e4] : B, ok ? 4 : 0);</span>
+<span class="dl-add">+            }</span>
+<span class="dl-add">+        }</span>
+<span class="dl-add">+    }</span>
+<span class="dl-add">+}</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Verify: WARP_THREAD_M * TM_WARP * WARP_SUBTILE_M = 4 * 8 * 2 = 64 = WM ✓</span>
+<span class="dl-del">-// Verify: WARP_THREAD_N * TN_WARP * WARP_SUBTILE_N = 8 * 4 * 2 = 64 = WN ✓</span>
+<span class="dl-add">+template &lt;int BM, int BN, int BK, int WM, int WN, int WNITER, int TM, int TN,</span>
+<span class="dl-add">+          int NUM_THREADS&gt;</span>
+<span class="dl-add">+__global__ void __launch_bounds__(NUM_THREADS)</span>
+<span class="dl-add">+matmulWarptileDbufKernelT(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-add">+    constexpr int WMITER = (WM * WN) / (32 * TM * TN * WNITER);</span>
+<span class="dl-add">+    constexpr int WSUBM = WM / WMITER;</span>
+<span class="dl-add">+    constexpr int WSUBN = WN / WNITER;</span>
+<span class="dl-add">+    constexpr int THREADS_N = WSUBN / TN;     // warp threads along N</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// Threads per block: NUM_WARPS * WARP_SIZE = 4 * 32 = 128</span>
+<span class="dl-del">-#define NUM_THREADS_WARP (NUM_WARPS * WARP_SIZE)</span>
+<span class="dl-add">+    static_assert(BM % WM == 0, "BM must be divisible by WM");</span>
+<span class="dl-add">+    static_assert(BN % WN == 0, "BN must be divisible by WN");</span>
+<span class="dl-add">+    static_assert(WN % WNITER == 0, "WN must be divisible by WNITER");</span>
+<span class="dl-add">+    static_assert(WSUBN % TN == 0, "WSUBN must be divisible by TN");</span>
+<span class="dl-add">+    static_assert(WSUBM % TM == 0, "WSUBM must be divisible by TM");</span>
+<span class="dl-add">+    static_assert(32 % THREADS_N == 0, "warp threads along N must divide 32");</span>
+<span class="dl-add">+    static_assert((BM / WM) * (BN / WN) == NUM_THREADS / 32,</span>
+<span class="dl-add">+                  "warp tiles must exactly cover the block tile");</span>
+<span class="dl-add">+    static_assert(WM * WN == 32 * TM * TN * WMITER * WNITER,</span>
+<span class="dl-add">+                  "thread tiles must exactly cover the warp tile");</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-__global__ void matmulWarptileKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-del">-    // Shared memory: As transposed</span>
+<span class="dl-del">-    __shared__ float As[BK_WARP][BM_WARP];</span>
+<span class="dl-del">-    __shared__ float Bs[BK_WARP][BN_WARP];</span>
+<span class="dl-add">+    __shared__ __align__(16) float As[2][BK][BM];</span>
+<span class="dl-add">+    __shared__ __align__(16) float Bs[2][BK][BN];</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Warp and thread indices</span>
+<span class="dl-del">-    const int warpId = threadIdx.x / WARP_SIZE;</span>
+<span class="dl-del">-    const int laneId = threadIdx.x % WARP_SIZE;</span>
+<span class="dl-add">+    const int warpId = threadIdx.x / 32;</span>
+<span class="dl-add">+    const int laneId = threadIdx.x % 32;</span>
+<span class="dl-add">+    const int numWarpsN = BN / WN;</span>
+<span class="dl-add">+    const int warpCol = warpId % numWarpsN;</span>
+<span class="dl-add">+    const int warpRow = warpId / numWarpsN;</span>
+<span class="dl-add">+    const int threadColInWarp = laneId % THREADS_N;</span>
+<span class="dl-add">+    const int threadRowInWarp = laneId / THREADS_N;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Warp position in block tile</span>
+<span class="dl-del">-    const int warpRow = warpId / WARPS_PER_BLOCK_X;  // 0-1</span>
+<span class="dl-del">-    const int warpCol = warpId % WARPS_PER_BLOCK_X;  // 0-1</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-    // Thread position within warp tile</span>
+<span class="dl-del">-    const int threadRowInWarp = laneId / WARP_THREAD_N;  // 0-3</span>
+<span class="dl-del">-    const int threadColInWarp = laneId % WARP_THREAD_N;  // 0-7</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-    // Block position in output</span>
+<span class="dl-ctx">     const int blockRow = blockIdx.y;</span>
+<span class="dl-ctx">     const int blockCol = blockIdx.x;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    // Move pointers to block's starting position</span>
+<span class="dl-del">-    A += blockRow * BM_WARP * N;</span>
+<span class="dl-del">-    B += blockCol * BN_WARP;</span>
+<span class="dl-del">-    C += blockRow * BM_WARP * N + blockCol * BN_WARP;</span>
+<span class="dl-add">+    A += blockRow * BM * N;</span>
+<span class="dl-add">+    B += blockCol * BN;</span>
+<span class="dl-add">+    C += blockRow * BM * N + blockCol * BN;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Thread results: each thread computes WARP_SUBTILE_M * WARP_SUBTILE_N tiles of TM x TN</span>
+<span class="dl-del">-    float threadResults[WARP_SUBTILE_M * TM_WARP][WARP_SUBTILE_N * TN_WARP] = {{0.0f}};</span>
+<span class="dl-add">+    float threadResults[WMITER * TM][WNITER * TN] = {{0.0f}};</span>
+<span class="dl-add">+    float regM[WMITER * TM];</span>
+<span class="dl-add">+    float regN[WNITER * TN];</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Registers for A and B values</span>
+<span class="dl-del">-    float regA[WARP_SUBTILE_M * TM_WARP];</span>
+<span class="dl-del">-    float regB[WARP_SUBTILE_N * TN_WARP];</span>
+<span class="dl-add">+    // Prologue: K-tile 0 into buffer 0.</span>
+<span class="dl-add">+    loadTileCpAsync&lt;BM, BN, BK, NUM_THREADS&gt;(A, B, N, blockRow, blockCol, 0, 0,</span>
+<span class="dl-add">+                                             &amp;As, &amp;Bs);</span>
+<span class="dl-add">+    cp_async_commit();</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Load indices - we have 128 threads</span>
+<span class="dl-del">-    // A tile: BM * BK = 128 * 16 = 2048 elements, 2048/128 = 16 per thread</span>
+<span class="dl-del">-    // B tile: BK * BN = 16 * 128 = 2048 elements, 2048/128 = 16 per thread</span>
+<span class="dl-del">-    const int strideA = NUM_THREADS_WARP / BK_WARP;  // 128 / 16 = 8</span>
+<span class="dl-del">-    const int strideB = NUM_THREADS_WARP / BN_WARP;  // 128 / 128 = 1</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-    const int innerRowA = threadIdx.x / BK_WARP;</span>
+<span class="dl-del">-    const int innerColA = threadIdx.x % BK_WARP;</span>
+<span class="dl-del">-    const int innerRowB = threadIdx.x / BN_WARP;</span>
+<span class="dl-del">-    const int innerColB = threadIdx.x % BN_WARP;</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-    // Loop over K dimension</span>
+<span class="dl-del">-    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK_WARP) {</span>
+<span class="dl-del">-        // Load A tile (transposed into As[BK][BM])</span>
+<span class="dl-del">-        for (int loadOffset = 0; loadOffset &lt; BM_WARP; loadOffset += strideA) {</span>
+<span class="dl-del">-            int row = innerRowA + loadOffset;</span>
+<span class="dl-del">-            if (blockRow * BM_WARP + row &lt; N &amp;&amp; tileIdx + innerColA &lt; N) {</span>
+<span class="dl-del">-                As[innerColA][row] = A[row * N + innerColA];</span>
+<span class="dl-del">-            } else {</span>
+<span class="dl-del">-                As[innerColA][row] = 0.0f;</span>
+<span class="dl-del">-            }</span>
+<span class="dl-add">+    int bufIdx = 0;</span>
+<span class="dl-add">+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK) {</span>
+<span class="dl-add">+        const bool hasNext = (tileIdx + BK) &lt; N;</span>
+<span class="dl-add">+        if (hasNext) {</span>
+<span class="dl-add">+            loadTileCpAsync&lt;BM, BN, BK, NUM_THREADS&gt;(</span>
+<span class="dl-add">+                A, B, N, blockRow, blockCol, tileIdx + BK, 1 - bufIdx, &amp;As, &amp;Bs);</span>
+<span class="dl-add">+            cp_async_commit();</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Load B tile</span>
+<span class="dl-del">-        for (int loadOffset = 0; loadOffset &lt; BK_WARP; loadOffset += strideB) {</span>
+<span class="dl-del">-            int row = innerRowB + loadOffset;</span>
+<span class="dl-del">-            if (tileIdx + row &lt; N &amp;&amp; blockCol * BN_WARP + innerColB &lt; N) {</span>
+<span class="dl-del">-                Bs[row][innerColB] = B[row * N + innerColB];</span>
+<span class="dl-del">-            } else {</span>
+<span class="dl-del">-                Bs[row][innerColB] = 0.0f;</span>
+<span class="dl-del">-            }</span>
+<span class="dl-add">+        if (hasNext) {</span>
+<span class="dl-add">+            cp_async_wait&lt;1&gt;();</span>
+<span class="dl-add">+        } else {</span>
+<span class="dl-add">+            cp_async_wait&lt;0&gt;();</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-del">-</span>
+<span class="dl-ctx">         __syncthreads();</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        A += BK_WARP;</span>
+<span class="dl-del">-        B += BK_WARP * N;</span>
+<span class="dl-add">+        const float (*AsBuf)[BM] = As[bufIdx];</span>
+<span class="dl-add">+        const float (*BsBuf)[BN] = Bs[bufIdx];</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Compute using warp tiling</span>
+<span class="dl-ctx">         #pragma unroll</span>
+<span class="dl-del">-        for (int dotIdx = 0; dotIdx &lt; BK_WARP; dotIdx++) {</span>
+<span class="dl-del">-            // Load A values for all subtiles this thread computes</span>
+<span class="dl-add">+        for (int dotIdx = 0; dotIdx &lt; BK; dotIdx++) {</span>
+<span class="dl-ctx">             #pragma unroll</span>
+<span class="dl-del">-            for (int subtileM = 0; subtileM &lt; WARP_SUBTILE_M; subtileM++) {</span>
+<span class="dl-add">+            for (int wSubRow = 0; wSubRow &lt; WMITER; wSubRow++) {</span>
+<span class="dl-ctx">                 #pragma unroll</span>
+<span class="dl-del">-                for (int i = 0; i &lt; TM_WARP; i++) {</span>
+<span class="dl-del">-                    // Position in warp tile + subtile offset + thread offset + element</span>
+<span class="dl-del">-                    int asRow = warpRow * WM + subtileM * (WM / WARP_SUBTILE_M) +</span>
+<span class="dl-del">-                               threadRowInWarp * TM_WARP + i;</span>
+<span class="dl-del">-                    regA[subtileM * TM_WARP + i] = As[dotIdx][asRow];</span>
+<span class="dl-add">+                for (int i = 0; i &lt; TM; i++) {</span>
+<span class="dl-add">+                    regM[wSubRow * TM + i] =</span>
+<span class="dl-add">+                        AsBuf[dotIdx][warpRow * WM + wSubRow * WSUBM +</span>
+<span class="dl-add">+                                      threadRowInWarp * TM + i];</span>
+<span class="dl-ctx">                 }</span>
+<span class="dl-ctx">             }</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-            // Load B values for all subtiles</span>
+<span class="dl-ctx">             #pragma unroll</span>
+<span class="dl-del">-            for (int subtileN = 0; subtileN &lt; WARP_SUBTILE_N; subtileN++) {</span>
+<span class="dl-add">+            for (int wSubCol = 0; wSubCol &lt; WNITER; wSubCol++) {</span>
+<span class="dl-ctx">                 #pragma unroll</span>
+<span class="dl-del">-                for (int j = 0; j &lt; TN_WARP; j++) {</span>
+<span class="dl-del">-                    int bsCol = warpCol * WN + subtileN * (WN / WARP_SUBTILE_N) +</span>
+<span class="dl-del">-                               threadColInWarp * TN_WARP + j;</span>
+<span class="dl-del">-                    regB[subtileN * TN_WARP + j] = Bs[dotIdx][bsCol];</span>
+<span class="dl-add">+                for (int j = 0; j &lt; TN; j++) {</span>
+<span class="dl-add">+                    regN[wSubCol * TN + j] =</span>
+<span class="dl-add">+                        BsBuf[dotIdx][warpCol * WN + wSubCol * WSUBN +</span>
+<span class="dl-add">+                                      threadColInWarp * TN + j];</span>
+<span class="dl-ctx">                 }</span>
+<span class="dl-ctx">             }</span>
+<span class="dl-del">-</span>
+<span class="dl-del">-            // Outer product for all subtiles</span>
+<span class="dl-ctx">             #pragma unroll</span>
+<span class="dl-del">-            for (int i = 0; i &lt; WARP_SUBTILE_M * TM_WARP; i++) {</span>
+<span class="dl-add">+            for (int i = 0; i &lt; WMITER * TM; i++) {</span>
+<span class="dl-ctx">                 #pragma unroll</span>
+<span class="dl-del">-                for (int j = 0; j &lt; WARP_SUBTILE_N * TN_WARP; j++) {</span>
+<span class="dl-del">-                    threadResults[i][j] += regA[i] * regB[j];</span>
+<span class="dl-add">+                for (int j = 0; j &lt; WNITER * TN; j++) {</span>
+<span class="dl-add">+                    threadResults[i][j] += regM[i] * regN[j];</span>
+<span class="dl-ctx">                 }</span>
+<span class="dl-ctx">             }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-add">+        bufIdx = 1 - bufIdx;</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Write results to global memory</span>
+<span class="dl-add">+    // Write results</span>
+<span class="dl-ctx">     #pragma unroll</span>
+<span class="dl-del">-    for (int subtileM = 0; subtileM &lt; WARP_SUBTILE_M; subtileM++) {</span>
+<span class="dl-add">+    for (int wSubRow = 0; wSubRow &lt; WMITER; wSubRow++) {</span>
+<span class="dl-ctx">         #pragma unroll</span>
+<span class="dl-del">-        for (int i = 0; i &lt; TM_WARP; i++) {</span>
+<span class="dl-del">-            int globalRow = blockRow * BM_WARP + warpRow * WM +</span>
+<span class="dl-del">-                           subtileM * (WM / WARP_SUBTILE_M) +</span>
+<span class="dl-del">-                           threadRowInWarp * TM_WARP + i;</span>
+<span class="dl-del">-</span>
+<span class="dl-add">+        for (int i = 0; i &lt; TM; i++) {</span>
+<span class="dl-add">+            const int globalRow = blockRow * BM + warpRow * WM +</span>
+<span class="dl-add">+                                  wSubRow * WSUBM + threadRowInWarp * TM + i;</span>
+<span class="dl-ctx">             if (globalRow &lt; N) {</span>
+<span class="dl-ctx">                 #pragma unroll</span>
+<span class="dl-del">-                for (int subtileN = 0; subtileN &lt; WARP_SUBTILE_N; subtileN++) {</span>
+<span class="dl-add">+                for (int wSubCol = 0; wSubCol &lt; WNITER; wSubCol++) {</span>
+<span class="dl-ctx">                     #pragma unroll</span>
+<span class="dl-del">-                    for (int j = 0; j &lt; TN_WARP; j++) {</span>
+<span class="dl-del">-                        int globalCol = blockCol * BN_WARP + warpCol * WN +</span>
+<span class="dl-del">-                                       subtileN * (WN / WARP_SUBTILE_N) +</span>
+<span class="dl-del">-                                       threadColInWarp * TN_WARP + j;</span>
+<span class="dl-del">-</span>
+<span class="dl-add">+                    for (int j = 0; j &lt; TN; j++) {</span>
+<span class="dl-add">+                        const int globalCol = blockCol * BN + warpCol * WN +</span>
+<span class="dl-add">+                                              wSubCol * WSUBN +</span>
+<span class="dl-add">+                                              threadColInWarp * TN + j;</span>
+<span class="dl-ctx">                         if (globalCol &lt; N) {</span>
+<span class="dl-del">-                            int localRow = warpRow * WM + subtileM * (WM / WARP_SUBTILE_M) +</span>
+<span class="dl-del">-                                          threadRowInWarp * TM_WARP + i;</span>
+<span class="dl-del">-                            int localCol = warpCol * WN + subtileN * (WN / WARP_SUBTILE_N) +</span>
+<span class="dl-del">-                                          threadColInWarp * TN_WARP + j;</span>
+<span class="dl-del">-                            C[localRow * N + localCol] = threadResults[subtileM * TM_WARP + i][subtileN * TN_WARP + j];</span>
+<span class="dl-add">+                            C[(warpRow * WM + wSubRow * WSUBM +</span>
+<span class="dl-add">+                               threadRowInWarp * TM + i) * N +</span>
+<span class="dl-add">+                              (warpCol * WN + wSubCol * WSUBN +</span>
+<span class="dl-add">+                               threadColInWarp * TN + j)] =</span>
+<span class="dl-add">+                                threadResults[wSubRow * TM + i][wSubCol * TN + j];</span>
+<span class="dl-ctx">                         }</span>
+<span class="dl-ctx">                     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulWarptile::MatmulWarptile(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-del">-    // No workspace needed</span>
+<span class="dl-add">+// ---------------------------------------------------------------------------</span>
+<span class="dl-add">+// Host-side launch. Config comes from g_dbuf (set by CLI flags / defaults).</span>
+<span class="dl-add">+// The dispatch table over the sweep space is generated by</span>
+<span class="dl-add">+// scripts/gen_dbuf_dispatch.py into dbuf_dispatch.inc — the generator is the</span>
+<span class="dl-add">+// single source of truth for both the dispatch table and the sweep list.</span>
+<span class="dl-add">+// ---------------------------------------------------------------------------</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+void launchWarptileDbuf(const float *d_A, const float *d_B, float *d_C, int N,</span>
+<span class="dl-add">+                        int BM, int BN, int BK, int WM, int WN, int WNITER,</span>
+<span class="dl-add">+                        int TM, int TN, int NUM_THREADS) {</span>
+<span class="dl-add">+    dim3 threads(NUM_THREADS);</span>
+<span class="dl-add">+    dim3 blocks((N + BN - 1) / BN, (N + BM - 1) / BM);</span>
+<span class="dl-add">+#include "dbuf_dispatch.inc"</span>
+<span class="dl-add">+    fprintf(stderr,</span>
+<span class="dl-add">+            "warptile_dbuf: unsupported config BM=%d BN=%d BK=%d WM=%d WN=%d "</span>
+<span class="dl-add">+            "WNITER=%d TM=%d TN=%d NT=%d (regenerate dbuf_dispatch.inc)\n",</span>
+<span class="dl-add">+            BM, BN, BK, WM, WN, WNITER, TM, TN, NUM_THREADS);</span>
+<span class="dl-add">+    exit(1);</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-void MatmulWarptile::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-del">-    dim3 threads(NUM_THREADS_WARP);</span>
+<span class="dl-del">-    dim3 blocks((N + BN_WARP - 1) / BN_WARP,</span>
+<span class="dl-del">-                (N + BM_WARP - 1) / BM_WARP);</span>
+<span class="dl-add">+// Default = autotune winner on H100 (a-h100-cluster, 2026-09-26, sweep of 1360 configs,</span>
+<span class="dl-add">+// see matmul/dbuf-sweep-an-h100-node-26.csv): 37.60T vs 32.49T for the</span>
+<span class="dl-add">+// original hardcoded config.</span>
+<span class="dl-add">+DbufConfig g_dbuf = {128, 256, 8, 64, 64, 2, 8, 4, 256};</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    matmulWarptileKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-add">+// ---------------------------------------------------------------------------</span>
+<span class="dl-add">+// In-process autotuner: sweep every config in DBUF_CONFIGS in one CUDA</span>
+<span class="dl-add">+// session. Matrices are allocated once; each config gets warmup + event-</span>
+<span class="dl-add">+// timed iterations; one CSV line per config is printed (fflush) so the</span>
+<span class="dl-add">+// sweep survives preemption (stdout can be teed to a file and is resumable</span>
+<span class="dl-add">+// by grepping already-done configs).</span>
+<span class="dl-add">+// ---------------------------------------------------------------------------</span>
+<span class="dl-add">+void dbufAutotune(int N, int num_iterations) {</span>
+<span class="dl-add">+    float *d_A, *d_B, *d_C;</span>
+<span class="dl-add">+    cudaCheckError(cudaMalloc(&amp;d_A, (size_t)N * N * sizeof(float)));</span>
+<span class="dl-add">+    cudaCheckError(cudaMalloc(&amp;d_B, (size_t)N * N * sizeof(float)));</span>
+<span class="dl-add">+    cudaCheckError(cudaMalloc(&amp;d_C, (size_t)N * N * sizeof(float)));</span>
+<span class="dl-add">+    {</span>
+<span class="dl-add">+        // deterministic initialization on host, copied once</span>
+<span class="dl-add">+        float *h = (float *)malloc((size_t)N * N * sizeof(float));</span>
+<span class="dl-add">+        for (long long i = 0; i &lt; (long long)N * N; ++i) h[i] =</span>
+<span class="dl-add">+            (float)((i * 1103515245 + 12345) % 1000) / 1000.0f - 0.5f;</span>
+<span class="dl-add">+        cudaCheckError(cudaMemcpy(d_A, h, (size_t)N * N * sizeof(float),</span>
+<span class="dl-add">+                                  cudaMemcpyHostToDevice));</span>
+<span class="dl-add">+        cudaCheckError(cudaMemcpy(d_B, h, (size_t)N * N * sizeof(float),</span>
+<span class="dl-add">+                                  cudaMemcpyHostToDevice));</span>
+<span class="dl-add">+        free(h);</span>
+<span class="dl-add">+    }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-add">+    printf("BM,BN,BK,WM,WN,WNITER,TM,TN,NT,GFLOPS\n");</span>
+<span class="dl-add">+    double best = -1.0;</span>
+<span class="dl-add">+    int bestIdx = -1;</span>
+<span class="dl-add">+    cudaEvent_t start, stop;</span>
+<span class="dl-add">+    cudaEventCreate(&amp;start);</span>
+<span class="dl-add">+    cudaEventCreate(&amp;stop);</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    for (int i = 0; i &lt; NUM_DBUF_CONFIGS; ++i) {</span>
+<span class="dl-add">+        const int *c = DBUF_CONFIGS[i];</span>
+<span class="dl-add">+        g_dbuf = {c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]};</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        // warmup (also compiles/loads the kernel variant)</span>
+<span class="dl-add">+        for (int w = 0; w &lt; 3; ++w) launchWarptileDbuf(d_A, d_B, d_C, N,</span>
+<span class="dl-add">+            g_dbuf.BM, g_dbuf.BN, g_dbuf.BK, g_dbuf.WM, g_dbuf.WN,</span>
+<span class="dl-add">+            g_dbuf.WNITER, g_dbuf.TM, g_dbuf.TN, g_dbuf.NUM_THREADS);</span>
+<span class="dl-add">+        cudaDeviceSynchronize();</span>
+<span class="dl-add">+        cudaError_t err = cudaGetLastError();</span>
+<span class="dl-add">+        if (err != cudaSuccess) {</span>
+<span class="dl-add">+            printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,LAUNCH_FAIL\n", c[0], c[1],</span>
+<span class="dl-add">+                   c[2], c[3], c[4], c[5], c[6], c[7], c[8]);</span>
+<span class="dl-add">+            fflush(stdout);</span>
+<span class="dl-add">+            continue;</span>
+<span class="dl-add">+        }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        cudaEventRecord(start);</span>
+<span class="dl-add">+        for (int it = 0; it &lt; num_iterations; ++it)</span>
+<span class="dl-add">+            launchWarptileDbuf(d_A, d_B, d_C, N, g_dbuf.BM, g_dbuf.BN,</span>
+<span class="dl-add">+                g_dbuf.BK, g_dbuf.WM, g_dbuf.WN, g_dbuf.WNITER, g_dbuf.TM,</span>
+<span class="dl-add">+                g_dbuf.TN, g_dbuf.NUM_THREADS);</span>
+<span class="dl-add">+        cudaEventRecord(stop);</span>
+<span class="dl-add">+        cudaEventSynchronize(stop);</span>
+<span class="dl-add">+        float ms;</span>
+<span class="dl-add">+        cudaEventElapsedTime(&amp;ms, start, stop);</span>
+<span class="dl-add">+        const double gflops =</span>
+<span class="dl-add">+            (2.0 * N * N * N - (double)N * N) / (ms / num_iterations) / 1e6;</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        printf("%d,%d,%d,%d,%d,%d,%d,%d,%d,%.1f\n", c[0], c[1], c[2], c[3],</span>
+<span class="dl-add">+               c[4], c[5], c[6], c[7], c[8], gflops);</span>
+<span class="dl-add">+        fflush(stdout);</span>
+<span class="dl-add">+        if (gflops &gt; best) {</span>
+<span class="dl-add">+            best = gflops;</span>
+<span class="dl-add">+            bestIdx = i;</span>
+<span class="dl-add">+        }</span>
+<span class="dl-add">+    }</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    const int *c = DBUF_CONFIGS[bestIdx];</span>
+<span class="dl-add">+    printf("# BEST BM=%d BN=%d BK=%d WM=%d WN=%d WNITER=%d TM=%d TN=%d NT=%d: "</span>
+<span class="dl-add">+           "%.1f GFLOPS (%.2f TFLOPS)\n",</span>
+<span class="dl-add">+           c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], best,</span>
+<span class="dl-add">+           best / 1000.0);</span>
+<span class="dl-add">+    // leave the best config installed in g_dbuf</span>
+<span class="dl-add">+    g_dbuf = {c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]};</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    cudaFree(d_A);</span>
+<span class="dl-add">+    cudaFree(d_B);</span>
+<span class="dl-add">+    cudaFree(d_C);</span>
+<span class="dl-add">+    cudaEventDestroy(start);</span>
+<span class="dl-add">+    cudaEventDestroy(stop);</span>
+<span class="dl-add">+}</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+MatmulWarptileDbuf::MatmulWarptileDbuf(int N, int blockDim)</span>
+<span class="dl-add">+    : N(N), blockDim(blockDim) {}</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+void MatmulWarptileDbuf::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-add">+    launchWarptileDbuf(d_A, d_B, d_C, N, g_dbuf.BM, g_dbuf.BN, g_dbuf.BK,</span>
+<span class="dl-add">+                       g_dbuf.WM, g_dbuf.WN, g_dbuf.WNITER, g_dbuf.TM,</span>
+<span class="dl-add">+                       g_dbuf.TN, g_dbuf.NUM_THREADS);</span>
+<span class="dl-ctx">     cudaCheckError(cudaGetLastError());</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulWarptile::~MatmulWarptile() {</span>
+<span class="dl-del">-    // No workspace to free</span>
+<span class="dl-del">-}</span>
+<span class="dl-add">+MatmulWarptileDbuf::~MatmulWarptileDbuf() {}</span></pre>
+<p class="note">绿 = 新增行,红 = 删除行,灰 = 未变上下文(长段省略)。diff 基准选择代码血统最近的父代。</p></div>
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_warptile_dbuf.cu</p>
+</div></body></html>

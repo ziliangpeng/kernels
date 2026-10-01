@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>wgmma_v9_15 — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#34 wgmma_v9_15</h1><span class="delta">matmul_wgmma_v9_15.h/cu</span></div>
+<div class="verdict v-flat" style="margin-top:10px">比 v9_14 +19%,仍比 v9_11 −9% —— warp 容量诊断证实(tensor 69.4 → 84.4%),但 v9_11 更简单结构(每指令 2× FLOP、一半 barrier 握手)还是赢;mem 70%,L2 节省仍兑不成时间。multicast 三连击收官。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>256×128 高 tile:640 线程(1 producer + 4 consumer WG,各 m64n128k16),4-stage,cluster 沿 M + split-issue B multicast(AI 104.6,比冠军少 20% L2 读)。</p></div>
+<div><p><b>与上一代的差异:</b>warp 容量翻倍(4 consumer WG)+ 每 SM 工作密度恢复。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_wgmma_v9_15.h =====
+#ifndef MATMUL_WGMMA_V9_15_H
+#define MATMUL_WGMMA_V9_15_H
+
+#include "matmul_kernel.h"
+#include &lt;cuda_fp16.h&gt;
+#include &lt;cuda.h&gt;
+#include &lt;cstdint&gt;
+
+// Kernel "wgmma_v9_15" — the 256x128 TALL TILE: fix v9_14's issue limit.
+//
+// v9_14 NCU diagnosis: at 128x128 with 2 consumer WGs (2 warps/scheduler),
+// tensor 69% / mem 71% — issue-limited; m64n128 halves per-instruction FLOP
+// and 2 warps cannot hide the issue path.
+//
+// v9_15 keeps the multicast machinery but doubles the tile along M:
+//   - CTA tile 256x128, 640 threads: 1 producer WG + 4 consumer WGs,
+//     each consumer WG m64n128k16 (4 WGs x m64 = 256 rows). Consumer warps
+//     per scheduler: 4 (vs v9_14's 2) — the hiding-capacity fix.
+//   - STAGES=4 (192KB): A [4][256x128B] 32KB/stage + B [4][128x128B]
+//     16KB/stage. Same depth as the v9_7/v9_11 champion family.
+//   - cluster 2 along M (pair shares the 128-col B tile); B split-issue
+//     multicast unchanged (rank r issues n-box r, mask 0x3).
+//   - L2-read arithmetic intensity per cluster: 2x32KB(A) + 16KB(B shared)
+//     = 80KB per 8.39M FLOP = 104.6 FLOP/B — 20% less L2 read traffic per
+//     FLOP than the 128x256 no-cluster design (87.4).
+//   - Ledger: full count 2 (my expect_tx A32+B8=40KB local + peer remote
+//     8KB = 48KB/lap); free count 8 (both CTAs' 4 consumer WGs, ct==0 of
+//     each arrives local + remote — the remote arrive protects the peer's
+//     next multicast into my stage).
+//   - Epilogue: cluster drain -&gt; stage C 256x128 f32 (128KB) over the
+//     drained pipeline region -&gt; 4 TMA stores (box 128n x 64m).
+//
+// Note (honest framing): per-WG instruction density is still m64n128
+// (262K FLOP/wgmma) — the tall tile restores work-per-SM-per-lap and warp
+// hiding, not per-instruction FLOP.
+
+class MatmulWgmmaV915 : public MatmulKernel {
+public:
+    MatmulWgmmaV915(int N, int blockDim);
+    ~MatmulWgmmaV915() override;
+
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+
+private:
+    int N;
+    int blockDim;
+    __half *d_A16;
+    __half *d_B16;
+    __half *d_Bt16;
+    CUtensorMap tmA, tmB;
+    bool mapsReady = false;
+    void makeMaps();
+};
+
+#endif // MATMUL_WGMMA_V9_15_H
+
+// ===== matmul_wgmma_v9_15.cu =====
+// Kernel "wgmma_v9_15" — 256x128 tall tile, 4 consumer WGs (see .h).
+
+#include "matmul_wgmma_v9_15.h"
+#include "cuda_utils.h"
+#include &lt;cuda_runtime.h&gt;
+#include &lt;cuda_fp16.h&gt;
+#include &lt;cstdio&gt;
+#include &lt;cstdlib&gt;
+#include &lt;cstdint&gt;
+#include &lt;cooperative_groups.h&gt;
+
+// ---- device helpers -------------------------------------------------------
+
+__device__ __forceinline__ uint64_t w915_make_desc(const void *ptr, uint32_t sbo) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(ptr));
+    uint64_t d = 0;
+    d |= (uint64_t)((addr &amp; 0x3FFFF) &gt;&gt; 4);
+    d |= ((uint64_t)((1u &gt;&gt; 4) &amp; 0x3FFF) &lt;&lt; 16);          // LBO = 1 (assumed)
+    d |= ((uint64_t)((sbo &gt;&gt; 4) &amp; 0x3FFF) &lt;&lt; 32);
+    d |= ((uint64_t)1 &lt;&lt; 62);                              // 128B swizzle
+    return d;
+}
+
+#define W915_M64N128K16(d, desc_a, desc_b)                                      \
+    asm volatile(                                                              \
+        "{\n"                                                                  \
+        "wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16 "                 \
+        "{%0, %1, %2, %3, %4, %5, %6, %7, %8, %9, %10, %11, %12, %13, %14, %15, %16, %17, %18, %19, %20, %21, %22, %23, %24, %25, %26, %27, %28, %29, %30, %31," \
+        " %32, %33, %34, %35, %36, %37, %38, %39, %40, %41, %42, %43, %44, %45, %46, %47, %48, %49, %50, %51, %52, %53, %54, %55, %56, %57, %58, %59, %60, %61, %62, %63}," \
+        " %64,"                                                                \
+        " %65,"                                                                \
+        " %66, 1, 1, 0, 0;\n"                                                  \
+        "}\n"                                                                  \
+        : "+f"(d[0]),  "+f"(d[1]),  "+f"(d[2]),  "+f"(d[3]),                   \
+          "+f"(d[4]),  "+f"(d[5]),  "+f"(d[6]),  "+f"(d[7]),                   \
+          "+f"(d[8]),  "+f"(d[9]),  "+f"(d[10]), "+f"(d[11]),                  \
+          "+f"(d[12]), "+f"(d[13]), "+f"(d[14]), "+f"(d[15]),                  \
+          "+f"(d[16]), "+f"(d[17]), "+f"(d[18]), "+f"(d[19]),                  \
+          "+f"(d[20]), "+f"(d[21]), "+f"(d[22]), "+f"(d[23]),                  \
+          "+f"(d[24]), "+f"(d[25]), "+f"(d[26]), "+f"(d[27]),                  \
+          "+f"(d[28]), "+f"(d[29]), "+f"(d[30]), "+f"(d[31]),                  \
+          "+f"(d[32]), "+f"(d[33]), "+f"(d[34]), "+f"(d[35]),                  \
+          "+f"(d[36]), "+f"(d[37]), "+f"(d[38]), "+f"(d[39]),                  \
+          "+f"(d[40]), "+f"(d[41]), "+f"(d[42]), "+f"(d[43]),                  \
+          "+f"(d[44]), "+f"(d[45]), "+f"(d[46]), "+f"(d[47]),                  \
+          "+f"(d[48]), "+f"(d[49]), "+f"(d[50]), "+f"(d[51]),                  \
+          "+f"(d[52]), "+f"(d[53]), "+f"(d[54]), "+f"(d[55]),                  \
+          "+f"(d[56]), "+f"(d[57]), "+f"(d[58]), "+f"(d[59]),                  \
+          "+f"(d[60]), "+f"(d[61]), "+f"(d[62]), "+f"(d[63])                   \
+        : "l"(desc_a), "l"(desc_b), "n"(1));
+
+__device__ __forceinline__ void w915_wgmma_fence() {
+    asm volatile("wgmma.fence.sync.aligned;\n");
+}
+__device__ __forceinline__ void w915_wgmma_commit() {
+    asm volatile("wgmma.commit_group.sync.aligned;\n");
+}
+__device__ __forceinline__ void w915_wgmma_wait0() {
+    asm volatile("wgmma.wait_group.sync.aligned 0;\n");
+}
+__device__ __forceinline__ void w915_wgmma_wait1() {
+    asm volatile("wgmma.wait_group.sync.aligned 1;\n");
+}
+
+// ---- mbarrier + TMA --------------------------------------------------------
+
+__device__ __forceinline__ void w915_mbar_init(uint64_t *bar, uint32_t count) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" :: "r"(addr), "r"(count));
+}
+__device__ __forceinline__ void w915_mbar_arrive(uint64_t *bar) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];\n" :: "r"(addr));
+}
+__device__ __forceinline__ void w915_mbar_expect_tx(uint64_t *bar, uint32_t bytes) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" :: "r"(addr), "r"(bytes));
+}
+__device__ __forceinline__ void w915_mbar_wait(uint64_t *bar, uint32_t parity) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    asm volatile(
+        "{\n.reg .pred P;\n"
+        "W:\n"
+        "mbarrier.try_wait.parity.shared::cta.b64 P, [%0], %1;\n"
+        "@P bra D;\nbra W;\nD:\n}\n" :: "r"(addr), "r"(parity));
+}
+__device__ __forceinline__ void w915_tma_2d(const CUtensorMap *map, void *dst,
+                                            uint64_t *bar, int x, int y) {
+    uint32_t d = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(dst));
+    uint32_t b = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    asm volatile(
+        "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes"
+        " [%0], [%1, {%2, %3}], [%4];\n"
+        :: "r"(d), "l"(map), "r"(x), "r"(y), "r"(b) : "memory");
+}
+__device__ __forceinline__ void w915_tma_2d_mc(const CUtensorMap *map, void *dst,
+                                               uint64_t *bar, int x, int y,
+                                               uint16_t ctaMask) {
+    uint32_t d = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(dst));
+    uint32_t b = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    asm volatile(
+        "cp.async.bulk.tensor.2d.shared::cluster.global.tile.mbarrier::complete_tx::bytes.multicast::cluster"
+        " [%0], [%1, {%2, %3}], [%4], %5;\n"
+        :: "r"(d), "l"(map), "r"(x), "r"(y), "r"(b), "h"(ctaMask) : "memory");
+}
+__device__ __forceinline__ void w915_mbar_expect_tx_remote(uint64_t *bar, uint32_t bytes,
+                                                           uint32_t peerRank) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    uint32_t remote;
+    asm volatile("mapa.shared::cluster.u32 %0, %1, %2;\n" : "=r"(remote) : "r"(addr), "r"(peerRank));
+    asm volatile("mbarrier.arrive.expect_tx.shared::cluster.b64 _, [%0], %1;\n"
+                 :: "r"(remote), "r"(bytes));
+}
+__device__ __forceinline__ void w915_mbar_arrive_remote(uint64_t *bar,
+                                                        uint32_t dstRank) {
+    uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));
+    uint32_t remote;
+    asm volatile("mapa.shared::cluster.u32 %0, %1, %2;\n" : "=r"(remote) : "r"(addr), "r"(dstRank));
+    asm volatile("mbarrier.arrive.shared::cluster.b64 _, [%0];\n" :: "r"(remote));
+}
+__device__ __forceinline__ void w915_tma_store_2d(const CUtensorMap *map,
+                                                  const void *src, int x, int y) {
+    uint32_t s = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(src));
+    asm volatile(
+        "cp.async.bulk.tensor.2d.global.shared::cta.bulk_group [%0, {%1, %2}], [%3];\n"
+        :: "l"(map), "r"(x), "r"(y), "r"(s) : "memory");
+}
+
+// ---- converters (one-time prep) --------------------------------------------
+
+__global__ void w915_convertF32ToF16(const float * __restrict__ in,
+                                     __half * __restrict__ out, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i &lt; n) out[i] = __float2half(in[i]);
+}
+
+__global__ void w915_transposeB(const __half * __restrict__ B,
+                                __half * __restrict__ Bt, int N) {
+    __shared__ __half tile[32][33];
+    int x = blockIdx.x * 32 + (threadIdx.x % 32);
+    int y = blockIdx.y * 32 + (threadIdx.x / 32);
+    if (x &lt; N &amp;&amp; y &lt; N) tile[threadIdx.x % 32][threadIdx.x / 32] = B[y * N + x];
+    __syncthreads();
+    int xx = blockIdx.y * 32 + (threadIdx.x % 32);
+    int yy = blockIdx.x * 32 + (threadIdx.x / 32);
+    if (xx &lt; N &amp;&amp; yy &lt; N) Bt[yy * N + xx] = tile[threadIdx.x / 32][threadIdx.x % 32];
+}
+
+// ---- main kernel ----------------------------------------------------------
+
+extern __shared__ __align__(16) unsigned char w915_raw[];
+__device__ unsigned char *w915_smem_ptr() {
+    return (unsigned char *)(((uintptr_t)w915_raw + 1023) &amp; ~(uintptr_t)1023);
+}
+#define w915_smem w915_smem_ptr()
+
+__global__ __launch_bounds__(640) void matmulWgmmaV915Kernel(
+    const __grid_constant__ CUtensorMap tmA,
+    const __grid_constant__ CUtensorMap tmB,
+    const __grid_constant__ CUtensorMap tmC,
+    float * __restrict__ C, int N) {
+
+    constexpr int STAGES = 4;
+    unsigned char *base = w915_smem;
+    unsigned char *A_s2 = base;                                  // [4][256*128B]
+    unsigned char *B_s2 = base + STAGES * (256 * 128);           // [4][128*128B]
+    uint64_t *full_bar = reinterpret_cast&lt;uint64_t *&gt;(base + STAGES * (256 * 128 + 128 * 128));
+    uint64_t *free_bar = full_bar + STAGES;
+
+    namespace cg = cooperative_groups;
+    const uint32_t rank = (uint32_t)cg::this_cluster().block_rank();
+    const uint32_t peer = rank ^ 1u;
+    const int NM = N / 256;
+    const int NN = N / 128;
+    constexpr int G = 8;
+    const int cid = blockIdx.x / 2;
+    const int bid = cid * 2 + (int)rank;
+    const int group_size = NN * G;
+    const int group_id = bid / group_size;
+    const int first_m = group_id * G;
+    const int gsize = min(NM - first_m, G);
+    const int blockM = first_m + (bid % gsize);
+    const int blockN = (bid % group_size) / gsize;
+    const int tid = threadIdx.x;
+    const int wg = tid / 128;
+    const int ct = tid % 128;
+    const int cm = (wg &gt; 0) ? (wg - 1) : 0;   // consumer WG index 0..3
+    float acc[64];
+
+    if (tid == 0) {
+        #pragma unroll
+        for (int s = 0; s &lt; STAGES; s++) {
+            // full count 2: my expect_tx (A 32KB + my B box 8KB = 40KB)
+            //                + peer remote expect_tx (8KB) = 48KB/lap
+            // free count 8: both CTAs' 4 consumer WGs
+            w915_mbar_init(&amp;full_bar[s], 2);
+            w915_mbar_init(&amp;free_bar[s], 8);
+        }
+    }
+    __syncthreads();
+    cg::this_cluster().sync();
+
+    if (wg == 0) {
+        if (tid == 0) {
+            const int b0 = (int)rank;   // my B n-box (of 2)
+            for (int k0 = 0, lap = 0; k0 &lt; N; k0 += 64, lap++) {
+                const int s = lap % STAGES;
+                if (lap &gt;= STAGES) {
+                    const uint32_t c = lap / STAGES;
+                    w915_mbar_wait(&amp;free_bar[s], (c - 1) &amp; 1);
+                }
+                w915_mbar_expect_tx(&amp;full_bar[s], 5 * 64 * 128);        // A 32KB + B 8KB
+                w915_mbar_expect_tx_remote(&amp;full_bar[s], 1 * 64 * 128, peer);
+                // A: 256 rows = 4 boxes of 64
+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128, &amp;full_bar[s], k0, blockM * 256);
+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128 + 64 * 128, &amp;full_bar[s], k0, blockM * 256 + 64);
+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128 + 128 * 128, &amp;full_bar[s], k0, blockM * 256 + 128);
+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128 + 192 * 128, &amp;full_bar[s], k0, blockM * 256 + 192);
+                // B: my n-box, multicast to both CTAs
+                w915_tma_2d_mc(&amp;tmB, B_s2 + s * 128 * 128 + b0 * 64 * 128,
+                               &amp;full_bar[s], k0, blockN * 128 + b0 * 64, 0x3);
+            }
+        }
+    } else {
+        // ---- consumers: 4 WGs, m64n128k16 each ----
+        #pragma unroll
+        for (int i = 0; i &lt; 64; i++) acc[i] = 0.0f;
+
+        for (int k0 = 0, lap = 0; k0 &lt; N; k0 += 64, lap++) {
+            const int s = lap % STAGES;
+            const uint32_t c = lap / STAGES;
+            w915_mbar_wait(&amp;full_bar[s], c &amp; 1);
+
+            const unsigned char *Aq = A_s2 + s * 256 * 128 + cm * 64 * 128;
+            const unsigned char *Bq = B_s2 + s * 128 * 128;
+
+            #pragma unroll
+            for (int j = 0; j &lt; 4; j++) {          // 4 x k16 = k64 lap
+                uint64_t da = w915_make_desc(Aq + j * 32, 1024);
+                uint64_t db = w915_make_desc(Bq + j * 32, 1024);
+                w915_wgmma_fence();
+                W915_M64N128K16(acc, da, db);
+                w915_wgmma_commit();
+            }
+            w915_wgmma_wait1();
+            if (lap &gt; 0) {
+                const int prev = (lap - 1) % STAGES;
+                if (ct == 0) {
+                    w915_mbar_arrive(&amp;free_bar[prev]);
+                    w915_mbar_arrive_remote(&amp;free_bar[prev], peer);
+                }
+            }
+        }
+        w915_wgmma_wait0();
+        if (ct == 0) {
+            const int lastS = (N / 64 - 1) % STAGES;
+            w915_mbar_arrive(&amp;free_bar[lastS]);
+            w915_mbar_arrive_remote(&amp;free_bar[lastS], peer);
+        }
+    }
+
+    // cluster drain (kernel-level, all 640 x 2 threads)
+    cg::this_cluster().sync();
+
+    if (wg != 0) {
+        // stage C: 256x128 f32 = 128KB over the drained pipeline region.
+        // Same accumulator mapping as v9_14 but rows offset by cm*64.
+        float *stage = reinterpret_cast&lt;float *&gt;(w915_smem);
+        const int rowL = cm * 64 + (ct / 32) * 16 + ((ct % 32) / 4);
+        const int colL = ((ct % 32) % 4) * 2;
+        #pragma unroll
+        for (int g = 0; g &lt; 16; g++) {
+            stage[(size_t)rowL * 128 + colL + g * 8]           = acc[g * 4 + 0];
+            stage[(size_t)rowL * 128 + colL + g * 8 + 1]       = acc[g * 4 + 1];
+            stage[(size_t)(rowL + 8) * 128 + colL + g * 8]     = acc[g * 4 + 2];
+            stage[(size_t)(rowL + 8) * 128 + colL + g * 8 + 1] = acc[g * 4 + 3];
+        }
+    }
+    __syncthreads();
+    if (tid == 0) {
+        asm volatile("fence.proxy.async.shared::cta;\n");
+        float *stg = reinterpret_cast&lt;float *&gt;(w915_smem);
+        w915_tma_store_2d(&amp;tmC, stg, blockN * 128, blockM * 256);
+        w915_tma_store_2d(&amp;tmC, stg + 64 * 128, blockN * 128, blockM * 256 + 64);
+        w915_tma_store_2d(&amp;tmC, stg + 128 * 128, blockN * 128, blockM * 256 + 128);
+        w915_tma_store_2d(&amp;tmC, stg + 192 * 128, blockN * 128, blockM * 256 + 192);
+        asm volatile("cp.async.bulk.commit_group;\n");
+        asm volatile("cp.async.bulk.wait_group 0;\n");
+    }
+}
+
+// ---- host wrapper ---------------------------------------------------------
+
+void MatmulWgmmaV915::makeMaps() {
+    cuuint64_t dims[2] = {(cuuint64_t)N, (cuuint64_t)N};
+    cuuint64_t strides[1] = {(cuuint64_t)N * 2};
+    cuuint32_t box[2] = {64, 64};
+    cuuint32_t estr[2] = {1, 1};
+    CUresult r1 = cuTensorMapEncodeTiled(&amp;tmA, CU_TENSOR_MAP_DATA_TYPE_FLOAT16, 2,
+                                         d_A16, dims, strides, box, estr,
+                                         CU_TENSOR_MAP_INTERLEAVE_NONE,
+                                         CU_TENSOR_MAP_SWIZZLE_128B,
+                                         CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+                                         CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    CUresult r2 = cuTensorMapEncodeTiled(&amp;tmB, CU_TENSOR_MAP_DATA_TYPE_FLOAT16, 2,
+                                         d_Bt16, dims, strides, box, estr,
+                                         CU_TENSOR_MAP_INTERLEAVE_NONE,
+                                         CU_TENSOR_MAP_SWIZZLE_128B,
+                                         CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+                                         CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+    mapsReady = (r1 == CUDA_SUCCESS &amp;&amp; r2 == CUDA_SUCCESS);
+    if (!mapsReady) printf("TMA map encode FAILED: %d %d\n", (int)r1, (int)r2);
+}
+
+MatmulWgmmaV915::MatmulWgmmaV915(int N, int blockDim) : N(N), blockDim(blockDim) {
+    cudaCheckError(cudaMalloc(&amp;d_A16, (size_t)N * N * sizeof(__half)));
+    cudaCheckError(cudaMalloc(&amp;d_B16, (size_t)N * N * sizeof(__half)));
+    cudaCheckError(cudaMalloc(&amp;d_Bt16, (size_t)N * N * sizeof(__half)));
+}
+
+MatmulWgmmaV915::~MatmulWgmmaV915() {
+    cudaFree(d_A16);
+    cudaFree(d_B16);
+    cudaFree(d_Bt16);
+}
+
+void MatmulWgmmaV915::execute(const float *d_A, const float *d_B, float *d_C) {
+    // ONE-TIME prep (2026-10-01 harness tax fix)
+    static const float *s_lastA = nullptr;
+    static const float *s_lastB = nullptr;
+    if (d_A != s_lastA || d_B != s_lastB) {
+        int n = N * N;
+        w915_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_A, d_A16, n);
+        w915_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_B, d_B16, n);
+        dim3 tb((N + 31) / 32, (N + 31) / 32);
+        w915_transposeB&lt;&lt;&lt;tb, 1024&gt;&gt;&gt;(d_B16, d_Bt16, N);
+        s_lastA = d_A; s_lastB = d_B;
+    }
+
+    if (!mapsReady) makeMaps();
+
+    CUtensorMap tmClocal;
+    {
+        cuuint64_t dimsC[2] = {(cuuint64_t)N, (cuuint64_t)N};
+        cuuint64_t stridesC[1] = {(cuuint64_t)N * 4};
+        cuuint32_t boxC[2] = {128, 64};
+        cuuint32_t estrC[2] = {1, 1};
+        CUresult r3 = cuTensorMapEncodeTiled(&amp;tmClocal, CU_TENSOR_MAP_DATA_TYPE_FLOAT32, 2,
+                                             d_C, dimsC, stridesC, boxC, estrC,
+                                             CU_TENSOR_MAP_INTERLEAVE_NONE,
+                                             CU_TENSOR_MAP_SWIZZLE_NONE,
+                                             CU_TENSOR_MAP_L2_PROMOTION_L2_128B,
+                                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
+        if (r3 != CUDA_SUCCESS) printf("tmC encode FAILED: %d\n", (int)r3);
+    }
+
+    static bool smemSet = false;
+    if (!smemSet) {
+        cudaFuncSetAttribute(matmulWgmmaV915Kernel,
+                             cudaFuncAttributeMaxDynamicSharedMemorySize, 227 * 1024);
+        smemSet = true;
+    }
+
+    const int NM = N / 256, NN = N / 128;
+    const int tiles = NM * NN;
+    const int nclusters = tiles / 2 + (tiles &amp; 1);
+    dim3 grid(nclusters * 2);
+
+    cudaLaunchConfig_t cfg = {};
+    cfg.gridDim = grid;
+    cfg.blockDim = dim3(640);
+    cfg.dynamicSmemBytes = 4 * (256 * 128 + 128 * 128) + 2 * 4 * 8 + 1024;
+    cudaLaunchAttribute attrs[1];
+    attrs[0].id = cudaLaunchAttributeClusterDimension;
+    attrs[0].val.clusterDim.x = 2;
+    attrs[0].val.clusterDim.y = 1;
+    attrs[0].val.clusterDim.z = 1;
+    cfg.attrs = attrs;
+    cfg.numAttrs = 1;
+    cudaError_t err = cudaLaunchKernelEx(&amp;cfg, matmulWgmmaV915Kernel,
+                                         tmA, tmB, tmClocal, d_C, N);
+    cudaCheckError(err);
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench 端到端 @4096(修税后)</td><td><b>648.0 TFLOPS</b></td></tr><tr><td>bench 端到端 @8192</td><td><b>660.4 TFLOPS</b></td></tr><tr><td>占同 run cuBLAS @8192</td><td><b>89%</b></td></tr><tr><td>占峰值 989T @8192</td><td><b>66.7%</b></td></tr></table>
+<div class="sec"><h2>NCU profile @8192(锁频 1.43GHz)</h2><table><tr><td>tensor pipe SoL</td><td><b>84.4%</b></td></tr><tr><td>memory(DRAM)SoL</td><td><b>70.7%</b></td></tr><tr><td>L2 throughput</td><td><b>70.6%</b></td></tr><tr><td>occupancy</td><td><b>—%</b></td></tr><tr><td>判定</td><td><b>warp-recovered, still -9%</b></td></tr></table><p class="note" style="margin-top:8px">WarpState stalls / issue slot:barrier 6.25, wait 2.33, long_scoreboard 1.42, gmma 1.02</p></div>
+<div class="sec"><h2>Diff vs 上一代(matmul_wgmma_v9_14)—— GitHub 风格</h2>
+<pre class="diff"><span class="dl-hdr">diff --git a/matmul_wgmma_v9_14.{h,cu} b/matmul_wgmma_v9_15.{h,cu}</span>
+<span class="dl-del">-// ===== matmul_wgmma_v9_14.h =====</span>
+<span class="dl-del">-#ifndef MATMUL_WGMMA_V9_14_H</span>
+<span class="dl-del">-#define MATMUL_WGMMA_V9_14_H</span>
+<span class="dl-add">+// ===== matmul_wgmma_v9_15.h =====</span>
+<span class="dl-add">+#ifndef MATMUL_WGMMA_V9_15_H</span>
+<span class="dl-add">+#define MATMUL_WGMMA_V9_15_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> #include "matmul_kernel.h"</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// Kernel "wgmma_v9_14" — the multicast redo in the CORRECT geometry.</span>
+<span class="dl-add">+// Kernel "wgmma_v9_15" — the 256x128 TALL TILE: fix v9_14's issue limit.</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// NCU evidence (NCU-PROFILING-2026-10-02.md): at 128x256 the L2 is only</span>
+<span class="dl-del">-// 58-68% utilized — not the bottleneck — so multicast saved nothing</span>
+<span class="dl-del">-// (v9_12/v9_13 flat). At 128x128 the per-FLOP L2 read traffic doubles</span>
+<span class="dl-del">-// (AI 64 vs 85) — that IS the disease multicast treats. CUTLASS evidence:</span>
+<span class="dl-del">-// the 743.2T best @4096 is 128x128x64, cluster 2x1, 6 stages.</span>
+<span class="dl-add">+// v9_14 NCU diagnosis: at 128x128 with 2 consumer WGs (2 warps/scheduler),</span>
+<span class="dl-add">+// tensor 69% / mem 71% — issue-limited; m64n128 halves per-instruction FLOP</span>
+<span class="dl-add">+// and 2 warps cannot hide the issue path.</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// v9.14 = v9.13's proven multicast machinery transplanted into 128x128:</span>
+<span class="dl-del">-//   - CTA tile 128x128, 384 threads (1 producer WG + 2 consumer WGs),</span>
+<span class="dl-del">-//     m64n128k16 consumers (each WG owns m64 of the 128 rows).</span>
+<span class="dl-del">-//   - cluster 2 ALONG M: CTA pair (2c, 2c+1) = adjacent blockM, SAME</span>
+<span class="dl-del">-//     blockN -&gt; they share one B tile (128 cols). B split-issue multicast:</span>
+<span class="dl-del">-//     rank r issues n-box r (64n x 64k, 8KB) with mask 0x3; both CTAs</span>
+<span class="dl-del">-//     receive the full 128n x 64k B stage.</span>
+<span class="dl-del">-//   - STAGES=6 (192KB SMEM): A 6x16KB + B 6x16KB. Same opt-in 227KB cap.</span>
+<span class="dl-del">-//   - Traffic per CTA per k64 lap: A 16KB unicast + B 8KB issued (16KB</span>
+<span class="dl-del">-//     delivered to both) = 24KB issued vs 32KB non-cluster. Effective AI</span>
+<span class="dl-del">-//     back to ~85 FLOP/B, but with 2x the CTAs of the 128x256 design.</span>
+<span class="dl-del">-//   - Symmetric barrier ledger (from v9.13): full count 2 (my expect_tx</span>
+<span class="dl-del">-//     A16+B8=24KB + peer remote expect 8KB = 32KB/lap), free count 4</span>
+<span class="dl-del">-//     (both CTAs' 2 consumer WGs; B stage is shared).</span>
+<span class="dl-del">-//   - B descriptor SBO: B stage = [128 n-rows][128B] contiguous; the</span>
+<span class="dl-del">-//     m64n128k16 n-atom-group stride = 8 rows x 128B = 1024 (same atom</span>
+<span class="dl-del">-//     math as v9.13's m64n256). W914_SBO env overrides for safety sweep.</span>
+<span class="dl-del">-//   - Epilogue: cluster drain -&gt; stage C 128x128 f32 (64KB) over the</span>
+<span class="dl-del">-//     drained A region -&gt; 2 TMA stores (box 128x64).</span>
+<span class="dl-add">+// v9_15 keeps the multicast machinery but doubles the tile along M:</span>
+<span class="dl-add">+//   - CTA tile 256x128, 640 threads: 1 producer WG + 4 consumer WGs,</span>
+<span class="dl-add">+//     each consumer WG m64n128k16 (4 WGs x m64 = 256 rows). Consumer warps</span>
+<span class="dl-add">+//     per scheduler: 4 (vs v9_14's 2) — the hiding-capacity fix.</span>
+<span class="dl-add">+//   - STAGES=4 (192KB): A [4][256x128B] 32KB/stage + B [4][128x128B]</span>
+<span class="dl-add">+//     16KB/stage. Same depth as the v9_7/v9_11 champion family.</span>
+<span class="dl-add">+//   - cluster 2 along M (pair shares the 128-col B tile); B split-issue</span>
+<span class="dl-add">+//     multicast unchanged (rank r issues n-box r, mask 0x3).</span>
+<span class="dl-add">+//   - L2-read arithmetic intensity per cluster: 2x32KB(A) + 16KB(B shared)</span>
+<span class="dl-add">+//     = 80KB per 8.39M FLOP = 104.6 FLOP/B — 20% less L2 read traffic per</span>
+<span class="dl-add">+//     FLOP than the 128x256 no-cluster design (87.4).</span>
+<span class="dl-add">+//   - Ledger: full count 2 (my expect_tx A32+B8=40KB local + peer remote</span>
+<span class="dl-add">+//     8KB = 48KB/lap); free count 8 (both CTAs' 4 consumer WGs, ct==0 of</span>
+<span class="dl-add">+//     each arrives local + remote — the remote arrive protects the peer's</span>
+<span class="dl-add">+//     next multicast into my stage).</span>
+<span class="dl-add">+//   - Epilogue: cluster drain -&gt; stage C 256x128 f32 (128KB) over the</span>
+<span class="dl-add">+//     drained pipeline region -&gt; 4 TMA stores (box 128n x 64m).</span>
+<span class="dl-add">+//</span>
+<span class="dl-add">+// Note (honest framing): per-WG instruction density is still m64n128</span>
+<span class="dl-add">+// (262K FLOP/wgmma) — the tall tile restores work-per-SM-per-lap and warp</span>
+<span class="dl-add">+// hiding, not per-instruction FLOP.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-class MatmulWgmmaV914 : public MatmulKernel {</span>
+<span class="dl-add">+class MatmulWgmmaV915 : public MatmulKernel {</span>
+<span class="dl-ctx"> public:</span>
+<span class="dl-del">-    MatmulWgmmaV914(int N, int blockDim);</span>
+<span class="dl-del">-    ~MatmulWgmmaV914() override;</span>
+<span class="dl-add">+    MatmulWgmmaV915(int N, int blockDim);</span>
+<span class="dl-add">+    ~MatmulWgmmaV915() override;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     void execute(const float *d_A, const float *d_B, float *d_C) override;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    __half *d_Bt16;   // B transposed to [N][K] K-contiguous for TMA boxes</span>
+<span class="dl-add">+    __half *d_Bt16;</span>
+<span class="dl-ctx">     CUtensorMap tmA, tmB;</span>
+<span class="dl-ctx">     bool mapsReady = false;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-#endif // MATMUL_WGMMA_V9_14_H</span>
+<span class="dl-add">+#endif // MATMUL_WGMMA_V9_15_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-// ===== matmul_wgmma_v9_14.cu =====</span>
+<span class="dl-del">-// Kernel "wgmma_v9_14" — multicast in the 128x128 geometry (see .h).</span>
+<span class="dl-del">-//</span>
+<span class="dl-del">-// Machinery inherited from v9.13 (split-issue multicast, symmetric ledger,</span>
+<span class="dl-del">-// cluster drain); geometry changed: CTA 128x128, cluster along M, m64n128k16.</span>
+<span class="dl-add">+// ===== matmul_wgmma_v9_15.cu =====</span>
+<span class="dl-add">+// Kernel "wgmma_v9_15" — 256x128 tall tile, 4 consumer WGs (see .h).</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-#include "matmul_wgmma_v9_14.h"</span>
+<span class="dl-add">+#include "matmul_wgmma_v9_15.h"</span>
+<span class="dl-ctx"> #include "cuda_utils.h"</span>
+<span class="dl-ctx"> #include &lt;cuda_runtime.h&gt;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ uint64_t w914_make_desc(const void *ptr, uint32_t sbo) {</span>
+<span class="dl-add">+__device__ __forceinline__ uint64_t w915_make_desc(const void *ptr, uint32_t sbo) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(ptr));</span>
+<span class="dl-ctx">     uint64_t d = 0;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-#define W914_M64N128K16(d, desc_a, desc_b)                                      \</span>
+<span class="dl-add">+#define W915_M64N128K16(d, desc_a, desc_b)                                      \</span>
+<span class="dl-ctx">     asm volatile(                                                              \</span>
+<span class="dl-ctx">         "{\n"                                                                  \</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_wgmma_fence() {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_wgmma_fence() {</span>
+<span class="dl-ctx">     asm volatile("wgmma.fence.sync.aligned;\n");</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_wgmma_commit() {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_wgmma_commit() {</span>
+<span class="dl-ctx">     asm volatile("wgmma.commit_group.sync.aligned;\n");</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_wgmma_wait0() {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_wgmma_wait0() {</span>
+<span class="dl-ctx">     asm volatile("wgmma.wait_group.sync.aligned 0;\n");</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_wgmma_wait1() {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_wgmma_wait1() {</span>
+<span class="dl-ctx">     asm volatile("wgmma.wait_group.sync.aligned 1;\n");</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_mbar_init(uint64_t *bar, uint32_t count) {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_mbar_init(uint64_t *bar, uint32_t count) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));</span>
+<span class="dl-ctx">     asm volatile("mbarrier.init.shared::cta.b64 [%0], %1;\n" :: "r"(addr), "r"(count));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_mbar_arrive(uint64_t *bar) {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_mbar_arrive(uint64_t *bar) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));</span>
+<span class="dl-ctx">     asm volatile("mbarrier.arrive.shared::cta.b64 _, [%0];\n" :: "r"(addr));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_mbar_expect_tx(uint64_t *bar, uint32_t bytes) {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_mbar_expect_tx(uint64_t *bar, uint32_t bytes) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));</span>
+<span class="dl-ctx">     asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;\n" :: "r"(addr), "r"(bytes));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_mbar_wait(uint64_t *bar, uint32_t parity) {</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_mbar_wait(uint64_t *bar, uint32_t parity) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));</span>
+<span class="dl-ctx">     asm volatile(</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_tma_2d(const CUtensorMap *map, void *dst,</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_tma_2d(const CUtensorMap *map, void *dst,</span>
+<span class="dl-ctx">                                             uint64_t *bar, int x, int y) {</span>
+<span class="dl-ctx">     uint32_t d = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(dst));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_tma_2d_mc(const CUtensorMap *map, void *dst,</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_tma_2d_mc(const CUtensorMap *map, void *dst,</span>
+<span class="dl-ctx">                                                uint64_t *bar, int x, int y,</span>
+<span class="dl-ctx">                                                uint16_t ctaMask) {</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_mbar_expect_tx_remote(uint64_t *bar, uint32_t bytes,</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_mbar_expect_tx_remote(uint64_t *bar, uint32_t bytes,</span>
+<span class="dl-ctx">                                                            uint32_t peerRank) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_mbar_arrive_remote(uint64_t *bar,</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_mbar_arrive_remote(uint64_t *bar,</span>
+<span class="dl-ctx">                                                         uint32_t dstRank) {</span>
+<span class="dl-ctx">     uint32_t addr = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(bar));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__device__ __forceinline__ void w914_tma_store_2d(const CUtensorMap *map,</span>
+<span class="dl-add">+__device__ __forceinline__ void w915_tma_store_2d(const CUtensorMap *map,</span>
+<span class="dl-ctx">                                                   const void *src, int x, int y) {</span>
+<span class="dl-ctx">     uint32_t s = static_cast&lt;uint32_t&gt;(__cvta_generic_to_shared(src));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__global__ void w914_convertF32ToF16(const float * __restrict__ in,</span>
+<span class="dl-add">+__global__ void w915_convertF32ToF16(const float * __restrict__ in,</span>
+<span class="dl-ctx">                                      __half * __restrict__ out, int n) {</span>
+<span class="dl-ctx">     int i = blockIdx.x * blockDim.x + threadIdx.x;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-__global__ void w914_transposeB(const __half * __restrict__ B,</span>
+<span class="dl-add">+__global__ void w915_transposeB(const __half * __restrict__ B,</span>
+<span class="dl-ctx">                                 __half * __restrict__ Bt, int N) {</span>
+<span class="dl-ctx">     __shared__ __half tile[32][33];</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-extern __shared__ __align__(16) unsigned char w914_raw[];</span>
+<span class="dl-del">-__device__ unsigned char *w914_smem_ptr() {</span>
+<span class="dl-del">-    return (unsigned char *)(((uintptr_t)w914_raw + 1023) &amp; ~(uintptr_t)1023);</span>
+<span class="dl-add">+extern __shared__ __align__(16) unsigned char w915_raw[];</span>
+<span class="dl-add">+__device__ unsigned char *w915_smem_ptr() {</span>
+<span class="dl-add">+    return (unsigned char *)(((uintptr_t)w915_raw + 1023) &amp; ~(uintptr_t)1023);</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-del">-#define w914_smem w914_smem_ptr()</span>
+<span class="dl-add">+#define w915_smem w915_smem_ptr()</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-__global__ __launch_bounds__(384) void matmulWgmmaV914Kernel(</span>
+<span class="dl-add">+__global__ __launch_bounds__(640) void matmulWgmmaV915Kernel(</span>
+<span class="dl-ctx">     const __grid_constant__ CUtensorMap tmA,</span>
+<span class="dl-ctx">     const __grid_constant__ CUtensorMap tmB,</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    constexpr int STAGES = 6;</span>
+<span class="dl-del">-    unsigned char *base = w914_smem;</span>
+<span class="dl-del">-    unsigned char *A_s2 = base;                                  // [6][128*128B]</span>
+<span class="dl-del">-    unsigned char *B_s2 = base + STAGES * (128 * 128);           // [6][128*128B]</span>
+<span class="dl-del">-    uint64_t *full_bar = reinterpret_cast&lt;uint64_t *&gt;(base + STAGES * (128 * 128 + 128 * 128));</span>
+<span class="dl-add">+    constexpr int STAGES = 4;</span>
+<span class="dl-add">+    unsigned char *base = w915_smem;</span>
+<span class="dl-add">+    unsigned char *A_s2 = base;                                  // [4][256*128B]</span>
+<span class="dl-add">+    unsigned char *B_s2 = base + STAGES * (256 * 128);           // [4][128*128B]</span>
+<span class="dl-add">+    uint64_t *full_bar = reinterpret_cast&lt;uint64_t *&gt;(base + STAGES * (256 * 128 + 128 * 128));</span>
+<span class="dl-ctx">     uint64_t *free_bar = full_bar + STAGES;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    const int NM = N / 128;</span>
+<span class="dl-add">+    const int NM = N / 256;</span>
+<span class="dl-ctx">     const int NN = N / 128;</span>
+<span class="dl-ctx">     constexpr int G = 8;</span>
+<span class="dl-del">-    const int cid = blockIdx.x / 2;        // cluster index (grid 1-D)</span>
+<span class="dl-del">-    const int bid = cid * 2 + (int)rank;   // this CTA's band-swizzle tile id</span>
+<span class="dl-add">+    const int cid = blockIdx.x / 2;</span>
+<span class="dl-add">+    const int bid = cid * 2 + (int)rank;</span>
+<span class="dl-ctx">     const int group_size = NN * G;</span>
+<span class="dl-ctx">     const int group_id = bid / group_size;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    const int cm = (wg &gt; 0) ? (wg - 1) : 0;</span>
+<span class="dl-add">+    const int cm = (wg &gt; 0) ? (wg - 1) : 0;   // consumer WG index 0..3</span>
+<span class="dl-ctx">     float acc[64];</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-            // full count 2: my expect_tx (A 16KB + my B box 8KB = 24KB)</span>
+<span class="dl-del">-            //                + peer's remote expect_tx (peer B box 8KB) = 32KB/lap</span>
+<span class="dl-del">-            // free count 4: both CTAs' 2 consumer WGs (B stage shared)</span>
+<span class="dl-del">-            w914_mbar_init(&amp;full_bar[s], 2);</span>
+<span class="dl-del">-            w914_mbar_init(&amp;free_bar[s], 4);</span>
+<span class="dl-add">+            // full count 2: my expect_tx (A 32KB + my B box 8KB = 40KB)</span>
+<span class="dl-add">+            //                + peer remote expect_tx (8KB) = 48KB/lap</span>
+<span class="dl-add">+            // free count 8: both CTAs' 4 consumer WGs</span>
+<span class="dl-add">+            w915_mbar_init(&amp;full_bar[s], 2);</span>
+<span class="dl-add">+            w915_mbar_init(&amp;free_bar[s], 8);</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-            // my B box = n-box rank (of 2), multicast to BOTH CTAs</span>
+<span class="dl-del">-            const int b0 = (int)rank;</span>
+<span class="dl-add">+            const int b0 = (int)rank;   // my B n-box (of 2)</span>
+<span class="dl-ctx">             for (int k0 = 0, lap = 0; k0 &lt; N; k0 += 64, lap++) {</span>
+<span class="dl-ctx">                 const int s = lap % STAGES;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-                    w914_mbar_wait(&amp;free_bar[s], (c - 1) &amp; 1);</span>
+<span class="dl-add">+                    w915_mbar_wait(&amp;free_bar[s], (c - 1) &amp; 1);</span>
+<span class="dl-ctx">                 }</span>
+<span class="dl-del">-                w914_mbar_expect_tx(&amp;full_bar[s], 3 * 64 * 128);        // A 16KB + B 8KB</span>
+<span class="dl-del">-                w914_mbar_expect_tx_remote(&amp;full_bar[s], 1 * 64 * 128, peer); // peer B 8KB</span>
+<span class="dl-del">-                w914_tma_2d(&amp;tmA, A_s2 + s * 128 * 128, &amp;full_bar[s], k0, blockM * 128);</span>
+<span class="dl-del">-                w914_tma_2d(&amp;tmA, A_s2 + s * 128 * 128 + 64 * 128, &amp;full_bar[s], k0, blockM * 128 + 64);</span>
+<span class="dl-del">-                w914_tma_2d_mc(&amp;tmB, B_s2 + s * 128 * 128 + b0 * 64 * 128,</span>
+<span class="dl-add">+                w915_mbar_expect_tx(&amp;full_bar[s], 5 * 64 * 128);        // A 32KB + B 8KB</span>
+<span class="dl-add">+                w915_mbar_expect_tx_remote(&amp;full_bar[s], 1 * 64 * 128, peer);</span>
+<span class="dl-add">+                // A: 256 rows = 4 boxes of 64</span>
+<span class="dl-add">+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128, &amp;full_bar[s], k0, blockM * 256);</span>
+<span class="dl-add">+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128 + 64 * 128, &amp;full_bar[s], k0, blockM * 256 + 64);</span>
+<span class="dl-add">+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128 + 128 * 128, &amp;full_bar[s], k0, blockM * 256 + 128);</span>
+<span class="dl-add">+                w915_tma_2d(&amp;tmA, A_s2 + s * 256 * 128 + 192 * 128, &amp;full_bar[s], k0, blockM * 256 + 192);</span>
+<span class="dl-add">+                // B: my n-box, multicast to both CTAs</span>
+<span class="dl-add">+                w915_tma_2d_mc(&amp;tmB, B_s2 + s * 128 * 128 + b0 * 64 * 128,</span>
+<span class="dl-ctx">                                &amp;full_bar[s], k0, blockN * 128 + b0 * 64, 0x3);</span>
+<span class="dl-ctx">             }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        // ---- consumers: 2 WGs, m64n128k16 each ----</span>
+<span class="dl-add">+        // ---- consumers: 4 WGs, m64n128k16 each ----</span>
+<span class="dl-ctx">         #pragma unroll</span>
+<span class="dl-ctx">         for (int i = 0; i &lt; 64; i++) acc[i] = 0.0f;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-            w914_mbar_wait(&amp;full_bar[s], c &amp; 1);</span>
+<span class="dl-add">+            w915_mbar_wait(&amp;full_bar[s], c &amp; 1);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-            const unsigned char *Aq = A_s2 + s * 128 * 128 + cm * 64 * 128;</span>
+<span class="dl-add">+            const unsigned char *Aq = A_s2 + s * 256 * 128 + cm * 64 * 128;</span>
+<span class="dl-ctx">             const unsigned char *Bq = B_s2 + s * 128 * 128;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-            for (int j = 0; j &lt; 4; j++) {          // 4 x k16 = k64 lap (v9_13 pattern)</span>
+<span class="dl-del">-                uint64_t da = w914_make_desc(Aq + j * 32, 1024);</span>
+<span class="dl-del">-                uint64_t db = w914_make_desc(Bq + j * 32, 1024);</span>
+<span class="dl-del">-                w914_wgmma_fence();</span>
+<span class="dl-del">-                W914_M64N128K16(acc, da, db);</span>
+<span class="dl-del">-                w914_wgmma_commit();</span>
+<span class="dl-add">+            for (int j = 0; j &lt; 4; j++) {          // 4 x k16 = k64 lap</span>
+<span class="dl-add">+                uint64_t da = w915_make_desc(Aq + j * 32, 1024);</span>
+<span class="dl-add">+                uint64_t db = w915_make_desc(Bq + j * 32, 1024);</span>
+<span class="dl-add">+                w915_wgmma_fence();</span>
+<span class="dl-add">+                W915_M64N128K16(acc, da, db);</span>
+<span class="dl-add">+                w915_wgmma_commit();</span>
+<span class="dl-ctx">             }</span>
+<span class="dl-del">-            w914_wgmma_wait1();</span>
+<span class="dl-add">+            w915_wgmma_wait1();</span>
+<span class="dl-ctx">             if (lap &gt; 0) {</span>
+<span class="dl-ctx">                 const int prev = (lap - 1) % STAGES;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-                    w914_mbar_arrive(&amp;free_bar[prev]);</span>
+<span class="dl-del">-                    w914_mbar_arrive_remote(&amp;free_bar[prev], peer);</span>
+<span class="dl-add">+                    w915_mbar_arrive(&amp;free_bar[prev]);</span>
+<span class="dl-add">+                    w915_mbar_arrive_remote(&amp;free_bar[prev], peer);</span>
+<span class="dl-ctx">                 }</span>
+<span class="dl-del">-    }</span>
+<span class="dl-add">+            }</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-del">-        w914_wgmma_wait0();</span>
+<span class="dl-add">+        w915_wgmma_wait0();</span>
+<span class="dl-ctx">         if (ct == 0) {</span>
+<span class="dl-ctx">             const int lastS = (N / 64 - 1) % STAGES;</span>
+<span class="dl-del">-            w914_mbar_arrive(&amp;free_bar[lastS]);</span>
+<span class="dl-del">-            w914_mbar_arrive_remote(&amp;free_bar[lastS], peer);</span>
+<span class="dl-add">+            w915_mbar_arrive(&amp;free_bar[lastS]);</span>
+<span class="dl-add">+            w915_mbar_arrive_remote(&amp;free_bar[lastS], peer);</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    // cluster drain (v9.13 lesson: kernel-level, ALL threads of both CTAs)</span>
+<span class="dl-add">+    // cluster drain (kernel-level, all 640 x 2 threads)</span>
+<span class="dl-ctx">     cg::this_cluster().sync();</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        // stage C: 128x128 f32 = 64KB over the DRAINED A region.</span>
+<span class="dl-del">-        // m64n128k16 accumulator layout per WG: rows wg-1 quadrants of 64,</span>
+<span class="dl-del">-        // 64 cols; each thread holds 64 floats = (row group r, col pairs).</span>
+<span class="dl-del">-        float *stage = reinterpret_cast&lt;float *&gt;(w914_smem);</span>
+<span class="dl-del">-        const int rowL = (wg - 1) * 64 + (ct / 32) * 16 + ((ct % 32) / 4);</span>
+<span class="dl-add">+        // stage C: 256x128 f32 = 128KB over the drained pipeline region.</span>
+<span class="dl-add">+        // Same accumulator mapping as v9_14 but rows offset by cm*64.</span>
+<span class="dl-add">+        float *stage = reinterpret_cast&lt;float *&gt;(w915_smem);</span>
+<span class="dl-add">+        const int rowL = cm * 64 + (ct / 32) * 16 + ((ct % 32) / 4);</span>
+<span class="dl-ctx">         const int colL = ((ct % 32) % 4) * 2;</span>
+<span class="dl-ctx">         #pragma unroll</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        float *stg = reinterpret_cast&lt;float *&gt;(w914_smem);</span>
+<span class="dl-del">-        w914_tma_store_2d(&amp;tmC, stg, blockN * 128, blockM * 128);</span>
+<span class="dl-del">-        w914_tma_store_2d(&amp;tmC, stg + 64 * 128, blockN * 128, blockM * 128 + 64);</span>
+<span class="dl-add">+        float *stg = reinterpret_cast&lt;float *&gt;(w915_smem);</span>
+<span class="dl-add">+        w915_tma_store_2d(&amp;tmC, stg, blockN * 128, blockM * 256);</span>
+<span class="dl-add">+        w915_tma_store_2d(&amp;tmC, stg + 64 * 128, blockN * 128, blockM * 256 + 64);</span>
+<span class="dl-add">+        w915_tma_store_2d(&amp;tmC, stg + 128 * 128, blockN * 128, blockM * 256 + 128);</span>
+<span class="dl-add">+        w915_tma_store_2d(&amp;tmC, stg + 192 * 128, blockN * 128, blockM * 256 + 192);</span>
+<span class="dl-ctx">         asm volatile("cp.async.bulk.commit_group;\n");</span>
+<span class="dl-ctx">         asm volatile("cp.async.bulk.wait_group 0;\n");</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-void MatmulWgmmaV914::makeMaps() {</span>
+<span class="dl-add">+void MatmulWgmmaV915::makeMaps() {</span>
+<span class="dl-ctx">     cuuint64_t dims[2] = {(cuuint64_t)N, (cuuint64_t)N};</span>
+<span class="dl-ctx">     cuuint64_t strides[1] = {(cuuint64_t)N * 2};</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulWgmmaV914::MatmulWgmmaV914(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-add">+MatmulWgmmaV915::MatmulWgmmaV915(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-ctx">     cudaCheckError(cudaMalloc(&amp;d_A16, (size_t)N * N * sizeof(__half)));</span>
+<span class="dl-ctx">     cudaCheckError(cudaMalloc(&amp;d_B16, (size_t)N * N * sizeof(__half)));</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulWgmmaV914::~MatmulWgmmaV914() {</span>
+<span class="dl-add">+MatmulWgmmaV915::~MatmulWgmmaV915() {</span>
+<span class="dl-ctx">     cudaFree(d_A16);</span>
+<span class="dl-ctx">     cudaFree(d_B16);</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-void MatmulWgmmaV914::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-del">-    // ONE-TIME prep (2026-10-01 harness tax fix; see RESULTS-KERNELONLY-2026-10-01.md)</span>
+<span class="dl-add">+void MatmulWgmmaV915::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-add">+    // ONE-TIME prep (2026-10-01 harness tax fix)</span>
+<span class="dl-ctx">     static const float *s_lastA = nullptr;</span>
+<span class="dl-ctx">     static const float *s_lastB = nullptr;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        w914_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_A, d_A16, n);</span>
+<span class="dl-del">-        w914_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_B, d_B16, n);</span>
+<span class="dl-add">+        w915_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_A, d_A16, n);</span>
+<span class="dl-add">+        w915_convertF32ToF16&lt;&lt;&lt;(n + 255) / 256, 256&gt;&gt;&gt;(d_B, d_B16, n);</span>
+<span class="dl-ctx">         dim3 tb((N + 31) / 32, (N + 31) / 32);</span>
+<span class="dl-del">-        w914_transposeB&lt;&lt;&lt;tb, 1024&gt;&gt;&gt;(d_B16, d_Bt16, N);</span>
+<span class="dl-add">+        w915_transposeB&lt;&lt;&lt;tb, 1024&gt;&gt;&gt;(d_B16, d_Bt16, N);</span>
+<span class="dl-ctx">         s_lastA = d_A; s_lastB = d_B;</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        cudaFuncSetAttribute(matmulWgmmaV914Kernel,</span>
+<span class="dl-add">+        cudaFuncSetAttribute(matmulWgmmaV915Kernel,</span>
+<span class="dl-ctx">                              cudaFuncAttributeMaxDynamicSharedMemorySize, 227 * 1024);</span>
+<span class="dl-ctx">         smemSet = true;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    // cluster launch: 2-CTA clusters along M over a 1-D grid</span>
+<span class="dl-del">-    const int NM = N / 128, NN = N / 128;</span>
+<span class="dl-add">+    const int NM = N / 256, NN = N / 128;</span>
+<span class="dl-ctx">     const int tiles = NM * NN;</span>
+<span class="dl-ctx">     const int nclusters = tiles / 2 + (tiles &amp; 1);</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    cfg.blockDim = dim3(384);</span>
+<span class="dl-del">-    cfg.dynamicSmemBytes = 6 * (128 * 128 + 128 * 128) + 2 * 6 * 8 + 1024;</span>
+<span class="dl-add">+    cfg.blockDim = dim3(640);</span>
+<span class="dl-add">+    cfg.dynamicSmemBytes = 4 * (256 * 128 + 128 * 128) + 2 * 4 * 8 + 1024;</span>
+<span class="dl-ctx">     cudaLaunchAttribute attrs[1];</span>
+<span class="dl-ctx">     attrs[0].id = cudaLaunchAttributeClusterDimension;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    cudaError_t err = cudaLaunchKernelEx(&amp;cfg, matmulWgmmaV914Kernel,</span>
+<span class="dl-add">+    cudaError_t err = cudaLaunchKernelEx(&amp;cfg, matmulWgmmaV915Kernel,</span>
+<span class="dl-ctx">                                          tmA, tmB, tmClocal, d_C, N);</span>
+<span class="dl-ctx">     cudaCheckError(err);</span>
+<span class="dl-ctx">   …(上下文省略)…</span></pre>
+<p class="note">绿 = 新增行,红 = 删除行,灰 = 未变上下文(长段省略)。diff 基准选择代码血统最近的父代。</p></div>
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_wgmma_v9_15.cu</p>
+</div></body></html>

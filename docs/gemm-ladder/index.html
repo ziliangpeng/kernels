@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>H100 GEMM 优化阶梯 — kernel 目录</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<header><h1>H100 GEMM 优化阶梯 — kernel 目录</h1>
+<div class="subtitle">34 个 kernel,每级一个机制 —— 点名字进详情页(实现 → 代码 → 性能 → diff)</div></header>
+<div class="phase"><h2>第一阶段 · SIMT 标量 kernel</h2><div class="line"></div><div class="tag">FP32,每级一个优化</div></div><div class="card"><div class="card-head">
+<span class="rank">#1</span><a class="kname" href="kernels/naive.html">naive</a>
+<span class="tflops"><b>5.29</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#2</span><a class="kname" href="kernels/coalesced.html">coalesced</a>
+<span class="tflops"><b>5.73</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#3</span><a class="kname" href="kernels/smem.html">smem_tiling</a>
+<span class="tflops"><b>8.99</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#4</span><a class="kname" href="kernels/1d.html">1d_blocktile</a>
+<span class="tflops"><b>19.36</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#5</span><a class="kname" href="kernels/2d.html">2d_blocktile</a>
+<span class="tflops"><b>33.78</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#6</span><a class="kname" href="kernels/vectorized.html">vectorized</a>
+<span class="tflops"><b>36.47</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#7</span><a class="kname" href="kernels/warptile.html">warptile</a>
+<span class="tflops"><b>37.71</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#8</span><a class="kname" href="kernels/dbuf.html">warptile_dbuf</a>
+<span class="tflops"><b>37.60</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="phase"><h2>第二阶段 · Tensor core —— TMA 之前</h2><div class="line"></div><div class="tag">WMMA → WGMMA,NCU 全程 mem-bound 80-99%</div></div><div class="card"><div class="card-head">
+<span class="rank">#9</span><a class="kname" href="kernels/wmma.html">wmma</a>
+<span class="tflops"><b>28.1</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#10</span><a class="kname" href="kernels/v2.html">wgmma_v2</a>
+<span class="tflops"><b>120.3</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#11</span><a class="kname" href="kernels/v3.html">wgmma_v3</a>
+<span class="tflops"><b>115.4</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#12</span><a class="kname" href="kernels/v4.html">wgmma_v4</a>
+<span class="tflops"><b>164.8</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#13</span><a class="kname" href="kernels/v5.html">wgmma_v5</a>
+<span class="tflops"><b>157.2</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#14</span><a class="kname" href="kernels/v5_1.html">wgmma_v5_1</a>
+<span class="tflops"><b>175.5</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#15</span><a class="kname" href="kernels/v6.html">wgmma_v6</a>
+<span class="tflops"><b>208.3</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#16</span><a class="kname" href="kernels/v7.html">wgmma_v7</a>
+<span class="tflops"><b>207.5</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#17</span><a class="kname" href="kernels/v8.html">wgmma_v8</a>
+<span class="tflops"><b>187.0</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#18</span><a class="kname" href="kernels/v8_1.html">wgmma_v8_1</a>
+<span class="tflops"><b>178.9</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="phase"><h2>第三阶段 · TMA 时代</h2><div class="line"></div><div class="tag">相变点:mem-bound → tensor-bound</div></div><div class="card"><div class="card-head">
+<span class="rank">#19</span><a class="kname" href="kernels/v9.html">wgmma_v9</a>
+<span class="tflops"><b>505.7</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#20</span><a class="kname" href="kernels/v9_1.html">wgmma_v9_1</a>
+<span class="tflops"><b>377.3</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#21</span><a class="kname" href="kernels/v9_2.html">wgmma_v9_2</a>
+<span class="tflops"><b>522.4</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#22</span><a class="kname" href="kernels/v9_3.html">wgmma_v9_3</a>
+<span class="tflops"><b>514.8</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#23</span><a class="kname" href="kernels/v9_4.html">wgmma_v9_4</a>
+<span class="tflops"><b>526.6</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#24</span><a class="kname" href="kernels/v9_5.html">wgmma_v9_5</a>
+<span class="tflops"><b>581.5</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#25</span><a class="kname" href="kernels/v9_6.html">wgmma_v9_6</a>
+<span class="tflops"><b>597.2</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#26</span><a class="kname" href="kernels/v9_7.html">wgmma_v9_7</a>
+<span class="tflops"><b>696.2</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#27</span><a class="kname" href="kernels/v9_8.html">wgmma_v9_8</a>
+<span class="tflops"><b>704.5</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#28</span><a class="kname" href="kernels/v9_9.html">wgmma_v9_9</a>
+<span class="tflops"><b>700.8</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#29</span><a class="kname" href="kernels/v9_10.html">wgmma_v9_10</a>
+<span class="tflops"><b>543.1</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#30</span><a class="kname" href="kernels/v9_11.html">wgmma_v9_11</a>
+<span class="tflops"><b>713.1</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="phase"><h2>第四阶段 · Cluster multicast 弧线</h2><div class="line"></div><div class="tag">Fable +155T 假设的三连击验证</div></div><div class="card"><div class="card-head">
+<span class="rank">#31</span><a class="kname" href="kernels/v9_12.html">wgmma_v9_12</a>
+<span class="tflops"><b>548.7</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#32</span><a class="kname" href="kernels/v9_13.html">wgmma_v9_13</a>
+<span class="tflops"><b>681.0</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#33</span><a class="kname" href="kernels/v9_14.html">wgmma_v9_14</a>
+<span class="tflops"><b>558.7</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div><div class="card"><div class="card-head">
+<span class="rank">#34</span><a class="kname" href="kernels/v9_15.html">wgmma_v9_15</a>
+<span class="tflops"><b>648.0</b> TFLOPS <span class="delta">@4096 → 详情</span></span></div></div>
+<p class="note" style="text-align:center;margin-top:24px">冠军 wgmma_v9_11:708.0T @4096 / 746.2T @8192 kernel-only = cuBLAS 的 98.7% / 95.8% · 生成器 scripts/gen_gemmladder_html.py</p>
+</div></body></html>

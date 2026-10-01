@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>1d_blocktile — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#4 1d_blocktile</h1><span class="delta">matmul_1d_blocktile.h/cu</span></div>
+<div class="verdict v-win" style="margin-top:10px">+115% —— 寄存器复用是最便宜的乘数,不用加 SMEM 就翻 AI。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>沿一个维度做 register 级复用:每线程累加一列多个 C 元素,部分和驻留寄存器。</p></div>
+<div><p><b>与上一代的差异:</b>在 smem_tiling 上加 register tiling,每线程工作量 1 → 一条。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_1d_blocktile.h =====
+#ifndef MATMUL_1D_BLOCKTILE_H
+#define MATMUL_1D_BLOCKTILE_H
+
+#include "matmul_kernel.h"
+
+// 1D Block Tiling Optimization (Kernel 4 from siboehm.com)
+//
+// Key optimization: Each thread computes multiple output elements (TM elements
+// in a column of C), reducing thread management overhead and improving arithmetic
+// intensity.
+//
+// CONFIGURATION:
+// - BM=64, BN=64, BK=8, TM=8
+// - Each thread computes 8 C elements in a column
+// - Threads per block: (BM * BN) / TM = 64 * 64 / 8 = 512
+//
+// REGISTER USAGE:
+// - threadResults[TM] array in registers for accumulation
+// - Significantly improves arithmetic intensity
+//
+// PERFORMANCE:
+// Expected ~36.5% of cuBLAS (2.8x over smem) due to increased work per thread.
+
+class Matmul1DBlocktile : public MatmulKernel {
+private:
+    int N;         // Matrix dimension (N×N matrices)
+    int blockDim;  // Block dimension (unused, using fixed BM/BN/BK/TM)
+
+public:
+    Matmul1DBlocktile(int N, int blockDim);
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+    ~Matmul1DBlocktile() override;
+};
+
+#endif
+
+// ===== matmul_1d_blocktile.cu =====
+#include "matmul_1d_blocktile.h"
+#include "cuda_utils.h"
+#include &lt;cuda_runtime.h&gt;
+
+// 1D Block Tiling kernel (Kernel 4)
+// Each thread computes TM elements in a column of C, increasing arithmetic intensity.
+// This reduces the number of threads needed and improves register utilization.
+
+#define BM_1D 64
+#define BN_1D 64
+#define BK_1D 8
+#define TM_1D 8
+
+// Number of threads per block: (BM/TM) * BN = 8 * 64 = 512
+#define NUM_THREADS_1D ((BM_1D / TM_1D) * BN_1D)
+
+__global__ void matmul1DBlocktileKernel(const float *A, const float *B, float *C, int N) {
+    // Shared memory for tiles
+    __shared__ float As[BM_1D][BK_1D];
+    __shared__ float Bs[BK_1D][BN_1D];
+
+    // Thread indices
+    // Each thread is responsible for loading and computing
+    const int threadCol = threadIdx.x % BN_1D;
+    const int threadRow = threadIdx.x / BN_1D;
+
+    // Block position in output
+    const int blockRow = blockIdx.y;
+    const int blockCol = blockIdx.x;
+
+    // Move pointers to the block's starting position
+    A += blockRow * BM_1D * N;
+    B += blockCol * BN_1D;
+    C += blockRow * BM_1D * N + blockCol * BN_1D;
+
+    // Thread results: each thread computes TM elements in a column
+    float threadResults[TM_1D] = {0.0f};
+
+    // Load indices for shared memory
+    // For As: we need to load BM_1D * BK_1D elements = 64 * 8 = 512
+    // For Bs: we need to load BK_1D * BN_1D elements = 8 * 64 = 512
+    const int innerRowA = threadIdx.x / BK_1D;
+    const int innerColA = threadIdx.x % BK_1D;
+    const int innerRowB = threadIdx.x / BN_1D;
+    const int innerColB = threadIdx.x % BN_1D;
+
+    // Loop over K dimension in chunks of BK
+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK_1D) {
+        // Load tile of A into shared memory
+        if (blockRow * BM_1D + innerRowA &lt; N &amp;&amp; tileIdx + innerColA &lt; N) {
+            As[innerRowA][innerColA] = A[innerRowA * N + innerColA];
+        } else {
+            As[innerRowA][innerColA] = 0.0f;
+        }
+
+        // Load tile of B into shared memory
+        if (tileIdx + innerRowB &lt; N &amp;&amp; blockCol * BN_1D + innerColB &lt; N) {
+            Bs[innerRowB][innerColB] = B[innerRowB * N + innerColB];
+        } else {
+            Bs[innerRowB][innerColB] = 0.0f;
+        }
+
+        __syncthreads();
+
+        // Move pointers for next iteration
+        A += BK_1D;
+        B += BK_1D * N;
+
+        // Compute TM elements
+        #pragma unroll
+        for (int dotIdx = 0; dotIdx &lt; BK_1D; dotIdx++) {
+            // Load B element once (same for all TM results)
+            float tmpB = Bs[dotIdx][threadCol];
+            #pragma unroll
+            for (int resIdx = 0; resIdx &lt; TM_1D; resIdx++) {
+                // Each thread computes TM consecutive rows
+                threadResults[resIdx] += As[threadRow * TM_1D + resIdx][dotIdx] * tmpB;
+            }
+        }
+
+        __syncthreads();
+    }
+
+    // Write results to global memory
+    #pragma unroll
+    for (int resIdx = 0; resIdx &lt; TM_1D; resIdx++) {
+        int globalRow = blockRow * BM_1D + threadRow * TM_1D + resIdx;
+        int globalCol = blockCol * BN_1D + threadCol;
+        if (globalRow &lt; N &amp;&amp; globalCol &lt; N) {
+            C[(threadRow * TM_1D + resIdx) * N + threadCol] = threadResults[resIdx];
+        }
+    }
+}
+
+Matmul1DBlocktile::Matmul1DBlocktile(int N, int blockDim) : N(N), blockDim(blockDim) {
+    // No workspace needed
+}
+
+void Matmul1DBlocktile::execute(const float *d_A, const float *d_B, float *d_C) {
+    dim3 threads(NUM_THREADS_1D);
+    dim3 blocks((N + BN_1D - 1) / BN_1D,
+                (N + BM_1D - 1) / BM_1D);
+
+    matmul1DBlocktileKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);
+
+    cudaCheckError(cudaGetLastError());
+}
+
+Matmul1DBlocktile::~Matmul1DBlocktile() {
+    // No workspace to free
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench @4096(autotuned FP32)</td><td><b>19.36 TFLOPS</b></td></tr><tr><td>占 cuBLAS FP32(51.93T)</td><td><b>37.3%</b></td></tr></table>
+
+<div class="sec"><h2>Diff vs 上一代(matmul_smem)—— GitHub 风格</h2>
+<pre class="diff"><span class="dl-hdr">diff --git a/matmul_smem.{h,cu} b/matmul_1d_blocktile.{h,cu}</span>
+<span class="dl-del">-// ===== matmul_smem.h =====</span>
+<span class="dl-del">-#ifndef MATMUL_SMEM_H</span>
+<span class="dl-del">-#define MATMUL_SMEM_H</span>
+<span class="dl-add">+// ===== matmul_1d_blocktile.h =====</span>
+<span class="dl-add">+#ifndef MATMUL_1D_BLOCKTILE_H</span>
+<span class="dl-add">+#define MATMUL_1D_BLOCKTILE_H</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> #include "matmul_kernel.h"</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// Shared Memory Caching Optimization (Kernel 3 from siboehm.com)</span>
+<span class="dl-add">+// 1D Block Tiling Optimization (Kernel 4 from siboehm.com)</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// Key optimization: Cache tiles of A and B matrices in shared memory to reduce</span>
+<span class="dl-del">-// global memory accesses. Each tile is loaded once from global memory and reused</span>
+<span class="dl-del">-// multiple times from shared memory.</span>
+<span class="dl-add">+// Key optimization: Each thread computes multiple output elements (TM elements</span>
+<span class="dl-add">+// in a column of C), reducing thread management overhead and improving arithmetic</span>
+<span class="dl-add">+// intensity.</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// TILING STRATEGY:</span>
+<span class="dl-del">-// - BM x BK tile of A loaded to shared memory</span>
+<span class="dl-del">-// - BK x BN tile of B loaded to shared memory</span>
+<span class="dl-del">-// - Loop over K dimension in chunks of BK</span>
+<span class="dl-del">-// - __syncthreads() required after each tile load</span>
+<span class="dl-add">+// CONFIGURATION:</span>
+<span class="dl-add">+// - BM=64, BN=64, BK=8, TM=8</span>
+<span class="dl-add">+// - Each thread computes 8 C elements in a column</span>
+<span class="dl-add">+// - Threads per block: (BM * BN) / TM = 64 * 64 / 8 = 512</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-del">-// SHARED MEMORY USAGE:</span>
+<span class="dl-del">-// - As[BM][BK] + Bs[BK][BN] = 2 * BK * BM floats (for square tiles)</span>
+<span class="dl-del">-// - With BM=BK=BN=32: 2 * 32 * 32 * 4 = 8KB per block</span>
+<span class="dl-add">+// REGISTER USAGE:</span>
+<span class="dl-add">+// - threadResults[TM] array in registers for accumulation</span>
+<span class="dl-add">+// - Significantly improves arithmetic intensity</span>
+<span class="dl-ctx"> //</span>
+<span class="dl-ctx"> // PERFORMANCE:</span>
+<span class="dl-del">-// Expected ~12.8% of cuBLAS (1.5x over coalesced) due to SMEM caching.</span>
+<span class="dl-add">+// Expected ~36.5% of cuBLAS (2.8x over smem) due to increased work per thread.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-class MatmulSmem : public MatmulKernel {</span>
+<span class="dl-add">+class Matmul1DBlocktile : public MatmulKernel {</span>
+<span class="dl-ctx"> private:</span>
+<span class="dl-ctx">     int N;         // Matrix dimension (N×N matrices)</span>
+<span class="dl-del">-    int blockDim;  // Block dimension</span>
+<span class="dl-add">+    int blockDim;  // Block dimension (unused, using fixed BM/BN/BK/TM)</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx"> public:</span>
+<span class="dl-del">-    MatmulSmem(int N, int blockDim);</span>
+<span class="dl-add">+    Matmul1DBlocktile(int N, int blockDim);</span>
+<span class="dl-ctx">     void execute(const float *d_A, const float *d_B, float *d_C) override;</span>
+<span class="dl-del">-    ~MatmulSmem() override;</span>
+<span class="dl-add">+    ~Matmul1DBlocktile() override;</span>
+<span class="dl-ctx"> };</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// ===== matmul_smem.cu =====</span>
+<span class="dl-del">-#include "matmul_smem.h"</span>
+<span class="dl-add">+// ===== matmul_1d_blocktile.cu =====</span>
+<span class="dl-add">+#include "matmul_1d_blocktile.h"</span>
+<span class="dl-ctx"> #include "cuda_utils.h"</span>
+<span class="dl-ctx"> #include &lt;cuda_runtime.h&gt;</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-// Shared Memory Tiling kernel (Kernel 3)</span>
+<span class="dl-del">-// Key optimization: Load tiles of A and B into shared memory to reduce</span>
+<span class="dl-del">-// global memory accesses. Each element from GMEM is reused multiple times.</span>
+<span class="dl-add">+// 1D Block Tiling kernel (Kernel 4)</span>
+<span class="dl-add">+// Each thread computes TM elements in a column of C, increasing arithmetic intensity.</span>
+<span class="dl-add">+// This reduces the number of threads needed and improves register utilization.</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-#define SMEM_TILE 32</span>
+<span class="dl-add">+#define BM_1D 64</span>
+<span class="dl-add">+#define BN_1D 64</span>
+<span class="dl-add">+#define BK_1D 8</span>
+<span class="dl-add">+#define TM_1D 8</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-__global__ void matmulSmemKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-add">+// Number of threads per block: (BM/TM) * BN = 8 * 64 = 512</span>
+<span class="dl-add">+#define NUM_THREADS_1D ((BM_1D / TM_1D) * BN_1D)</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+__global__ void matmul1DBlocktileKernel(const float *A, const float *B, float *C, int N) {</span>
+<span class="dl-ctx">     // Shared memory for tiles</span>
+<span class="dl-del">-    __shared__ float As[SMEM_TILE][SMEM_TILE];</span>
+<span class="dl-del">-    __shared__ float Bs[SMEM_TILE][SMEM_TILE];</span>
+<span class="dl-add">+    __shared__ float As[BM_1D][BK_1D];</span>
+<span class="dl-add">+    __shared__ float Bs[BK_1D][BN_1D];</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Thread position within the block (using 2D thread indexing conceptually)</span>
+<span class="dl-del">-    // We launch with 32x32 = 1024 threads, but CUDA limits to 1024 so this is exactly at limit</span>
+<span class="dl-del">-    // Each thread handles one element in the tile</span>
+<span class="dl-del">-    int tx = threadIdx.x;</span>
+<span class="dl-del">-    int ty = threadIdx.y;</span>
+<span class="dl-add">+    // Thread indices</span>
+<span class="dl-add">+    // Each thread is responsible for loading and computing</span>
+<span class="dl-add">+    const int threadCol = threadIdx.x % BN_1D;</span>
+<span class="dl-add">+    const int threadRow = threadIdx.x / BN_1D;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Block position in output grid</span>
+<span class="dl-del">-    int blockRow = blockIdx.y;</span>
+<span class="dl-del">-    int blockCol = blockIdx.x;</span>
+<span class="dl-add">+    // Block position in output</span>
+<span class="dl-add">+    const int blockRow = blockIdx.y;</span>
+<span class="dl-add">+    const int blockCol = blockIdx.x;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Global row and column indices for this thread's output element</span>
+<span class="dl-del">-    int row = blockRow * SMEM_TILE + ty;</span>
+<span class="dl-del">-    int col = blockCol * SMEM_TILE + tx;</span>
+<span class="dl-add">+    // Move pointers to the block's starting position</span>
+<span class="dl-add">+    A += blockRow * BM_1D * N;</span>
+<span class="dl-add">+    B += blockCol * BN_1D;</span>
+<span class="dl-add">+    C += blockRow * BM_1D * N + blockCol * BN_1D;</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Accumulator for this thread's output element</span>
+<span class="dl-del">-    float sum = 0.0f;</span>
+<span class="dl-add">+    // Thread results: each thread computes TM elements in a column</span>
+<span class="dl-add">+    float threadResults[TM_1D] = {0.0f};</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    // Loop over tiles along the K dimension</span>
+<span class="dl-del">-    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += SMEM_TILE) {</span>
+<span class="dl-add">+    // Load indices for shared memory</span>
+<span class="dl-add">+    // For As: we need to load BM_1D * BK_1D elements = 64 * 8 = 512</span>
+<span class="dl-add">+    // For Bs: we need to load BK_1D * BN_1D elements = 8 * 64 = 512</span>
+<span class="dl-add">+    const int innerRowA = threadIdx.x / BK_1D;</span>
+<span class="dl-add">+    const int innerColA = threadIdx.x % BK_1D;</span>
+<span class="dl-add">+    const int innerRowB = threadIdx.x / BN_1D;</span>
+<span class="dl-add">+    const int innerColB = threadIdx.x % BN_1D;</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+    // Loop over K dimension in chunks of BK</span>
+<span class="dl-add">+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += BK_1D) {</span>
+<span class="dl-ctx">         // Load tile of A into shared memory</span>
+<span class="dl-del">-        // As[ty][tx] = A[row][tileIdx + tx]</span>
+<span class="dl-del">-        int A_col = tileIdx + tx;</span>
+<span class="dl-del">-        if (row &lt; N &amp;&amp; A_col &lt; N) {</span>
+<span class="dl-del">-            As[ty][tx] = A[row * N + A_col];</span>
+<span class="dl-add">+        if (blockRow * BM_1D + innerRowA &lt; N &amp;&amp; tileIdx + innerColA &lt; N) {</span>
+<span class="dl-add">+            As[innerRowA][innerColA] = A[innerRowA * N + innerColA];</span>
+<span class="dl-ctx">         } else {</span>
+<span class="dl-del">-            As[ty][tx] = 0.0f;</span>
+<span class="dl-add">+            As[innerRowA][innerColA] = 0.0f;</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-        // Bs[ty][tx] = B[tileIdx + ty][col]</span>
+<span class="dl-del">-        int B_row = tileIdx + ty;</span>
+<span class="dl-del">-        if (B_row &lt; N &amp;&amp; col &lt; N) {</span>
+<span class="dl-del">-            Bs[ty][tx] = B[B_row * N + col];</span>
+<span class="dl-add">+        if (tileIdx + innerRowB &lt; N &amp;&amp; blockCol * BN_1D + innerColB &lt; N) {</span>
+<span class="dl-add">+            Bs[innerRowB][innerColB] = B[innerRowB * N + innerColB];</span>
+<span class="dl-ctx">         } else {</span>
+<span class="dl-del">-            Bs[ty][tx] = 0.0f;</span>
+<span class="dl-add">+            Bs[innerRowB][innerColB] = 0.0f;</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Ensure all threads have loaded their data</span>
+<span class="dl-ctx">         __syncthreads();</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Compute partial dot product using shared memory</span>
+<span class="dl-add">+        // Move pointers for next iteration</span>
+<span class="dl-add">+        A += BK_1D;</span>
+<span class="dl-add">+        B += BK_1D * N;</span>
+<span class="dl-add">+</span>
+<span class="dl-add">+        // Compute TM elements</span>
+<span class="dl-ctx">         #pragma unroll</span>
+<span class="dl-del">-        for (int k = 0; k &lt; SMEM_TILE; k++) {</span>
+<span class="dl-del">-            sum += As[ty][k] * Bs[k][tx];</span>
+<span class="dl-add">+        for (int dotIdx = 0; dotIdx &lt; BK_1D; dotIdx++) {</span>
+<span class="dl-add">+            // Load B element once (same for all TM results)</span>
+<span class="dl-add">+            float tmpB = Bs[dotIdx][threadCol];</span>
+<span class="dl-add">+            #pragma unroll</span>
+<span class="dl-add">+            for (int resIdx = 0; resIdx &lt; TM_1D; resIdx++) {</span>
+<span class="dl-add">+                // Each thread computes TM consecutive rows</span>
+<span class="dl-add">+                threadResults[resIdx] += As[threadRow * TM_1D + resIdx][dotIdx] * tmpB;</span>
+<span class="dl-add">+            }</span>
+<span class="dl-ctx">         }</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-        // Ensure all threads have finished using the tiles before loading new ones</span>
+<span class="dl-ctx">         __syncthreads();</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-    // Write result to global memory</span>
+<span class="dl-del">-    if (row &lt; N &amp;&amp; col &lt; N) {</span>
+<span class="dl-del">-        C[row * N + col] = sum;</span>
+<span class="dl-add">+    // Write results to global memory</span>
+<span class="dl-add">+    #pragma unroll</span>
+<span class="dl-add">+    for (int resIdx = 0; resIdx &lt; TM_1D; resIdx++) {</span>
+<span class="dl-add">+        int globalRow = blockRow * BM_1D + threadRow * TM_1D + resIdx;</span>
+<span class="dl-add">+        int globalCol = blockCol * BN_1D + threadCol;</span>
+<span class="dl-add">+        if (globalRow &lt; N &amp;&amp; globalCol &lt; N) {</span>
+<span class="dl-add">+            C[(threadRow * TM_1D + resIdx) * N + threadCol] = threadResults[resIdx];</span>
+<span class="dl-add">+        }</span>
+<span class="dl-ctx">     }</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulSmem::MatmulSmem(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-add">+Matmul1DBlocktile::Matmul1DBlocktile(int N, int blockDim) : N(N), blockDim(blockDim) {</span>
+<span class="dl-ctx">     // No workspace needed</span>
+<span class="dl-ctx"> }</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-void MatmulSmem::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-del">-    // Use 2D blocks with SMEM_TILE x SMEM_TILE threads</span>
+<span class="dl-del">-    dim3 threads(SMEM_TILE, SMEM_TILE);  // 32x32 = 1024 threads</span>
+<span class="dl-del">-    dim3 blocks((N + SMEM_TILE - 1) / SMEM_TILE,</span>
+<span class="dl-del">-                (N + SMEM_TILE - 1) / SMEM_TILE);</span>
+<span class="dl-add">+void Matmul1DBlocktile::execute(const float *d_A, const float *d_B, float *d_C) {</span>
+<span class="dl-add">+    dim3 threads(NUM_THREADS_1D);</span>
+<span class="dl-add">+    dim3 blocks((N + BN_1D - 1) / BN_1D,</span>
+<span class="dl-add">+                (N + BM_1D - 1) / BM_1D);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-del">-    matmulSmemKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-add">+    matmul1DBlocktileKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);</span>
+<span class="dl-ctx"> </span>
+<span class="dl-ctx">     cudaCheckError(cudaGetLastError());</span>
+<span class="dl-ctx">   …(上下文省略)…</span>
+<span class="dl-del">-MatmulSmem::~MatmulSmem() {</span>
+<span class="dl-add">+Matmul1DBlocktile::~Matmul1DBlocktile() {</span>
+<span class="dl-ctx">     // No workspace to free</span>
+<span class="dl-ctx"> }</span></pre>
+<p class="note">绿 = 新增行,红 = 删除行,灰 = 未变上下文(长段省略)。diff 基准选择代码血统最近的父代。</p></div>
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_1d_blocktile.cu</p>
+</div></body></html>

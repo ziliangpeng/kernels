@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>naive — GEMM 阶梯</title><style>
+  :root { --bg:#0d1117; --panel:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --accent:#58a6ff; --green:#3fb950; --red:#f85149; --yellow:#d29922; --cyan:#39c5cf; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:-apple-system,"SF Pro Text","PingFang SC","Segoe UI",Roboto,sans-serif; line-height:1.6; padding:28px 16px 80px; }
+  .wrap { max-width:1060px; margin:0 auto; }
+  header { text-align:center; margin-bottom:24px; }
+  h1 { font-size:26px; letter-spacing:-0.4px; }
+  .subtitle { color:var(--muted); margin-top:5px; font-size:14px; }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; margin-bottom:14px; overflow:hidden; }
+  .card-head { display:flex; align-items:baseline; gap:12px; padding:13px 18px 9px; flex-wrap:wrap; }
+  .rank { font-family:ui-monospace,Menlo,monospace; color:var(--muted); font-size:13px; min-width:34px; }
+  .kname { font-family:ui-monospace,Menlo,monospace; font-size:16px; font-weight:700; color:var(--accent); text-decoration:none; }
+  .kname:hover { text-decoration:underline; }
+  .tflops { margin-left:auto; font-family:ui-monospace,Menlo,monospace; font-size:14px; }
+  .tflops b { font-size:17px; color:var(--green); }
+  .delta { font-size:12px; color:var(--muted); }
+  .phase { margin:30px 0 12px; display:flex; align-items:center; gap:12px; }
+  .phase h2 { font-size:18px; white-space:nowrap; }
+  .phase .line { flex:1; height:1px; background:var(--border); }
+  .phase .tag { font-size:12px; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:4px; }
+  th { text-align:left; color:var(--muted); font-weight:600; padding:6px 8px; border-bottom:1px solid var(--border); font-size:11.5px; }
+  td { padding:5px 8px; border-bottom:1px solid #21262d; font-family:ui-monospace,Menlo,monospace; }
+  tr:hover td { background:#1c2129; }
+  .pos { color:var(--green); } .neg { color:var(--red); } .flatc { color:var(--yellow); }
+  .klink { color:var(--accent); text-decoration:none; } .klink:hover { text-decoration:underline; }
+  .note { font-size:12px; color:var(--muted); margin-top:8px; }
+  .pagehead { display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:6px; }
+  .pagehead h1 { font-size:22px; font-family:ui-monospace,Menlo,monospace; color:var(--accent); }
+  .back { font-size:13px; color:var(--muted); text-decoration:none; } .back:hover { color:var(--accent); }
+  .sec { margin-top:22px; }
+  .sec h2 { font-size:16px; color:var(--cyan); margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:5px; }
+  .sec p { font-size:14px; margin-bottom:8px; }
+  .twocol { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:760px) { .twocol { grid-template-columns:1fr; } }
+  pre.code { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:560px; overflow-y:auto; }
+  pre.diff { background:#0a0d12; border:1px solid var(--border); border-radius:8px; padding:14px; overflow-x:auto; font-family:ui-monospace,Menlo,monospace; font-size:12px; line-height:1.45; max-height:640px; overflow-y:auto; }
+  .dl-add { color:#3fb950; background:rgba(63,185,80,0.12); display:block; }
+  .dl-del { color:#f85149; background:rgba(248,81,73,0.12); display:block; }
+  .dl-ctx { color:#8b949e; display:block; }
+  .dl-hdr { color:#39c5cf; display:block; }
+  .verdict { padding:10px 13px; border-radius:7px; font-size:13.5px; border:1px solid; }
+  .v-win { background:rgba(63,185,80,.10); border-color:rgba(63,185,80,.35); } .v-flat { background:rgba(210,153,34,.10); border-color:rgba(210,153,34,.35); } .v-neg { background:rgba(248,81,73,.10); border-color:rgba(248,81,73,.35); }
+  .chip { background:var(--panel); border:1px solid var(--border); border-radius:999px; padding:3px 11px; font-size:12px; color:var(--muted); }
+  code { font-family:ui-monospace,Menlo,monospace; background:#21262d; padding:1px 5px; border-radius:4px; font-size:12.5px; color:#79c0ff; }
+</style></head>
+<body><div class="wrap">
+<div class="pagehead"><a class="back" href="../index.html">← 返回阶梯</a></div>
+<div class="pagehead"><h1>#1 naive</h1><span class="delta">matmul_naive.h/cu</span></div>
+<div class="verdict v-flat" style="margin-top:10px">峰值 989T 的 0.5% —— 构造上就是 memory-bound,作为正确性参照物存在。</div>
+<div class="sec"><h2>实现与改进</h2>
+<div class="twocol">
+<div><p><b>实现:</b>一个线程算一个 C 元素:对 A 的一整行和 B 的一整列做 dot product,直接从 global memory 读。所有访问都是不 coalesce 的 4 字节 load,arithmetic intensity 约 0.25 FLOP/byte。</p></div>
+<div><p><b>与上一代的差异:</b>基线 kernel,无上一级。</p></div>
+</div></div>
+<div class="sec"><h2>Kernel 代码(完整)</h2>
+<pre class="code">// ===== matmul_naive.h =====
+#ifndef MATMUL_NAIVE_H
+#define MATMUL_NAIVE_H
+
+#include "matmul_kernel.h"
+
+// Naive matrix multiplication - simple triple-nested loop
+//
+// This implementation uses a straightforward approach where each thread computes
+// one output element C[row][col] by computing the dot product of row from A
+// and column from B.
+//
+// MEMORY ACCESS PATTERN:
+// - A matrix: Coalesced reads (threads in same warp access consecutive columns)
+// - B matrix: Strided reads (threads access elements N apart) - BAD for performance!
+// - C matrix: Coalesced writes
+//
+// PERFORMANCE:
+// This achieves only ~1-2% of theoretical peak due to poor B matrix access pattern.
+// Use tiled/shared memory version for better performance.
+
+// Class-based interface for accurate profiling
+class MatmulNaive : public MatmulKernel {
+private:
+    int N;         // Matrix dimension (N×N matrices)
+    int blockDim;  // Block dimension (e.g., 16 for 16×16 blocks)
+
+public:
+    // Constructor: Store configuration (no workspace needed for naive kernel)
+    MatmulNaive(int N, int blockDim);
+
+    // Execute: Pure kernel execution (no setup/teardown overhead)
+    void execute(const float *d_A, const float *d_B, float *d_C) override;
+
+    // Destructor: Nothing to free
+    ~MatmulNaive() override;
+};
+
+#endif
+
+// ===== matmul_naive.cu =====
+#include "matmul_naive.h"
+#include "cuda_utils.h"
+#include &lt;cuda_runtime.h&gt;
+
+// Naive matrix multiplication kernel
+// Each thread computes one output element C[row][col]
+__global__ void matmulNaiveKernel(const float *A, const float *B, float *C, int N) {
+    // Calculate global row and column indices
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    // Boundary check (important for non-multiple-of-blockDim sizes)
+    if (row &lt; N &amp;&amp; col &lt; N) {
+        float sum = 0.0f;
+
+        // Dot product of row from A and column from B
+        // A[row][k] = A[row * N + k]
+        // B[k][col] = B[k * N + col]
+        for (int k = 0; k &lt; N; k++) {
+            sum += A[row * N + k] * B[k * N + col];
+        }
+
+        // Store result
+        C[row * N + col] = sum;
+    }
+}
+
+// Constructor: Store configuration
+MatmulNaive::MatmulNaive(int N, int blockDim) : N(N), blockDim(blockDim) {
+    // No workspace allocation needed for naive kernel
+}
+
+// Execute: Launch kernel with 2D grid of 2D blocks
+void MatmulNaive::execute(const float *d_A, const float *d_B, float *d_C) {
+    // Configure 2D blocks and grid
+    dim3 threads(blockDim, blockDim);  // e.g., 16×16 = 256 threads
+    dim3 blocks((N + blockDim - 1) / blockDim,
+                (N + blockDim - 1) / blockDim);
+
+    // Launch kernel
+    matmulNaiveKernel&lt;&lt;&lt;blocks, threads&gt;&gt;&gt;(d_A, d_B, d_C, N);
+
+    // Check for launch errors
+    cudaCheckError(cudaGetLastError());
+}
+
+// Destructor: Nothing to free
+MatmulNaive::~MatmulNaive() {
+    // No workspace to free
+}
+</pre></div>
+<div class="sec"><h2>性能数据</h2><table><tr><td>bench @4096(autotuned FP32)</td><td><b>5.29 TFLOPS</b></td></tr><tr><td>占 cuBLAS FP32(51.93T)</td><td><b>10.2%</b></td></tr></table>
+
+
+<p class="note" style="margin-top:18px">数据源:matmul/RESULTS-POSTFIX-2026-10-02.md · matmul/NCU-PROFILING-2026-10-02.md · 代码:matmul/matmul_naive.cu</p>
+</div></body></html>
