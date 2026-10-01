@@ -236,9 +236,15 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
     if (tid == 0) {
         #pragma unroll
         for (int s = 0; s < STAGES; s++) {
-            // leader's free_bar: released by BOTH CTAs' consumers (B stages
-            // are shared); follower's free_bar: its own consumers (A only)
-            w912_mbar_init(&full_bar[s], 1);
+            // Barrier accounting (the launch-failure root cause):
+            //  - full_bar: leader gets 1 arrive (own expect_tx A+B=48KB);
+            //    follower gets 2 arrives (leader's remote expect_tx B=32KB
+            //    + own local expect_tx A=16KB) -> count 2. A count-1 barrier
+            //    receiving 2 arrives corrupts its phase = illegal instruction.
+            //  - free_bar: leader's is arrived by BOTH CTAs' consumers (the
+            //    B stage is shared via multicast, count 4); follower's by its
+            //    own consumers (A stage, count 2).
+            w912_mbar_init(&full_bar[s], rank == 0 ? 1 : 2);
             w912_mbar_init(&free_bar[s], rank == 0 ? 4 : 2);
         }
     }
@@ -260,11 +266,13 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
                     w912_mbar_wait(&free_bar[s], (c - 1) & 1);
                 }
                 if (rank == 0) {
-                    // leader: expect_tx on BOTH barriers (A+B local, A+B remote)
+                    // leader: local expect A+B (48KB); remote expect B only
+                    // (32KB — the multicast credits B bytes to the peer's
+                    // barrier; the peer's own A loads credit the other 16KB)
                     w912_mbar_expect_tx(&full_bar[s], 6 * 64 * 128);
-                    w912_mbar_expect_tx_remote(&full_bar[s], 6 * 64 * 128, peer);
+                    w912_mbar_expect_tx_remote(&full_bar[s], 4 * 64 * 128, peer);
                 } else {
-                    // follower: expect_tx for its A only (2 boxes)
+                    // follower: local expect A only (16KB)
                     w912_mbar_expect_tx(&full_bar[s], 2 * 64 * 128);
                 }
                 // A tiles: each CTA its own (unicast, own barrier)
