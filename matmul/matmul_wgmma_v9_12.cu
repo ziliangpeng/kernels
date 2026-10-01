@@ -243,6 +243,10 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
         }
     }
     __syncthreads();
+    // CLUSTER-wide handshake: no CTA may TMA/expect_tx into a peer's SMEM
+    // before the peer has initialized its barriers (the launch-failure bug:
+    // remote arrive/expect_tx racing peer mbarrier init = illegal instruction)
+    cg::this_cluster().sync();
 
     if (wg == 0) {
         if (tid == 0) {
