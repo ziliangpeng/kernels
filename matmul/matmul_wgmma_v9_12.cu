@@ -208,7 +208,7 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
     const __grid_constant__ CUtensorMap tmC,
     float * __restrict__ C, int N) {
 
-    constexpr int STAGES = 4;
+    constexpr int STAGES = 3;
     unsigned char *A_s = w912_smem;                       // [4][128*128B]
     unsigned char *B_s = w912_smem + STAGES * (128 * 128);  // [4][256*128B]
     uint64_t *full_bar = reinterpret_cast<uint64_t *>(w912_smem + STAGES * (128 * 128 + 256 * 128));
@@ -431,7 +431,7 @@ void MatmulWgmmaV912::execute(const float *d_A, const float *d_B, float *d_C) {
     cudaLaunchConfig_t cfg = {};
     cfg.gridDim = grid;
     cfg.blockDim = dim3(384);
-    cfg.dynamicSmemBytes = 4 * (128 * 128 + 256 * 128) + 2 * 4 * 8 + 1024;
+    cfg.dynamicSmemBytes = 3 * (128 * 128 + 256 * 128) + 2 * 3 * 8 + 1024;
     cudaLaunchAttribute attrs[1];
     attrs[0].id = cudaLaunchAttributeClusterDimension;
     attrs[0].val.clusterDim.x = 2;
