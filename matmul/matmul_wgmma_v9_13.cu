@@ -221,6 +221,14 @@ __global__ __launch_bounds__(384) void matmulWgmmaV913Kernel(
     const int blockN = (bid % group_size) / gsize;
     const int tid = threadIdx.x;
     const int wg = tid / 128;
+    // consumer-side values hoisted to KERNEL scope so the post-sync staging
+    // block can use them (initialized/used only on the consumer path; the
+    // register cost is the consumer path's — producers carry no extra state).
+    const int ct = tid % 128;
+    const int cm = (wg > 0) ? (wg - 1) : 0;
+    const int w = ct / 32;
+    const int l = ct % 32;
+    float acc[128];
 
     if (tid == 0) {
         #pragma unroll
@@ -264,13 +272,7 @@ __global__ __launch_bounds__(384) void matmulWgmmaV913Kernel(
             }
         }
     } else {
-        // ---- consumers: identical to v9.7/v9.12 ----
-        const int ct = tid % 128;
-        const int cm = wg - 1;
-        const int w = ct / 32;
-        const int l = ct % 32;
-
-        float acc[128];
+        // ---- consumers ----
         #pragma unroll
         for (int i = 0; i < 128; i++) acc[i] = 0.0f;
 
@@ -307,21 +309,25 @@ __global__ __launch_bounds__(384) void matmulWgmmaV913Kernel(
             w913_mbar_arrive(&free_bar[lastS]);
             w913_mbar_arrive_remote(&free_bar[lastS], peer);
         }
+    }
 
-        // CLUSTER DRAIN before staging over the pipeline region: the peer's
-        // producer may still have tail multicasts in flight into MY B_s while
-        // its consumers finish. Consumers arrive at cluster.sync only after
-        // their last wgmma wait0 + final release, so by the time BOTH CTAs'
-        // consumer warps pass this barrier, both producers' loads are long
-        // consumed (a producer only issues lap L after free_bar for its ring
-        // stage was released by BOTH CTAs' consumers).
-        cg::this_cluster().sync();
+    // CLUSTER DRAIN at KERNEL level: ALL 384 threads of BOTH CTAs reach this
+    // cluster barrier. (Attempt 1 put a cluster.sync INSIDE the consumer
+    // else-branch — producers never arrived = whole-cluster deadlock at any
+    // N. Attempt 2 hoisted staging out of the branch but acc went out of
+    // scope. This layout: both branches END at the barrier, staging stays in
+    // consumer scope.) By the time consumers pass it, both producers' loads
+    // have been consumed (producer issues lap L only after BOTH CTAs'
+    // consumers released that ring stage) — the peer's tail multicasts into
+    // MY B_s have all landed, so staging C over the pipeline region is safe.
+    cg::this_cluster().sync();
 
-        // epilogue: stage C over the drained pipeline region (same mapping as
-        // v9.7/v9.12 — B_s top = rows 0..127 = 64KB, plus A region 48KB)
+    if (wg != 0) {
+        // epilogue staging over the DRAINED pipeline region (same mapping as
+        // v9.7/v9.12): consumers only, all 256 threads.
         float *stage = reinterpret_cast<float *>(w913_smem);
-        const int rowL = cm * 64 + w * 16 + (l / 4);
-        const int colL = (l % 4) * 2;
+        const int rowL = (wg - 1) * 64 + (ct / 32) * 16 + ((ct % 32) / 4);
+        const int colL = ((ct % 32) % 4) * 2;
         #pragma unroll
         for (int g = 0; g < 32; g++) {
             stage[(size_t)rowL * 256 + colL + g * 8]           = acc[g * 4 + 0];
@@ -330,8 +336,7 @@ __global__ __launch_bounds__(384) void matmulWgmmaV913Kernel(
             stage[(size_t)(rowL + 8) * 256 + colL + g * 8 + 1] = acc[g * 4 + 3];
         }
     }
-    // kernel-level rendezvous (ALL 384 threads incl. producer wg) then ONE
-    // thread bulk-stores.
+    // kernel-level rendezvous then ONE thread bulk-stores.
     __syncthreads();
     if (tid == 0) {
         asm volatile("fence.proxy.async.shared::cta;\n");
