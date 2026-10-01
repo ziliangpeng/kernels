@@ -387,7 +387,7 @@ void MatmulWgmmaV910::execute(const float *d_A, const float *d_B, float *d_C) {
     }
 
     const int tiles = (N / 128) * (N / 256);
-    const int nctas = tiles < 132 ? tiles : 132;
+    int nctas = tiles < 132 ? tiles : 132;
     static int gG = -1;
     if (gG < 0) {
         const char *e = getenv("WG_G");
