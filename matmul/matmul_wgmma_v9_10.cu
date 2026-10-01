@@ -150,6 +150,8 @@ __global__ void w910_transposeB(const __half * __restrict__ B,
 
 // ---- main kernel ----------------------------------------------------------
 
+__device__ int w910_use_boundary = 0;
+
 extern __shared__ __align__(16) unsigned char w910_raw[];
 __device__ unsigned char *w910_smem_ptr() {
     return (unsigned char *)(((uintptr_t)w910_raw + 1023) & ~(uintptr_t)1023);
@@ -218,6 +220,15 @@ __global__ __launch_bounds__(384, 1) void matmulWgmmaV910Kernel(
             }
         } else {
             // ---- consumers: cooperative on this tile's laps ----
+            // DISCRIMINATOR (Fable follow-up, experiment 2): consumers-only
+            // named barrier (id 4, both consumer wgs = 256 threads) at each
+            // tile boundary. If the N=3072 deadlock is the cross-WG
+            // phase-merge ABA (wg racing into tile i+1's mainloop while the
+            // peer wg still owes arrives for tile i), this barrier removes
+            // it. Runtime-switched via W910_BOUNDARY=1 (A/B in one binary).
+            if (i > 0 && w910_use_boundary) {
+                asm volatile("bar.sync 4, 256;\n");
+            }
             const int ct = tid % 128;
             const int cm = wg - 1;
             const int w = ct / 32;
@@ -337,6 +348,13 @@ MatmulWgmmaV910::~MatmulWgmmaV910() {
 }
 
 void MatmulWgmmaV910::execute(const float *d_A, const float *d_B, float *d_C) {
+    static int boundarySet = -1;
+    if (boundarySet < 0) {
+        int b = getenv("W910_BOUNDARY") ? atoi(getenv("W910_BOUNDARY")) : 0;
+        cudaMemcpyToSymbol(w910_use_boundary, &b, sizeof(int));
+        boundarySet = b;
+        printf("w910: W910_BOUNDARY=%d\n", b);
+    }
     int n = N * N;
     w910_convertF32ToF16<<<(n + 255) / 256, 256>>>(d_A, d_A16, n);
     w910_convertF32ToF16<<<(n + 255) / 256, 256>>>(d_B, d_B16, n);
