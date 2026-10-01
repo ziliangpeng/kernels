@@ -1,5 +1,7 @@
 # GEMM Performance Results — Single Source of Truth
 
+> **2026-10-01 MEASUREMENT-MODE NOTE**: all FP16-in family rows below are END-TO-END (include ~188us/iter @4096, ~760us/iter @8192 of per-call convert+transpose tax; cuBLAS pays once). Kernel-only numbers — the standard headline — are in RESULTS-KERNELONLY-2026-10-01.md (v9.7 = 692.3T @4096 / 745.5T @8192 = 95.6% of cuBLAS @8192; champion v9_11 708.0T).
+
 **Repo**: ~/code/kernels · **GPU**: NVIDIA H100 80GB HBM3 (gcp5, SM90, CUDA 12.4)
 **Workload**: N×N×N FP32 GEMM, N=4096 (unless noted) · **Timing**: CUDA events, 10 warmup + 100 batched iterations
 **Semantics**: FP16/BF16 rows are 16-bit STORAGE + FP32 ACCUMULATION (scalar FMA, no Tensor Core)
