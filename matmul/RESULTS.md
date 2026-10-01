@@ -52,6 +52,8 @@
 | 9c | `wgmma_v9_13` (fixed multicast: split-issue, 4-stage, symmetric barriers) | 128,256,16 | — | 359.80 | 450.6 | 504.6 | FLAT vs v9.7 — multicast experiment fully closed: split-issue recovers +40T of v9.12's implementation tax, but multicast itself pays 0 at this tile shape (B already L2-resident per band swizzle; L2-roofline theory holds for the *direction*, not the *fix*) |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
+| ref | CUTLASS 3x best f16/f32acc @8192 (profiler, clu 2x1, 128x128x64, st 6) | 128,128,64 | — | — | — | 667.8 | expert ceiling WITH multicast |
+| ref | CUTLASS 3x cluster 1x1 @8192 (256x128, st 3) | 256,128,64 | — | — | — | 512.6 | expert ceiling WITHOUT multicast — v9.7 at 100.4% of it |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
 
 ᵃ template+dispatch build — carries ~7.5% codegen tax vs hard-coded (ABAB
