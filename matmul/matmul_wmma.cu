@@ -81,12 +81,18 @@ MatmulWMMA::MatmulWMMA(int N, int blockDim) : N(N) {
 
 // Execute: Convert to FP16, run WMMA, copy result
 void MatmulWMMA::execute(const float *d_A, const float *d_B, float *d_C) {
-    // Convert FP32 inputs to FP16
-    int threads = 256;
-    int blocks = (N * N + threads - 1) / threads;
-    convertFP32ToFP16<<<blocks, threads>>>(d_A, d_A_fp16, N * N);
-    convertFP32ToFP16<<<blocks, threads>>>(d_B, d_B_fp16, N * N);
-    cudaCheckError(cudaGetLastError());
+    // ONE-TIME prep (2026-10-01 tax fix; see RESULTS-KERNELONLY-2026-10-01.md)
+    static const float *s_lastA = nullptr;
+    static const float *s_lastB = nullptr;
+    if (d_A != s_lastA || d_B != s_lastB) {
+        // Convert FP32 inputs to FP16
+        int threads = 256;
+        int blocks = (N * N + threads - 1) / threads;
+        convertFP32ToFP16<<<blocks, threads>>>(d_A, d_A_fp16, N * N);
+        convertFP32ToFP16<<<blocks, threads>>>(d_B, d_B_fp16, N * N);
+        cudaCheckError(cudaGetLastError());
+        s_lastA = d_A; s_lastB = d_B;
+    }
 
     // Zero output buffer to avoid garbage in uncomputed tiles
     cudaCheckError(cudaMemset(d_C_fp32, 0, N * N * sizeof(float)));

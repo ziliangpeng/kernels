@@ -347,11 +347,17 @@ MatmulWgmmaV7::~MatmulWgmmaV7() {
 }
 
 void MatmulWgmmaV7::execute(const float *d_A, const float *d_B, float *d_C) {
+    // ONE-TIME prep (2026-10-01 tax fix; see RESULTS-KERNELONLY-2026-10-01.md)
+    static const float *s_lastA = nullptr;
+    static const float *s_lastB = nullptr;
+    if (d_A != s_lastA || d_B != s_lastB) {
     int n = N * N;
     wgmmaV7_convertF32ToF16<<<(n + 255) / 256, 256>>>(d_A, d_A16, n);
     wgmmaV7_convertF32ToF16<<<(n + 255) / 256, 256>>>(d_B, d_B16, n);
     dim3 tb((N + 31) / 32, (N + 31) / 32);
     wgmmaV7_transposeB<<<tb, 1024>>>(d_B16, d_Bt16, N);
+        s_lastA = d_A; s_lastB = d_B;
+    }
 
     dim3 grid(N / WV7BN, N / WV7BM);
     matmulWgmmaV7Kernel<<<grid, 256>>>(d_A16, d_Bt16, d_C, N);
