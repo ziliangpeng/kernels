@@ -394,6 +394,14 @@ void MatmulWgmmaV910::execute(const float *d_A, const float *d_B, float *d_C) {
         gG = e ? atoi(e) : 8;
         if (gG < 1) gG = 1;
     }
+    // DISCRIMINATOR 2: runtime grid override (W910_GRID). Default = full
+    // persistence (nctas); smaller grids = more tiles per CTA at SAME klaps.
+    // N=3072 hang with grid=288(1 tile/CTA) -> NOT a cross-tile bug; hang
+    // appearing only at grid<=132 (2+ tiles/CTA) -> cross-tile protocol.
+    {
+        const char *gs = getenv("W910_GRID");
+        if (gs) nctas = atoi(gs);
+    }
     dim3 grid(nctas);
     // 3 x (16KB A + 32KB B) + 2 x 32KB slots + barriers + align slack
     const int smem = 3 * (128 * 128 + 256 * 128) + 2 * 32 * 1024 + 6 * 8 + 1024;
