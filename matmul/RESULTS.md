@@ -49,6 +49,7 @@
 | 9c | `wgmma_v9_10` (persistent cooperative + async epilogue) | 128,256,16 | — | 318.60 | 387.9 | 432.4 | NEGATIVE -13~16%: 1 CTA/SM + serialized epilogue loses v9.7's free CTA-rotation overlap; N=3072 hang unresolved; true ping-pong (per-wg tile streams, 224KB @ 2-stage) is the faithful Fable #2 |
 | 9c | `wgmma_v9_11` (1 fence + 1 commit group per lap) | 128,256,16 | — | 370.76 | 462.9 | 510.6 | flat — per-wgmma fence/commit was not the throttle; 1 wgmma in flight/lap already saturates math with TMA feeding |
 | 9c | `wgmma_v9_12` (2-CTA cluster + TMA multicast B) | 128,256,16 | — | 319.97 | 395.4 | 443.1 | NEGATIVE -13%: B-traffic halving < cluster co-scheduling cost; 5-round cluster bug chain archived (init race, barrier accounting, remote-arrive-only, dead epilogue) |
+| 9c | `wgmma_v9_13` (fixed multicast: split-issue, 4-stage, symmetric barriers) | 128,256,16 | — | 359.80 | 450.6 | 504.6 | FLAT vs v9.7 — multicast experiment fully closed: split-issue recovers +40T of v9.12's implementation tax, but multicast itself pays 0 at this tile shape (B already L2-resident per band swizzle; L2-roofline theory holds for the *direction*, not the *fix*) |
 | — | **cuBLAS FP32** | — | 51.93 | — | — | — | — |
 | — | **cuBLAS FP16** (FP32 compute) | — | — | 728.7 | — | — | — |
 | — | **cuBLAS BF16** (FP32 compute) | — | — | — | — | 469.8ᶜ | — |
