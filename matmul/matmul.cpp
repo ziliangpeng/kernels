@@ -67,6 +67,7 @@ extern const Cfg1D kConfigs1D[];
 #include "matmul_wgmma_v9_12.h"
 #include "matmul_wgmma_v9_13.h"
 #include "matmul_wgmma_v9_13.h"
+#include "matmul_wgmma_v9_14.h"
 #include "matrix_init.h"
 #include "dbuf_config.h"
 
@@ -280,6 +281,7 @@ void print_usage(const char *program_name) {
     printf("  wgmma_v9_12:   2-CTA cluster + TMA multicast on B (Fable #3)\n");
     printf("  wgmma_v9_13:   fixed multicast - split-issue, 4-stage, symmetric accounting\n");
     printf("  wgmma_v9_13:   fixed multicast — split-issue, 4-stage, symmetric accounting\n");
+    printf("  wgmma_v9_14:   multicast redo in 128x128 geometry — cluster along M, 6-stage\n");
     printf("\nSpecial method:\n");
     printf("  all:           Run comprehensive benchmark across all methods and sizes\n");
     printf("                 Tests sizes: 64, 128, 256, 512, 1K, 2K\n");
@@ -1009,6 +1011,8 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWgmmaV912(N, blockDim);
     } else if (strcmp(method, "wgmma_v9_13") == 0) {
         kernel = new MatmulWgmmaV913(N, blockDim);
+    } else if (strcmp(method, "wgmma_v9_14") == 0) {
+        kernel = new MatmulWgmmaV914(N, blockDim);
     }
 
     if (kernel) {
