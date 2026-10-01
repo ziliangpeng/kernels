@@ -1,6 +1,6 @@
 # GEMM Performance Results — Single Source of Truth
 
-> **2026-10-01 MEASUREMENT-MODE NOTE**: all FP16-in family rows below are END-TO-END (include ~188us/iter @4096, ~760us/iter @8192 of per-call convert+transpose tax; cuBLAS pays once). Kernel-only numbers — the standard headline — are in RESULTS-KERNELONLY-2026-10-01.md (v9.7 = 692.3T @4096 / 745.5T @8192 = 95.6% of cuBLAS @8192; champion v9_11 708.0T).
+> **2026-10-01 MEASUREMENT-MODE SWITCH (DEFINITIVE)**: the per-iteration convert+transpose tax was FIXED in the harness (one-time prep, input-pointer-guarded, commit "perf(harness): fix per-iteration convert/transpose tax"). The FP16-in family rows below are the OLD end-to-end tax-contaminated numbers, kept for history. Current truth: bench end-to-end now converges to kernel-only (v9_11 703.4T @4096 bench vs 708.0 kernel-only; v9_7 688.6 vs 692.3; v9_13 673.5 vs 673.4; cuBLAS 710.2 vs 717.1 — all within 1%). Full kernel-only table: RESULTS-KERNELONLY-2026-10-01.md. Headline: v9_11 = 708.0T @4096 / 746.2T @8192 = 95.8% of cuBLAS, 70-75% of nominal FP16 peak.
 
 **Repo**: ~/code/kernels · **GPU**: NVIDIA H100 80GB HBM3 (gcp5, SM90, CUDA 12.4)
 **Workload**: N×N×N FP32 GEMM, N=4096 (unless noted) · **Timing**: CUDA events, 10 warmup + 100 batched iterations
@@ -45,7 +45,7 @@
 | 9c | `wgmma_v9_4` (2D 8m×2n rect swizzle) | 128,256,16 | — | FAIL* | — | 428.6 @8192 | INCOMPLETE (ragged-N bijection bug unfixed; 428.6 not a clean datapoint; trend negative but unfalsified) — relabeled per Fable review 2026-09-30 |
 | 9c | `wgmma_v9_5` (TMA epilogue: SMEM staging + bulk store) | 128,256,16 | — | 331.56 | 409.6 | 460.9 | +22T@4096 — C write amplification was real |
 | 9c | `wgmma_v9_6` (4-stage 192KB) | 128,256,16 | — | 336.67 | 433.4 | 491.9 | +27T@8192 — TMA latency headroom pays |
-| 9c | `wgmma_v9_7` (TMA epilogue + 4-stage) | 128,256,16 | — | **367.05** | **460.4** | **514.8** | synergy +57.6 vs +49.3 additive; 67.6% of cuBLAS @8192 |
+| 9c | `wgmma_v9_7` (TMA epilogue + 4-stage) | 128,256,16 | — | **367.05** | **460.4** | **514.8** | (old end-to-end; kernel-only truth 692.3/745.5 = 95.6% of cuBLAS @8192) |
 | 9c | `wgmma_v9_8` (persistent CTAs, runtime G) | 128,256,16 | — | 367.19 | 457.3 | 508.7 | negative: wave-quantization falsified; per-tile pipeline drain > wave savings; G-sweep confirms G=8 |
 | 9c | `wgmma_v9_9` (setmaxnreg 40/232 rebalance) | 128,256,16 | — | 368.93 | 461.1 | 511.4 | flat — consumers never register-starved (0 spill, 154 regs); Fable #1 falsified at this design point |
 | 9c | `wgmma_v9_10` (persistent cooperative + async per-wg epilogue) | 128,256,16 | — | 318.6 | 387.9 | 432.4 | REGRESSION -13~16% (epilogue serialization tax); N=3072 "deadlock" was a MISDIAGNOSIS: single-thread CPU reference matmul (~29 GFLOP, 4-5 min) exceeded my job timeouts — kernel protocol was correct all along; verify PASSED 5.07e-05 with adequate timeout (job 221655) |
