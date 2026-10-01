@@ -351,15 +351,19 @@ __global__ __launch_bounds__(384) void matmulWgmmaV912Kernel(
             stage[(size_t)(rowL + 8) * 256 + colL + g * 8]     = acc[g * 4 + 2];
             stage[(size_t)(rowL + 8) * 256 + colL + g * 8 + 1] = acc[g * 4 + 3];
         }
-        __syncthreads();
-        if (tid == 0) {
-            asm volatile("fence.proxy.async.shared::cta;\n");
-            float *stg = reinterpret_cast<float *>(w912_smem);
-            w912_tma_store_2d(&tmC, stg, blockN * 256, blockM * 128);
-            w912_tma_store_2d(&tmC, stg + 64 * 256, blockN * 256, blockM * 128 + 64);
-            asm volatile("cp.async.bulk.commit_group;\n");
-            asm volatile("cp.async.bulk.wait_group 0;\n");
-        }
+    }
+    // kernel-level rendezvous (ALL 384 threads incl. producer wg) then ONE
+    // thread bulk-stores. NOTE: this was inside the consumer else-branch with
+    // tid==0 — tid 0 is a PRODUCER thread, the store never fired, C was never
+    // written (maxrel exactly 1.00, no memory errors, kernel "ran fine").
+    __syncthreads();
+    if (tid == 0) {
+        asm volatile("fence.proxy.async.shared::cta;\n");
+        float *stg = reinterpret_cast<float *>(w912_smem);
+        w912_tma_store_2d(&tmC, stg, blockN * 256, blockM * 128);
+        w912_tma_store_2d(&tmC, stg + 64 * 256, blockN * 256, blockM * 128 + 64);
+        asm volatile("cp.async.bulk.commit_group;\n");
+        asm volatile("cp.async.bulk.wait_group 0;\n");
     }
 }
 
