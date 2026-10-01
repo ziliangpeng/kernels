@@ -80,3 +80,33 @@ Node gcp5-h100-0-9. Tax mode verified by instance counts
   B row-major) — even the FP32-in WMMA path was taxed.
 - FP32 families (naive..warptile, cublas FP32): zero tax — their old
   numbers stand unchanged.
+
+## CUTLASS unfiltered re-run @4096 (Fable-prompted; job 221805, 4204 blocks)
+
+| reference | TFLOPS @4096 | note |
+|---|---|---|
+| CUTLASS best overall | **743.2** | cta 128x128 clu 2x1 st 6 |
+| CUTLASS cluster 1x1 best | 481.4 | (256x128 tile) |
+| our v9_11 (kernel-only) | 708.0 | 95.1% of CUTLASS best |
+| our v9.7 (kernel-only) | 692.3 | 93.1% of CUTLASS best |
+| cuBLAS FP16 | 717.1 | 96.5% of CUTLASS best |
+
+Confirms Fable's model: the earlier 512.6T "1x1 ceiling" was a single-row
+artifact (real 1x1 best at 8192 was also ~481-512 range, and the overall
+best needs cluster multicast on the 128x128 tile). Note this build still
+has NO 128x256 f16 kernels; the closest geometry to ours (256x128) tops
+at 481.4 in cluster 1x1 — our 128x256 tile at 692.3T (cluster 1x1 by
+construction) EXCEEDS every same-cluster CUTLASS config in this build.
+v9_11 = 95.1% of the absolute CUTLASS best (which uses multicast+2-CTA
+clusters we showed cannot pay on 128x256).
+
+## Final standings (kernel-only, @4096 / @8192)
+
+  v9_11   708.0 / 746.2   <- new champion
+  v9.7    692.3 / 745.5
+  cuBLAS  717.1 / 779.1
+  CUTLASS 743.2 / 667.8*  (*8192 number from the earlier f16-subset sweep)
+
+Our hand-written kernel sits at 93-96% of cuBLAS and ~95% of CUTLASS
+best, at 70-75% of nominal peak, on a design point (128x256, no cluster)
+where CUTLASS's own best same-constraint config reaches only 481T.
