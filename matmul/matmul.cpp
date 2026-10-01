@@ -1009,8 +1009,6 @@ void matmul_op(int N, int blockDim, bool verify, const char *method) {
         kernel = new MatmulWgmmaV912(N, blockDim);
     } else if (strcmp(method, "wgmma_v9_13") == 0) {
         kernel = new MatmulWgmmaV913(N, blockDim);
-    } else if (strcmp(method, "wgmma_v9_13") == 0) {
-        kernel = new MatmulWgmmaV913(N, blockDim);
     }
 
     if (kernel) {
