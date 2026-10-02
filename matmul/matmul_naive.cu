@@ -5,9 +5,14 @@
 // Naive matrix multiplication kernel
 // Each thread computes one output element C[row][col]
 __global__ void matmulNaiveKernel(const float *A, const float *B, float *C, int N) {
-    // Calculate global row and column indices
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    // Calculate global row and column indices.
+    // Deliberately UNCOALESCED (siboehm kernel 1): threadIdx.x -> row.
+    // Consecutive threads in a warp get consecutive rows, so A[row * N + k]
+    // is N*4 bytes apart per lane (strided), while B[k * N + col] is the same
+    // address for lanes sharing col (broadcast). matmul_coalesced fixes this
+    // by mapping threadIdx.x -> col.
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
+    int col = blockIdx.y * blockDim.y + threadIdx.y;
 
     // Boundary check (important for non-multiple-of-blockDim sizes)
     if (row < N && col < N) {

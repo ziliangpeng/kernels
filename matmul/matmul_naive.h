@@ -9,14 +9,15 @@
 // one output element C[row][col] by computing the dot product of row from A
 // and column from B.
 //
-// MEMORY ACCESS PATTERN:
-// - A matrix: Coalesced reads (threads in same warp access consecutive columns)
-// - B matrix: Strided reads (threads access elements N apart) - BAD for performance!
-// - C matrix: Coalesced writes
+// MEMORY ACCESS PATTERN (deliberately uncoalesced, siboehm kernel 1):
+// threadIdx.x -> row, threadIdx.y -> col. Lanes of a warp share col (when
+// blockDim.x >= 32) and differ in row.
+// - A matrix: A[row * N + k] — lanes N*4 bytes apart -> one 32B sector per lane (strided, BAD)
+// - B matrix: B[k * N + col] — same address across lanes sharing col (broadcast)
+// - C matrix: C[row * N + col] — strided writes
 //
-// PERFORMANCE:
-// This achieves only ~1-2% of theoretical peak due to poor B matrix access pattern.
-// Use tiled/shared memory version for better performance.
+// matmul_coalesced swaps the mapping (threadIdx.x -> col) to make B/C
+// accesses contiguous and A a broadcast.
 
 // Class-based interface for accurate profiling
 class MatmulNaive : public MatmulKernel {
