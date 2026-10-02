@@ -81,6 +81,7 @@ svg text.m{fill:var(--muted)}
 <main>
 <h1>Coalesced 访存可视化</h1>
 <p class="sub">~/code/kernels/matmul · <code>matmul_naive.cu</code> 与 <code>matmul_coalesced.cu</code> · H100 · N=4096 FP32</p>
+<div class="note">注意：本页的 "naive" 指的是 commit 9b2fb4d 之前的旧版 naive（<code>threadIdx.x → col</code>，本来就是 coalesced 的）。现在的 naive 已经改成真正 uncoalesced 的 <code>threadIdx.x → row</code>，见 <code>01-naive.html</code>。本页的数据和分析仍然适用于"16×16 与 32×32 block"以及"coalesced 与同样访存模式的 kernel"的对比。</div>
 
 <h2>1. 两个 kernel 的代码</h2>
 <p>两者都是"一个线程负责 C 的一个元素"。区别只在于线程编号怎么换算成 (row, col)，以及 block 的大小。</p>
