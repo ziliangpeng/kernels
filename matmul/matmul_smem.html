@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smem tiling 可视化</title>
+<style>
+:root{
+  --bg:#ffffff;--surface:#f6f5f1;--text:#1f1f1d;--muted:#5f5e5a;--border:#d3d1c7;--strong:#888780;
+  --accent:#534AB7;
+  --cell:#f6f5f1;--cell-s:#b4b2a9;
+  --coral:#FAECE7;--coral-s:#D85A30;
+  --gray:#D3D1C7;--gray-s:#888780;
+  --purple:#EEEDFE;--purple-s:#7F77DD;
+  --teal:#E1F5EE;--teal-s:#1D9E75;
+  --amber:#FAEEDA;--amber-s:#BA7517;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1b1a;--surface:#262624;--text:#ecebe6;--muted:#b4b2a9;--border:#444441;--strong:#888780;
+    --accent:#AFA9EC;
+    --cell:#2c2c2a;--cell-s:#5f5e5a;
+    --coral:#712B13;--coral-s:#F0997B;
+    --gray:#5F5E5A;--gray-s:#B4B2A9;
+    --purple:#3C3489;--purple-s:#AFA9EC;
+    --teal:#085041;--teal-s:#5DCAA5;
+    --amber:#633806;--amber-s:#EF9F27;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1b1a;--surface:#262624;--text:#ecebe6;--muted:#b4b2a9;--border:#444441;--strong:#888780;
+  --accent:#AFA9EC;
+  --cell:#2c2c2a;--cell-s:#5f5e5a;
+  --coral:#712B13;--coral-s:#F0997B;
+  --gray:#5F5E5A;--gray-s:#B4B2A9;
+  --purple:#3C3489;--purple-s:#AFA9EC;
+  --teal:#085041;--teal-s:#5DCAA5;
+  --amber:#633806;--amber-s:#EF9F27;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 -apple-system,"PingFang SC","Noto Sans SC",system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:24px;font-weight:600;margin:0 0 4px}
+h2{font-size:19px;font-weight:600;margin:40px 0 8px;padding-top:16px;border-top:1px solid var(--border)}
+p,li{color:var(--text)}
+.sub{color:var(--muted);margin:0 0 24px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:13px;line-height:1.55}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0 16px}
+th,td{border-bottom:1px solid var(--border);padding:6px 8px;text-align:left}
+th{color:var(--muted);font-weight:500}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.note{border-left:3px solid var(--accent);padding:4px 12px;color:var(--muted);margin:12px 0}
+svg{display:block;width:100%;height:auto}
+svg text{fill:var(--text);font-size:12px}
+svg text.h{font-size:14px;font-weight:600}
+svg text.m{fill:var(--muted)}
+.cell{fill:var(--cell);stroke:var(--cell-s)}
+.coral{fill:var(--coral);stroke:var(--coral-s)}
+.gray{fill:var(--gray);stroke:var(--gray-s)}
+.purple{fill:var(--purple);stroke:var(--purple-s)}
+.teal{fill:var(--teal);stroke:var(--teal-s)}
+.amber{fill:var(--amber);stroke:var(--amber-s)}
+.sep{stroke:var(--strong);stroke-width:1.5}
+.arr{stroke:var(--muted);stroke-width:1.2;fill:none}
+.ctl{display:flex;flex-wrap:wrap;gap:16px;align-items:center;font-size:14px;padding:8px 0}
+.ctl label{display:flex;align-items:center;gap:8px}
+.seg button{font:inherit;font-size:13px;padding:4px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+.seg button:first-child{border-radius:8px 0 0 8px}
+.seg button:last-child{border-radius:0 8px 8px 0}
+.seg button.on{background:var(--purple);border-color:var(--purple-s)}
+.stat{font-size:14px;color:var(--muted);padding:4px 0}
+.stat b{color:var(--text);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--muted);margin:6px 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid}
+.nav{display:flex;justify-content:space-between;gap:12px;font-size:14px;margin:0 0 20px;padding:8px 0;border-bottom:1px solid var(--border)}
+.nav.bottom{margin:40px 0 0;border-bottom:0;border-top:1px solid var(--border)}
+.nav a{color:var(--accent);text-decoration:none}
+.nav a:hover{text-decoration:underline}
+.nav .off{color:var(--muted)}
+.grid{display:grid;gap:1px;background:var(--border);border:1px solid var(--border)}
+.grid div{background:var(--cell)}
+.grid div.A{background:var(--coral)}.grid div.Ad{background:var(--coral-s)}
+.grid div.B{background:var(--teal)}.grid div.Bd{background:var(--teal-s)}
+.grid div.Ct{background:var(--purple-s)}
+.three{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.lab{font-size:13px;color:var(--muted);margin:4px 0}
+.ctl input[type=range]{width:180px}
+#gC{cursor:pointer}
+</style>
+</head>
+<body>
+<main>
+<nav class="nav"><a href="matmul_coalesced.html">← 上一级：coalesced</a><a href="matmul_1d_blocktile.html">下一级：1D blocktile →</a></nav>
+<h1>Shared memory tiling 可视化</h1>
+<p class="sub">~/code/kernels/matmul · <code>matmul_smem.cu</code> · H100 · FP32 · 第 3 课</p>
+
+<h2>1. 思路：让整个 block 共用一份数据</h2>
+<p>在 coalesced kernel 里，一个 32×32 的 block 负责 C 的一个 32×32 小方块。这 32 行都要用 A 的同样 32 行，这 32 列都要用 B 的同样 32 列，可是每个 thread 都自己从 global memory 把整行、整列读一遍。同一个 <code>A[row][k]</code> 被 32 个 thread 各发一次 load。</p>
+<p>shared memory（smem）是 SM 上的片上 SRAM（和 L1 是同一块物理存储），由程序员自己管理，<b>同一个 block 的所有 thread 都能读写</b>，延迟只有二三十个 cycle。smem tiling 的做法：</p>
+<ol>
+<li>整个 block 一起，把 A 的一个 32×32 tile 和 B 的一个 32×32 tile 从 global memory 搬进 smem，每个 thread 只搬 1 个 A 元素和 1 个 B 元素。</li>
+<li><code>__syncthreads()</code> 等所有人搬完。</li>
+<li>每个 thread 在 smem 里做 32 次乘加。</li>
+<li><code>__syncthreads()</code> 等所有人算完，然后沿 K 方向搬下一块。</li>
+</ol>
+
+<h2>2. 代码（逐行注释）</h2>
+<pre><code>#define SMEM_TILE 32
+__global__ void matmulSmemKernel(const float *A, const float *B, float *C, int N) {
+    __shared__ float As[32][32];   // 4KB，整个 block 只有一份
+    __shared__ float Bs[32][32];   // 4KB
+
+    int tx = threadIdx.x, ty = threadIdx.y;   // block 是 32×32：一个 warp = 同一个 ty，tx 取 0..31
+    int row = blockIdx.y * 32 + ty;           // 这个 thread 负责的 C 元素
+    int col = blockIdx.x * 32 + tx;
+    float sum = 0.0f;
+
+    for (int tileIdx = 0; tileIdx &lt; N; tileIdx += 32) {   // N=4096 时共 128 块
+        // 阶段一：每个 thread 搬 1 个 A、1 个 B（越界填 0）
+        As[ty][tx] = A[row * N + (tileIdx + tx)];   // warp 内 tx 连续 → 128B 连续，coalesced
+        Bs[ty][tx] = B[(tileIdx + ty) * N + col];   // 同上
+        __syncthreads();                            // RAW：等所有人写完再读
+
+        // 阶段二：全部在 smem 里算
+        #pragma unroll
+        for (int k = 0; k &lt; 32; k++)
+            sum += As[ty][k] * Bs[k][tx];
+        __syncthreads();                            // WAR：等所有人读完，下一轮才能覆盖
+    }
+    C[row * N + col] = sum;
+}
+// launch：dim3 threads(32, 32)；grid = (N/32, N/32)。-b 参数被忽略。</code></pre>
+
+<h2>3. 交互图</h2>
+<p>上排：整张矩阵按 32×32 切成 8×8 个 tile（示意 N=256）。点 C 的格子选 block，拖 <code>tileIdx</code> 看它沿 K 方向搬到第几块。下排：此刻 smem 里的 As 和 Bs。</p>
+<div class="ctl">
+  <div class="seg" id="mode"><button data-m="warp" class="on">整个 warp</button><button data-m="thread">单个 thread</button></div>
+</div>
+<div class="three">
+ <div><div class="lab">A</div><div id="gA" class="grid" style="grid-template-columns:repeat(8,1fr);aspect-ratio:1"></div></div>
+ <div><div class="lab">B</div><div id="gB" class="grid" style="grid-template-columns:repeat(8,1fr);aspect-ratio:1"></div></div>
+ <div><div class="lab">C（点击选 block）</div><div id="gC" class="grid" style="grid-template-columns:repeat(8,1fr);aspect-ratio:1"></div></div>
+</div>
+<div class="ctl"><label>tileIdx <input type="range" id="t" min="0" max="7" step="1" value="0"></label><span id="to" class="stat"></span></div>
+<div class="two">
+ <div><div class="lab">As[32][32]（smem）</div><div id="sA" class="grid" style="grid-template-columns:repeat(32,1fr);aspect-ratio:1"></div></div>
+ <div><div class="lab">Bs[32][32]（smem）</div><div id="sB" class="grid" style="grid-template-columns:repeat(32,1fr);aspect-ratio:1"></div></div>
+</div>
+<div class="ctl">
+ <label>ty <input type="range" id="ty" min="0" max="31" step="1" value="3"></label><span id="tyo" class="stat"></span>
+ <label id="txl" style="display:none">tx <input type="range" id="tx" min="0" max="31" step="1" value="5"></label><span id="txo" class="stat"></span>
+ <label>k <input type="range" id="k" min="0" max="31" step="1" value="0"></label><span id="ko" class="stat"></span>
+ <label><input type="checkbox" id="all"> 显示整个 k 循环</label>
+</div>
+<div class="legend">
+ <span><i style="background:var(--coral);border-color:var(--coral-s)"></i>A 的 tile / As</span>
+ <span><i style="background:var(--coral-s);border-color:var(--coral-s)"></i>当前读的 A</span>
+ <span><i style="background:var(--teal);border-color:var(--teal-s)"></i>B 的 tile / Bs</span>
+ <span><i style="background:var(--teal-s);border-color:var(--teal-s)"></i>当前读的 B</span>
+</div>
+<div id="info" class="stat" style="color:var(--text)"></div>
+
+<h2>4. 两个 <code>__syncthreads()</code></h2>
+<table>
+<tr><th>位置</th><th>防的是什么</th><th>如果删掉</th></tr>
+<tr><td>搬完之后、计算之前</td><td>RAW（read-after-write）：thread (3,5) 要读的 <code>As[3][0..31]</code> 由 warp 3 的 32 个 thread 写，<code>Bs[0..31][5]</code> 由 32 个不同的 warp 写</td><td>可能读到上一块的旧值或还没写进去的值</td></tr>
+<tr><td>计算之后、下一轮搬之前</td><td>WAR（write-after-read）：快的 warp 进入下一轮会覆盖 As/Bs</td><td>慢的 warp 读到被覆盖的数据；结果时对时错，很难查</td></tr>
+</table>
+
+<h2>5. 两种视角看 smem 读</h2>
+<p>代码 <code>sum += As[ty][k] * Bs[k][tx]</code> 写的是<b>单个 thread</b>：A 沿第 ty 行往右走，B 沿第 tx 列往下走。但硬件按<b>整个 warp</b>执行（同一个 ty，tx = 0..31）：</p>
+<table>
+<tr><th>读</th><th>32 个 lane 的地址</th><th>结果</th></tr>
+<tr><td><code>As[ty][k]</code></td><td>全部相同</td><td>broadcast，1 次 smem 访问只拿到 1 个有用的 float</td></tr>
+<tr><td><code>Bs[k][tx]</code></td><td>连续 32 个 float（第 k 行整行）</td><td>32 个 bank 各一个，无冲突，1 次访问拿到 32 个</td></tr>
+</table>
+<p>把 32 个 thread 各自"往下走的一列"并排放，每个 k 上看到的就是 Bs 的一整行。</p>
+
+<h2>6. 算账</h2>
+<table>
+<tr><th>每个 thread（N=4096）</th><th class="n">coalesced</th><th class="n">smem tiling</th></tr>
+<tr><td>global load</td><td class="n">2N = 8192</td><td class="n">2·N/32 = 256</td></tr>
+<tr><td>smem load</td><td class="n">0</td><td class="n">8192</td></tr>
+<tr><td><code>__syncthreads</code></td><td class="n">0</td><td class="n">256</td></tr>
+</table>
+<p>global load 少了 32 倍，速度却只提高 1.59 倍：瓶颈换成了 smem。每个 warp 每个 k 要 2 次 smem 访问（A broadcast 一次，B 一行一次）换 32 次 FMA。一个 SM 每个 cycle 大约服务 1 次 smem 访问（32 bank × 4B），所以每个 cycle 最多约 16 次 FMA，而 FP32 单元每个 cycle 能做 128 次，只用到约 1/8，约 8.4T。如果编译器把 <code>As[ty][k..k+3]</code> 合并成 <code>LDS.128</code>，上限大约 13T。实测 9.0T 落在区间内。<b>这是推算，还没有用 SASS 或 ncu 验证。</b></p>
+
+<h2>7. 实测</h2>
+<table>
+<tr><th>kernel（FP32，N=4096，H100）</th><th class="n">TFLOPS</th><th class="n">占 cuBLAS（51.93T）</th></tr>
+<tr><td>coalesced</td><td class="n">5.70</td><td class="n">11.0%</td></tr>
+<tr><td>smem tiling</td><td class="n">8.99</td><td class="n">17.3%</td></tr>
+</table>
+<p class="stat">来源：matmul/RESULTS.md 与 job 221866（coalesced 对照）。</p>
+
+<h2>8. 仓库文档里的问题（未修改）</h2>
+<ul>
+<li><code>worklog.md:134</code> 说 <code>As[ty][k]</code> "ty 在 thread 间变化、步长 32 → 不同 bank"。实际上一个 warp 的 ty 相同，是 broadcast；而且若 ty 真的变化，步长 32 个 float 会落在<b>同一个</b> bank，是 32-way conflict。结论（无冲突）碰巧对，推理错。</li>
+<li><code>MatmulSmem</code> 收 <code>blockDim</code> 参数但不用，<code>-b</code> 无效。</li>
+<li><code>matmul_smem.h</code> 的 "Expected ~12.8% of cuBLAS" 是 siboehm 在 A6000 上的数字，不是本机实测。</li>
+</ul>
+
+<h2>9. 要点</h2>
+<ul>
+<li>smem 是 block 共享、程序员管理的片上存储；tiling 让每个 global 元素只读一次、被 32 个 thread 共用。</li>
+<li>两个 <code>__syncthreads</code> 分别防 RAW 和 WAR，缺一不可。</li>
+<li>瓶颈从 global load 转到 smem：每次 FMA 仍要读 2 次 smem，A 还是 broadcast。下一课 1D blocktile 让一个 thread 算多个输出，一次 smem 读喂多次 FMA。</li>
+</ul>
+<nav class="nav bottom"><a href="matmul_coalesced.html">← 上一级：coalesced</a><a href="matmul_1d_blocktile.html">下一级：1D blocktile →</a></nav>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const mk=(id,n)=>{const e=$(id),a=[];for(let i=0;i<n*n;i++){const d=document.createElement('div');e.appendChild(d);a.push(d)}return a};
+const A=mk('gA',8),B=mk('gB',8),C=mk('gC',8),SA=mk('sA',32),SB=mk('sB',32);
+let by=2,bx=5,mode='warp';
+C.forEach((d,i)=>d.onclick=()=>{by=Math.floor(i/8);bx=i%8;draw()});
+['t','ty','tx','k','all'].forEach(id=>$(id).oninput=draw);
+document.querySelectorAll('#mode button').forEach(b=>b.onclick=()=>{mode=b.dataset.m;document.querySelectorAll('#mode button').forEach(x=>x.classList.toggle('on',x===b));$('txl').style.display=mode==='thread'?'':'none';draw()});
+function draw(){
+ const t=+$('t').value,ty=+$('ty').value,tx=+$('tx').value,k=+$('k').value,all=$('all').checked;
+ $('to').textContent='K 范围 ['+t*32+', '+(t*32+31)+']';$('tyo').textContent=mode==='warp'?'warp '+ty:'';$('txo').textContent='';$('ko').textContent='全局 k = '+(t*32+k);
+ for(let r=0;r<8;r++)for(let c=0;c<8;c++){const i=r*8+c;
+  A[i].className=r==by?(c==t?'Ad':(c<t?'A':'')):'';
+  B[i].className=c==bx?(r==t?'Bd':(r<t?'B':'')):'';
+  C[i].className=(r==by&&c==bx)?'Ct':'';}
+ const hitK=c=>all?c<=k:c==k;
+ for(let r=0;r<32;r++)for(let c=0;c<32;c++){const i=r*32+c;
+  SA[i].className=(r==ty&&hitK(c))?'Ad':'A';
+  SB[i].className=(hitK(r)&&(mode==='warp'||c==tx))?'Bd':'B';}
+ let s='block ('+by+', '+bx+') 正在处理第 '+t+' 块 K。浅色 = 已用完的 tile，深色 = 此刻在 smem 里的 tile。<br>';
+ if(mode==='warp') s+='warp '+ty+'（tx = 0..31）在 k = '+k+'：<code>As['+ty+']['+k+']</code> 32 个 lane 同一地址 → broadcast；<code>Bs['+k+'][0..31]</code> 第 '+k+' 行整行 → 32 个 bank 各一个，无冲突。';
+ else s+='thread (ty='+ty+', tx='+tx+') 在 k = '+k+'：<code>sum += As['+ty+']['+k+'] * Bs['+k+']['+tx+']</code>。A 沿第 '+ty+' 行往右走，B 沿第 '+tx+' 列往下走。';
+ s+='<br>到此刻每个 thread 发了 '+2*(t+1)+' 次 global load；coalesced kernel 走到同一个 k 要 '+2*(t*32+k+1)+' 次。';
+ $('info').innerHTML=s;
+}
+draw();
+</script>
+</body>
+</html>

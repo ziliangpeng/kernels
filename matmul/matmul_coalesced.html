@@ -84,7 +84,7 @@ svg text.m{fill:var(--muted)}
 </head>
 <body>
 <main>
-<nav class="nav"><a href="matmul_naive.html">← 上一级：naive</a><span class="off">下一级：smem tiling（可视化待制作）→</span></nav>
+<nav class="nav"><a href="matmul_naive.html">← 上一级：naive</a><a href="matmul_smem.html">下一级：smem tiling →</a></nav>
 <h1>Coalesced 访存可视化</h1>
 <p class="sub">~/code/kernels/matmul · <code>matmul_naive.cu</code> 与 <code>matmul_coalesced.cu</code> · H100 · N=4096 FP32</p>
 <div class="note">注意：本页的 "naive" 指的是 commit 9b2fb4d 之前的旧版 naive（<code>threadIdx.x → col</code>，本来就是 coalesced 的）。现在的 naive 已经改成真正 uncoalesced 的 <code>threadIdx.x → row</code>，见 <a href="matmul_naive.html">naive 可视化</a>。本页的数据和分析仍然适用于"16×16 与 32×32 block"以及"coalesced 与同样访存模式的 kernel"的对比。</div>
@@ -189,7 +189,7 @@ warp      = linear_id / 32</code></pre>
   <li>先降低噪声再比较：10 轮交替运行，CV &lt; 0.07%，小差距才可信。</li>
   <li>真正的问题是数据重用太低。下一课 smem tiling 会主动把数据搬进 shared memory，让整个 block 共用。</li>
 </ul>
-<nav class="nav bottom"><a href="matmul_naive.html">← 上一级：naive</a><span class="off">下一级：smem tiling（可视化待制作）→</span></nav>
+<nav class="nav bottom"><a href="matmul_naive.html">← 上一级：naive</a><a href="matmul_smem.html">下一级：smem tiling →</a></nav>
 </main>
 
 <script>
