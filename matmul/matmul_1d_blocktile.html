@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1D blocktile 可视化</title>
+<style>
+:root{
+  --bg:#ffffff;--surface:#f6f5f1;--text:#1f1f1d;--muted:#5f5e5a;--border:#d3d1c7;--strong:#888780;
+  --accent:#534AB7;
+  --cell:#f6f5f1;--cell-s:#b4b2a9;
+  --coral:#FAECE7;--coral-s:#D85A30;
+  --gray:#D3D1C7;--gray-s:#888780;
+  --purple:#EEEDFE;--purple-s:#7F77DD;
+  --teal:#E1F5EE;--teal-s:#1D9E75;
+  --amber:#FAEEDA;--amber-s:#BA7517;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1b1a;--surface:#262624;--text:#ecebe6;--muted:#b4b2a9;--border:#444441;--strong:#888780;
+    --accent:#AFA9EC;
+    --cell:#2c2c2a;--cell-s:#5f5e5a;
+    --coral:#712B13;--coral-s:#F0997B;
+    --gray:#5F5E5A;--gray-s:#B4B2A9;
+    --purple:#3C3489;--purple-s:#AFA9EC;
+    --teal:#085041;--teal-s:#5DCAA5;
+    --amber:#633806;--amber-s:#EF9F27;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1b1a;--surface:#262624;--text:#ecebe6;--muted:#b4b2a9;--border:#444441;--strong:#888780;
+  --accent:#AFA9EC;
+  --cell:#2c2c2a;--cell-s:#5f5e5a;
+  --coral:#712B13;--coral-s:#F0997B;
+  --gray:#5F5E5A;--gray-s:#B4B2A9;
+  --purple:#3C3489;--purple-s:#AFA9EC;
+  --teal:#085041;--teal-s:#5DCAA5;
+  --amber:#633806;--amber-s:#EF9F27;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 -apple-system,"PingFang SC","Noto Sans SC",system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:24px;font-weight:600;margin:0 0 4px}
+h2{font-size:19px;font-weight:600;margin:40px 0 8px;padding-top:16px;border-top:1px solid var(--border)}
+p,li{color:var(--text)}
+.sub{color:var(--muted);margin:0 0 24px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:13px;line-height:1.55}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0 16px}
+th,td{border-bottom:1px solid var(--border);padding:6px 8px;text-align:left}
+th{color:var(--muted);font-weight:500}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.note{border-left:3px solid var(--accent);padding:4px 12px;color:var(--muted);margin:12px 0}
+svg{display:block;width:100%;height:auto}
+svg text{fill:var(--text);font-size:12px}
+svg text.h{font-size:14px;font-weight:600}
+svg text.m{fill:var(--muted)}
+.cell{fill:var(--cell);stroke:var(--cell-s)}
+.coral{fill:var(--coral);stroke:var(--coral-s)}
+.gray{fill:var(--gray);stroke:var(--gray-s)}
+.purple{fill:var(--purple);stroke:var(--purple-s)}
+.teal{fill:var(--teal);stroke:var(--teal-s)}
+.amber{fill:var(--amber);stroke:var(--amber-s)}
+.sep{stroke:var(--strong);stroke-width:1.5}
+.arr{stroke:var(--muted);stroke-width:1.2;fill:none}
+.ctl{display:flex;flex-wrap:wrap;gap:16px;align-items:center;font-size:14px;padding:8px 0}
+.ctl label{display:flex;align-items:center;gap:8px}
+.seg button{font:inherit;font-size:13px;padding:4px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+.seg button:first-child{border-radius:8px 0 0 8px}
+.seg button:last-child{border-radius:0 8px 8px 0}
+.seg button.on{background:var(--purple);border-color:var(--purple-s)}
+.stat{font-size:14px;color:var(--muted);padding:4px 0}
+.stat b{color:var(--text);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--muted);margin:6px 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid}
+.nav{display:flex;justify-content:space-between;gap:12px;font-size:14px;margin:0 0 20px;padding:8px 0;border-bottom:1px solid var(--border)}
+.nav.bottom{margin:40px 0 0;border-bottom:0;border-top:1px solid var(--border)}
+.nav a{color:var(--accent);text-decoration:none}
+.nav a:hover{text-decoration:underline}
+.nav .off{color:var(--muted)}
+.gr{display:grid;gap:1px;background:var(--border);border:1px solid var(--border);width:max-content}
+.gr div{width:5px;height:5px;background:var(--cell)}
+.gr div.a{background:var(--coral)}.gr div.ad{background:var(--coral-s)}.gr div.am{background:var(--amber-s)}
+.gr div.b{background:var(--teal)}.gr div.bd{background:var(--teal-s)}
+.gr div.c{background:var(--purple)}.gr div.cd{background:var(--purple-s)}.gr div.cm{background:var(--purple-s);opacity:.6}
+.lb{font-size:12px;color:var(--muted)}
+.ctl input[type=range]{width:200px}
+select{font:inherit;font-size:13px;padding:3px 6px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:6px}
+</style>
+</head>
+<body>
+<main>
+<nav class="nav"><a href="matmul_smem.html">← 上一级：smem tiling</a><a href="matmul_2d_blocktile.html">下一级：2D blocktile →</a></nav>
+<h1>1D blocktile 可视化</h1>
+<p class="sub">~/code/kernels/matmul · <code>matmul_1d_blocktile.cu</code> · H100 · FP32 · 第 4 课</p>
+
+<h2>1. 思路：一个 thread 算一列上的 8 个输出</h2>
+<p>smem kernel 的问题：从 smem 读出来的 A 和 B，在每个 lane 里只做 1 次乘加就扔掉，每次 FMA 要读 2 次 smem，瓶颈从 global memory 转到了 smem。</p>
+<p>1D blocktile 让每个 thread 算 C 同一列上连续 8 个元素（<code>TM = 8</code>）。这 8 个输出在同一个 k 上乘的是<b>同一个</b> <code>B[k][c]</code>：</p>
+<pre><code>C[r+0][c] += A[r+0][k] * B[k][c]
+C[r+1][c] += A[r+1][k] * B[k][c]
+...
+C[r+7][c] += A[r+7][k] * B[k][c]   ← 8 行都乘同一个 B[k][c]</code></pre>
+<p>所以 B 只从 smem 读一次，放进寄存器 <code>tmpB</code>，连续用 8 次。这就是 register tiling（也叫 register blocking、thread coarsening）：cuBLAS、CUTLASS、CPU BLAS 的 microkernel 都靠它。"1D"只是教学用的过渡形式，下一课的 2D 才是标准形式。</p>
+<table>
+<tr><th>层级</th><th>存什么</th><th>谁共享</th><th>引入于</th></tr>
+<tr><td>global（HBM / L2）</td><td>整个 A、B、C</td><td>所有 block</td><td>一开始</td></tr>
+<tr><td>smem</td><td>A、B 的 tile</td><td>一个 block</td><td>第 3 课</td></tr>
+<tr><td>寄存器</td><td><code>tmpB</code> 和 8 个累加值</td><td>一个 thread</td><td><b>本课</b></td></tr>
+</table>
+
+<h2>2. 参数</h2>
+<table>
+<tr><th>参数</th><th>值</th><th>含义</th></tr>
+<tr><td><code>BM × BN</code></td><td>64 × 64</td><td>一个 block 负责 C 的 64×64</td></tr>
+<tr><td><code>BK</code></td><td>8</td><td>每轮沿 K 搬 8 列 A、8 行 B</td></tr>
+<tr><td><code>TM</code></td><td>8</td><td>每个 thread 算 8 个输出</td></tr>
+<tr><td>thread 数</td><td>64/8 × 64 = 512</td><td>As、Bs 各 512 格 → 每个 thread 正好搬 1 个 A、1 个 B，所以 BK 取 8</td></tr>
+<tr><td>smem</td><td>(512+512) × 4B = 4KB</td><td>比上一课的 8KB 还少</td></tr>
+</table>
+
+<h2>3. 代码（逐行注释）</h2>
+<pre><code>__shared__ float As[64][8];
+__shared__ float Bs[8][64];
+
+const int threadCol = threadIdx.x % 64;   // 一维 block，0..511
+const int threadRow = threadIdx.x / 64;   // 0..7 → 负责 C 第 threadRow*8 .. +7 行
+// warp 视角：32 个连续 tid → threadRow 相同，threadCol 连续 32 个
+
+A += blockRow * 64 * N;                   // 指针挪到这个 block 的起点
+B += blockCol * 64;
+C += blockRow * 64 * N + blockCol * 64;
+
+float threadResults[8] = {0.0f};          // 下标编译期可知 → 编译器放进 8 个寄存器
+
+// 搬运用另一套映射（和计算的映射无关，中间有 __syncthreads 隔开）
+const int innerRowA = threadIdx.x / 8,  innerColA = threadIdx.x % 8;    // As: 64 行 × 8 列
+const int innerRowB = threadIdx.x / 64, innerColB = threadIdx.x % 64;   // Bs: 8 行 × 64 列
+
+for (int tileIdx = 0; tileIdx &lt; N; tileIdx += 8) {
+    As[innerRowA][innerColA] = A[innerRowA * N + innerColA];   // warp：4 行 × 32B，每个 sector 用满
+    Bs[innerRowB][innerColB] = B[innerRowB * N + innerColB];   // warp：连续 128B，coalesced
+    __syncthreads();
+    A += 8;  B += 8 * N;                                        // A 右移 8 列，B 下移 8 行
+
+    for (int dotIdx = 0; dotIdx &lt; 8; dotIdx++) {
+        float tmpB = Bs[dotIdx][threadCol];                     // 读 1 次 B → 寄存器
+        for (int resIdx = 0; resIdx &lt; 8; resIdx++)
+            threadResults[resIdx] +=
+                As[threadRow * 8 + resIdx][dotIdx] * tmpB;      // 读 1 次 A，做 1 次 FMA
+    }
+    __syncthreads();
+}
+for (int resIdx = 0; resIdx &lt; 8; resIdx++)                     // 写回：warp 每次写一行连续 32 个
+    C[(threadRow * 8 + resIdx) * N + threadCol] = threadResults[resIdx];</code></pre>
+
+<h2>4. 交互图</h2>
+<p>摆成矩阵乘法的样子：左边 As[64][8]，上边 Bs[8][64]，右下是 C 的 64×64 block tile。切换"搬运 / 计算"和"单个 thread / 整个 warp"。</p>
+<div class="ctl">
+ <label>阶段 <select id="ph"><option value="c">计算阶段</option><option value="l">搬运阶段（global → smem）</option></select></label>
+ <label>视角 <select id="vw"><option value="t">单个 thread</option><option value="w">整个 warp</option></select></label>
+</div>
+<div style="display:grid;grid-template-columns:auto auto;gap:6px;justify-content:start;margin:8px 0;overflow-x:auto">
+ <div></div><div><div class="lb">Bs[8][64]</div><div id="Bs" class="gr" style="grid-template-columns:repeat(64,5px)"></div></div>
+ <div><div class="lb">As[64][8]</div><div id="As" class="gr" style="grid-template-columns:repeat(8,5px)"></div></div>
+ <div><div class="lb">C 的 64×64 block tile</div><div id="Ct" class="gr" style="grid-template-columns:repeat(64,5px)"></div></div>
+</div>
+<div class="ctl"><label>threadIdx.x <input type="range" id="tid" min="0" max="511" step="1" value="70"></label><span id="tido" class="stat"></span></div>
+<div class="ctl" id="r1"><label>dotIdx <input type="range" id="d" min="0" max="7" step="1" value="0"></label><span id="do" class="stat"></span></div>
+<div class="ctl" id="r2"><label>resIdx <input type="range" id="r" min="0" max="7" step="1" value="0"></label><span id="ro" class="stat"></span></div>
+<div class="legend">
+ <span><i style="background:var(--purple-s);border-color:var(--purple-s)"></i>当前输出</span>
+ <span><i style="background:var(--purple);border-color:var(--purple-s)"></i>这个 thread / warp 的 8 个输出</span>
+ <span><i style="background:var(--teal-s);border-color:var(--teal-s)"></i>tmpB（读 1 次）</span>
+ <span><i style="background:var(--coral-s);border-color:var(--coral-s)"></i>当前读的 A</span>
+ <span><i style="background:var(--amber-s);border-color:var(--amber-s)"></i>同一 dotIdx 要读的其它 A</span>
+</div>
+<div id="inf" class="stat" style="color:var(--text)"></div>
+
+<h2>5. 算账</h2>
+<table>
+<tr><th></th><th class="n">smem kernel</th><th class="n">1D blocktile</th></tr>
+<tr><td>每个输出每个 k 的 smem 读</td><td class="n">2</td><td class="n">9/8</td></tr>
+<tr><td>每 256 次 warp-FMA 的 smem 访问</td><td class="n">16</td><td class="n">9</td></tr>
+<tr><td>每搬 1 个 float 进 smem 能做的 FMA（BM·BN/(BM+BN)）</td><td class="n">16</td><td class="n">32</td></tr>
+</table>
+<p>smem 访问约少 1.78 倍；block tile 从 32×32 变成 64×64，global 访问也减半。另外，固定 <code>resIdx</code> 时 A 跨 8 个 <code>dotIdx</code> 读的是 <code>As[r][0..7]</code> 连续 8 个 float，完全展开后编译器可能合并成 2 条 <code>LDS.128</code>。<b>这一点没看过 SASS，是推测。</b></p>
+<p>为什么只到 17.6T（FP32 峰值约 67T）——推测，未测：每 8 个 k 就要两次 <code>__syncthreads</code>，两次 sync 之间每个 thread 只有 64 次 FMA；搬运和计算串行，global 延迟没被隐藏；A 仍是 8 次读喂 8 次 FMA（下一课 2D blocktile 让 A、B 都进寄存器复用）。</p>
+
+<h2>6. 实测</h2>
+<table>
+<tr><th>kernel（FP32，N=4096，H100）</th><th class="n">TFLOPS</th><th class="n">占 cuBLAS（51.93T）</th><th class="n">对上一级</th></tr>
+<tr><td>smem tiling</td><td class="n">8.99</td><td class="n">17.3%</td><td class="n">—</td></tr>
+<tr><td>1D blocktile（64,64,8,8）</td><td class="n">17.56</td><td class="n">33.8%</td><td class="n">1.95×</td></tr>
+<tr><td>1D blocktile 自动调参（128,128,4,32）</td><td class="n">19.36</td><td class="n">37.3%</td><td class="n">+10%</td></tr>
+</table>
+<p class="stat">来源：matmul/RESULTS.md。这是经典阶梯前半段单步最大的一次提升。</p>
+
+<h2>7. 仓库文档里的问题（未修改）</h2>
+<ul>
+<li><code>matmul_1d_blocktile.h</code> 的 "Expected ~36.5% of cuBLAS (2.8x over smem)" 是 siboehm 在 A6000 上的数字；本机是 33.8%、1.95×。</li>
+<li>同一文件说提升来自 "reducing thread management overhead"——主因其实是 smem 读减少和寄存器复用。</li>
+<li><code>worklog.md:268</code> 说 "One A column held in registers"，但代码里进寄存器的是 <code>tmpB</code>（B），A 每次从 smem 读。</li>
+<li><code>blockDim</code> 参数仍未使用。</li>
+</ul>
+
+<h2>8. 要点</h2>
+<ul>
+<li>省掉的是 smem → 寄存器的 <code>LDS</code>：B 读一次进 <code>tmpB</code>，复用 8 次。带宽和指令发射槽都省了。</li>
+<li>同一条原则用了第二次：内存层级的每一层都让数据读一次、用多次。HBM→smem 是第 3 课，smem→寄存器是本课。</li>
+<li>搬运和计算可以用不同的 thread 映射，靠 <code>__syncthreads</code> 隔开。</li>
+<li>局部数组只有在下标编译期可知时才会进寄存器。</li>
+</ul>
+<nav class="nav bottom"><a href="matmul_smem.html">← 上一级：smem tiling</a><a href="matmul_2d_blocktile.html">下一级：2D blocktile →</a></nav>
+</main>
+<script>
+const $=i=>document.getElementById(i);
+const mk=(id,n)=>{const e=$(id),a=[];for(let i=0;i<n;i++){const d=document.createElement('div');e.appendChild(d);a.push(d)}return a};
+const As=mk('As',512),Bs=mk('Bs',512),Ct=mk('Ct',4096);
+['ph','vw','tid','d','r'].forEach(i=>$(i).oninput=draw);
+function draw(){
+ const ph=$('ph').value,vw=$('vw').value,tid=+$('tid').value,d=+$('d').value,r=+$('r').value;
+ const tc=tid%64,tr=Math.floor(tid/64),w=Math.floor(tid/32);
+ const lanes=vw==='w'?[...Array(32)].map((_,i)=>w*32+i):[tid];
+ $('tido').textContent=ph==='c'?('threadRow '+tr+', threadCol '+tc+' · warp '+w):('warp '+w);
+ $('do').textContent='dotIdx = '+d;$('ro').textContent='resIdx = '+r;
+ $('r1').style.display=ph==='c'?'':'none';$('r2').style.display=ph==='c'&&vw==='t'?'':'none';
+ As.forEach(x=>x.className='a');Bs.forEach(x=>x.className='b');Ct.forEach(x=>x.className='');
+ let s='';
+ if(ph==='l'){
+  As.forEach(x=>x.className='');Bs.forEach(x=>x.className='');
+  lanes.forEach(t=>{As[t].className='ad';Bs[t].className='bd'});
+  if(vw==='t') s='thread '+tid+' 搬 <code>As['+Math.floor(tid/8)+']['+tid%8+']</code> 和 <code>Bs['+Math.floor(tid/64)+']['+tid%64+']</code>。512 个 thread 正好填满 As 和 Bs 各 512 格。';
+  else s='warp '+w+'：A 侧是第 '+(w*4)+'..'+(w*4+3)+' 行 × 8 列，每行在 global memory 里连续 32B（1 个 sector，用满），共 4 个 sector；B 侧是 Bs 第 '+Math.floor(w/2)+' 行的一半，连续 128B。写 smem 的地址都等于 tid，连续，无 bank conflict。';
+ } else {
+  lanes.forEach(t=>{const c=t%64,rr=Math.floor(t/64);
+   for(let i=0;i<8;i++)Ct[(rr*8+i)*64+c].className=vw==='t'?'c':'cm';
+   Bs[d*64+c].className='bd';
+   for(let i=0;i<8;i++)As[(rr*8+i)*8+d].className='am';
+   if(vw==='t'){Ct[(rr*8+r)*64+c].className='cd';As[(rr*8+r)*8+d].className='ad';}
+  });
+  if(vw==='t') s='thread '+tid+' 负责 C 第 '+(tr*8)+'..'+(tr*8+7)+' 行、第 '+tc+' 列这 8 个输出。<br>dotIdx='+d+'：先读一次 <code>tmpB = Bs['+d+']['+tc+']</code>，再和 As 第 '+d+' 列里的 8 个值分别相乘。此刻 resIdx='+r+'：<code>threadResults['+r+'] += As['+(tr*8+r)+']['+d+'] * tmpB</code>。<br>1 次 B 读 → 8 次 FMA。';
+  else s='warp '+w+'（threadRow 全是 '+tr+'，threadCol '+(w%2*32)+'..'+(w%2*32+31)+'）在 dotIdx='+d+'：B 读 Bs 第 '+d+' 行的 32 个连续元素（1 次访问，无冲突）；8 个 A 值 As['+(tr*8)+'..'+(tr*8+7)+']['+d+'] 每个都是 broadcast（1 次访问）。<br>9 次 smem 访问 → 8 × 32 = 256 次 FMA；上一课同样 256 次 FMA 要 16 次。';
+ }
+ $('inf').innerHTML=s;
+}
+draw();
+</script>
+</body>
+</html>
