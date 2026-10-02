@@ -5,7 +5,7 @@
 **Repo**: ~/code/kernels · **GPU**: NVIDIA H100 80GB HBM3 (gcp5, SM90, CUDA 12.4)
 **Workload**: N×N×N FP32 GEMM, N=4096 (unless noted) · **Timing**: CUDA events, 10 warmup + 100 batched iterations
 **Semantics**: FP16/BF16 rows are 16-bit STORAGE + FP32 ACCUMULATION (scalar FMA, no Tensor Core)
-**Last updated**: 2026-09-27
+**Last updated**: 2026-10-02
 
 > This file is the single place to look for ladder numbers. Worklogs
 > (`matmul/*-YYYY-MM-DD.md`) hold the full analysis; this file holds the table.
@@ -16,7 +16,7 @@
 
 | # | Rung (optimization) | Default config | FP32 | FP16 | FP16/FP32 | BF16 | Best tuned (dtype) |
 |---|---|---|---:|---:|---:|---:|---|
-| 1 | naive | 32×32 tile | 5.29 | 4.70 | 0.89x | 4.66 | — |
+| 1 | naive (uncoalesced: threadIdx.x→row) | 16×16 block | 0.97ᵍ | 4.70ʰ | —ʰ | 4.66ʰ | 32×32: 0.50ᵍ |
 | 2 | coalesced | — | 5.73 | 5.26 | 0.92x | — | — |
 | 3 | smem tiling | 32×32 | 8.99 | 9.36 | **1.04x** | — | — |
 | 4 | 1D blocktile | 64,64,8,8 | 17.56 | 17.23 | 0.98x | — | — |
@@ -96,7 +96,7 @@ codegen gap vs hard-coded that the vec template does not (open item).
   (1.003x) but no scalar kernel can beat ~33T — the cvt pipe (cvt:FMA ≈ 1:1,
   throughput 1:8 vs FMA) is the hard ceiling. cuBLAS FP16 (728.7T, Tensor
   Core, no cvt) is 22x above the scalar-FMA FP16 ladder.
-- **% of cuBLAS (FP32)**: naive 10.2% → 1D 33.8% → 2D tuned 65.1% →
+- **% of cuBLAS (FP32)**: naive 1.9% (uncoalesced; old coalesced-mapping naive was 10.2%) → 1D 33.8% → 2D tuned 65.1% →
   vectorized 63.0% → warptile_auto 75.2% → dbuf 72.4%.
 
 ## Config winners (autotune)
@@ -112,6 +112,16 @@ codegen gap vs hard-coded that the vec template does not (open item).
 Notable: FP32 and FP16 optima DIVERGE (dtype-dependent optima). FP16 prefers
 shallow BK + big TM (SMEM bytes halve → more K-rounds affordable); FP32 prefers
 deep BK.
+ᵍ naive is now truly uncoalesced (commit 9b2fb4d, siboehm kernel 1). Job 221870
+(h100-0-35), 10 ABAB rounds: 16×16 0.965T (sd 0.0002), 32×32 0.498T (sd <0.0001);
+same-job coalesced control 5.699T → coalesced/naive = 5.90x (16×16) / 11.44x (32×32).
+16×16 beats 32×32 by 1.94x: sectors/request 8.5 vs 16.5, L1 data pipe ~98% busy,
+L2/DRAM traffic unchanged vs the old mapping (ncu; ~/reports/naive-blk-ncu-2026-10-01.md §5).
+The previous 5.29T (16×16) / 6.12T (32×32, job 221866) were the OLD x→col mapping,
+which was already coalesced — not a naive baseline.
+ʰ FP16/BF16 come from `matmul_naive_typed.cu`, which still uses the OLD coalesced
+mapping, so they are not comparable with the FP32 cell; FP16/FP32 ratio withheld
+until the typed kernel is aligned and re-measured.
 
 ## Provenance
 
@@ -126,6 +136,7 @@ deep BK.
 | vec autotune f32/f16 | 219293 | h100-0-0 | vec-autotune-2026-09-27.md |
 | warptile autotune f16/f32 | 219300/219305/219306/219307 | h100-0-54 | warp-autotune-2026-09-27.md |
 | cuBLAS FP16/BF16 | 219286 | h100-0-4 | 2d-autotune-2026-09-27.md addendum |
+| naive FP32 (uncoalesced, 9b2fb4d) | 221870 | h100-0-35 | ~/reports/naive-blk-ncu-2026-10-01.md §5 |
 
 Sweep CSVs live in `matmul/`: `1d-autotune-f32/f16-gcp5-h100-2026-09-26.csv`,
 `2d-autotune-f32-f16-gcp5-h100-2026-09-27.csv`, `dbuf-sweep-gcp5-h100-2026-09-26.csv`.
