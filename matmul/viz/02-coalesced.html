@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coalesced 访存可视化</title>
+<style>
+:root{
+  --bg:#ffffff;--surface:#f6f5f1;--text:#1f1f1d;--muted:#5f5e5a;--border:#d3d1c7;--strong:#888780;
+  --accent:#534AB7;
+  --cell:#f6f5f1;--cell-s:#b4b2a9;
+  --coral:#FAECE7;--coral-s:#D85A30;
+  --gray:#D3D1C7;--gray-s:#888780;
+  --purple:#EEEDFE;--purple-s:#7F77DD;
+  --teal:#E1F5EE;--teal-s:#1D9E75;
+  --amber:#FAEEDA;--amber-s:#BA7517;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1b1a;--surface:#262624;--text:#ecebe6;--muted:#b4b2a9;--border:#444441;--strong:#888780;
+    --accent:#AFA9EC;
+    --cell:#2c2c2a;--cell-s:#5f5e5a;
+    --coral:#712B13;--coral-s:#F0997B;
+    --gray:#5F5E5A;--gray-s:#B4B2A9;
+    --purple:#3C3489;--purple-s:#AFA9EC;
+    --teal:#085041;--teal-s:#5DCAA5;
+    --amber:#633806;--amber-s:#EF9F27;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1b1a;--surface:#262624;--text:#ecebe6;--muted:#b4b2a9;--border:#444441;--strong:#888780;
+  --accent:#AFA9EC;
+  --cell:#2c2c2a;--cell-s:#5f5e5a;
+  --coral:#712B13;--coral-s:#F0997B;
+  --gray:#5F5E5A;--gray-s:#B4B2A9;
+  --purple:#3C3489;--purple-s:#AFA9EC;
+  --teal:#085041;--teal-s:#5DCAA5;
+  --amber:#633806;--amber-s:#EF9F27;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.7 -apple-system,"PingFang SC","Noto Sans SC",system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:32px 16px 64px}
+h1{font-size:24px;font-weight:600;margin:0 0 4px}
+h2{font-size:19px;font-weight:600;margin:40px 0 8px;padding-top:16px;border-top:1px solid var(--border)}
+p,li{color:var(--text)}
+.sub{color:var(--muted);margin:0 0 24px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.88em;background:var(--surface);padding:1px 5px;border-radius:4px}
+pre{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:12px 14px;overflow-x:auto;font-size:13px;line-height:1.55}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:8px 0 16px}
+th,td{border-bottom:1px solid var(--border);padding:6px 8px;text-align:left}
+th{color:var(--muted);font-weight:500}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.note{border-left:3px solid var(--accent);padding:4px 12px;color:var(--muted);margin:12px 0}
+svg{display:block;width:100%;height:auto}
+svg text{fill:var(--text);font-size:12px}
+svg text.h{font-size:14px;font-weight:600}
+svg text.m{fill:var(--muted)}
+.cell{fill:var(--cell);stroke:var(--cell-s)}
+.coral{fill:var(--coral);stroke:var(--coral-s)}
+.gray{fill:var(--gray);stroke:var(--gray-s)}
+.purple{fill:var(--purple);stroke:var(--purple-s)}
+.teal{fill:var(--teal);stroke:var(--teal-s)}
+.amber{fill:var(--amber);stroke:var(--amber-s)}
+.sep{stroke:var(--strong);stroke-width:1.5}
+.arr{stroke:var(--muted);stroke-width:1.2;fill:none}
+.ctl{display:flex;flex-wrap:wrap;gap:16px;align-items:center;font-size:14px;padding:8px 0}
+.ctl label{display:flex;align-items:center;gap:8px}
+.seg button{font:inherit;font-size:13px;padding:4px 12px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer}
+.seg button:first-child{border-radius:8px 0 0 8px}
+.seg button:last-child{border-radius:0 8px 8px 0}
+.seg button.on{background:var(--purple);border-color:var(--purple-s)}
+.stat{font-size:14px;color:var(--muted);padding:4px 0}
+.stat b{color:var(--text);font-weight:600}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--muted);margin:6px 0}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.legend i{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid}
+</style>
+</head>
+<body>
+<main>
+<h1>Coalesced 访存可视化</h1>
+<p class="sub">~/code/kernels/matmul · <code>matmul_naive.cu</code> 与 <code>matmul_coalesced.cu</code> · H100 · N=4096 FP32</p>
+
+<h2>1. 两个 kernel 的代码</h2>
+<p>两者都是"一个线程负责 C 的一个元素"。区别只在于线程编号怎么换算成 (row, col)，以及 block 的大小。</p>
+<pre><code>// naive：2D block，大小由 -b 决定（harness 默认 16，matmul.cpp:1136）
+int row = blockIdx.y * blockDim.y + threadIdx.y;
+int col = blockIdx.x * blockDim.x + threadIdx.x;
+for (int k = 0; k &lt; N; k++)
+    sum += A[row * N + k] * B[k * N + col];
+
+// coalesced：1D block，1024 个线程，BLOCKSIZE=32 写死，忽略 -b
+int threadCol = threadIdx.x % 32;
+int threadRow = threadIdx.x / 32;
+int row = blockIdx.y * 32 + threadRow;
+int col = blockIdx.x * 32 + threadCol;
+for (int k = 0; k &lt; N; k++)
+    sum += A_row[k] * B_col[k * N];</code></pre>
+
+<h2>2. 2D 线程怎样分组成 warp</h2>
+<p>硬件先把 block 里的线程拉平成一维编号，再每 32 个一组成为一个 warp：</p>
+<pre><code>linear_id = threadIdx.x + threadIdx.y * blockDim.x
+warp      = linear_id / 32</code></pre>
+<table>
+<tr><th>block</th><th>warp 0 包含的线程</th><th>对应 C 的形状</th></tr>
+<tr><td>naive 16×16</td><td>(x=0..15, y=0) + (x=0..15, y=1)</td><td>2 行 × 16 列</td></tr>
+<tr><td>naive 32×32</td><td>(x=0..31, y=0)</td><td>1 行 × 32 列</td></tr>
+<tr><td>coalesced</td><td>threadIdx.x = 0..31 → row 0, col 0..31</td><td>1 行 × 32 列</td></tr>
+</table>
+<p>所以 coalesced 的访存模式和 <code>naive -b 32</code> 完全相同。naive 的代码本来就让 <code>threadIdx.x → col</code>，所以一开始就已经是 coalesced 的。（siboehm 博客里的 naive 故意写成 <code>threadIdx.x → row</code>，那个才是真正的 uncoalesced。）</p>
+
+<h2>3. 整个矩阵上的访存（可操作）</h2>
+<p>A 在左下，B 在右上，C 在右下：C 的每个格子，横向对着它要读的 A 那一行，纵向对着它要读的 B 那一列。矩阵缩小成 40×40，方便画出来。</p>
+<div class="ctl">
+  <div class="seg" id="seg"><button data-b="16" class="on">16×16 block</button><button data-b="32">32×32 block</button></div>
+  <label>warp <input type="range" id="w" min="0" max="7" value="0"><span id="wv">0</span></label>
+  <label>k <input type="range" id="k" min="0" max="39" value="0"><span id="kv">0</span></label>
+  <label><input type="checkbox" id="all"> 显示整个 k 循环</label>
+</div>
+<div class="legend">
+  <span><i class="purple" style="background:var(--purple);border-color:var(--purple-s)"></i>C：前半 warp</span>
+  <span><i style="background:var(--teal);border-color:var(--teal-s)"></i>C：后半 warp</span>
+  <span><i style="background:var(--coral);border-color:var(--coral-s)"></i>这一步用到</span>
+  <span><i style="background:var(--gray);border-color:var(--gray-s)"></i>同 sector 带回来、没用到</span>
+  <span><i style="background:var(--amber);border-color:var(--amber-s)"></i>整个循环会读</span>
+</div>
+<div id="fig"></div>
+<div class="stat" id="stat"></div>
+<p>建议这样操作：</p>
+<ol>
+  <li>16×16、warp 0、k=0：C 上的紫色和青色是上下两行。B 那边两半 warp 读的是同一组橙色格子，A 那边是 2 个分开的格子，各自带回一整个 sector。</li>
+  <li>拖动 k：A 上的读取点往右走（<code>A[row*N + k]</code>），B 上的往下走（<code>B[k*N + col]</code>）。</li>
+  <li>勾选"显示整个 k 循环"：黄色是这个 warp 一共会读的区域。隔壁 warp、隔壁 block 也在读同样的行和列，这就是数据被重复读取的根源。</li>
+  <li>切到 32×32：一个 warp 是一整行，A 只要 1 个 sector，B 要 4 个。</li>
+</ol>
+
+<h2>4. 一个 warp、一步 k：sector 计数</h2>
+<p>内存访问以 32-byte sector 为单位，等于 8 个 float。同一个 warp 内重复的地址会被硬件合并。</p>
+<div id="sectors"></div>
+<div class="note">16×16 时，B 的地址 <code>B[k*N + col]</code> 和 row 无关，所以两个半 warp 读的是同一组 64 bytes，并没有"读了两倍数据"。按单个 warp 计算，16×16 读的 sector 甚至更少（4 个对 5 个）。</div>
+
+<h2>5. block 层面：每 8 轮 k 从 L2 取多少</h2>
+<p>A 的一个 sector 含 8 个 float，读进 L1 后，接下来 7 轮 k 都能命中。以 8 轮 k 为单位：</p>
+<table>
+<tr><th></th><th class="n">16×16（256 线程）</th><th class="n">32×32（1024 线程）</th></tr>
+<tr><td>A：每行 1 个 sector</td><td class="n">16</td><td class="n">32</td></tr>
+<tr><td>B：一行 k 上的列</td><td class="n">2</td><td class="n">4</td></tr>
+<tr><td>合计 sector</td><td class="n">18</td><td class="n">36</td></tr>
+<tr><td>换来的 FMA</td><td class="n">2048</td><td class="n">8192</td></tr>
+<tr><td><b>每 1000 次 FMA 需要的 sector</b></td><td class="n"><b>8.8</b></td><td class="n"><b>4.4</b></td></tr>
+</table>
+<p>block 越大，同一份数据被越多线程共用。这一点还是推断，有待 ncu 验证。</p>
+
+<h2>6. 实测结果</h2>
+<p>Slurm job 221866，gcp5-h100-0-38。10 轮 ABAB 交替运行（偶数轮顺序反转），每个样本是 100 次迭代的平均值。</p>
+<table>
+<tr><th>配置</th><th class="n">平均 TFLOPS</th><th class="n">标准差</th><th class="n">CV</th><th class="n">最小 ~ 最大</th></tr>
+<tr><td>naive 16×16</td><td class="n">5.281</td><td class="n">0.0033</td><td class="n">0.063%</td><td class="n">5.279 ~ 5.290</td></tr>
+<tr><td>naive 32×32</td><td class="n">6.118</td><td class="n">0.0003</td><td class="n">0.006%</td><td class="n">6.117 ~ 6.119</td></tr>
+<tr><td>coalesced</td><td class="n">5.699</td><td class="n">0.0004</td><td class="n">0.007%</td><td class="n">5.699 ~ 5.700</td></tr>
+</table>
+<ul>
+  <li>32×32 比 16×16 快 <b>15.9%</b>。两者的 load 指令数相同（都是每轮 2 个 load 加 1 个 FMA），所以差距不大。</li>
+  <li>coalesced 比 naive 32×32 慢 <b>6.8%</b>，非常稳定。访存模式完全一样，所以差别来自编译出的指令。</li>
+</ul>
+
+<h2>7. SASS 对比：主循环（k 循环展开 16 次）</h2>
+<table>
+<tr><th></th><th class="n">naive -b 32</th><th class="n">coalesced</th></tr>
+<tr><td>主循环指令数</td><td class="n">73</td><td class="n">70</td></tr>
+<tr><td>LDG（global load）</td><td class="n">32</td><td class="n">32</td></tr>
+<tr><td>FFMA</td><td class="n">16</td><td class="n">16</td></tr>
+<tr><td>第一个 FFMA 之前已发出的 LDG</td><td class="n">≈22</td><td class="n">≈16</td></tr>
+</table>
+<p>指令数差不多，coalesced 甚至少 3 条。唯一明显的差别是 load 的排列：coalesced 更早遇到第一个需要数据的 FFMA，同时在路上的 load 比较少，较难掩盖内存延迟。这是推断，需要用 ncu 的 warp stall reasons（<code>long_scoreboard</code>）确认。</p>
+
+<h2>8. 这一课的要点</h2>
+<ul>
+  <li>判断是否 coalesced，要看同一个 warp 的 32 个线程读的地址是否相邻，而 warp 是由拉平后的线程编号决定的。</li>
+  <li>访存模式相同不代表性能相同，编译器的指令调度也能造成约 7% 的差距。</li>
+  <li>先降低噪声再比较：10 轮交替运行，CV &lt; 0.07%，小差距才可信。</li>
+  <li>真正的问题是数据重用太低。下一课 smem tiling 会主动把数据搬进 shared memory，让整个 block 共用。</li>
+</ul>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const NS='http://www.w3.org/2000/svg';
+
+/* ---------- 40x40 interactive ---------- */
+const N=40,S=7,AX=8,AY=300,BX=300,BY=8,CX=300,CY=300;
+let bd=16,w=0,k=0,all=false;
+function draw(){
+  const rows=[],cols=[];
+  for(let t=0;t<32;t++){const lin=32*w+t;rows.push(Math.floor(lin/bd));cols.push(lin%bd);}
+  const uR=[...new Set(rows)],uC=[...new Set(cols)];
+  const bSec=new Set(uC.map(c=>Math.floor(c/8)));
+  const aCls=(r,c)=>{
+    if(uR.includes(r)){
+      if(c===k) return 'coral';
+      if(Math.floor(c/8)===Math.floor(k/8)) return 'gray';
+      if(all) return 'amber';
+    }
+    return 'cell';
+  };
+  const bCls=(r,c)=>{
+    if(r===k){ if(uC.includes(c)) return 'coral'; if(bSec.has(Math.floor(c/8))) return 'gray'; }
+    if(all&&uC.includes(c)) return 'amber';
+    return 'cell';
+  };
+  const cCls=(r,c)=>(uR.includes(r)&&uC.includes(c))?(uR.indexOf(r)===0?'purple':'teal'):'cell';
+  const rect=(x,y,cls)=>`<rect class="${cls}" x="${x}" y="${y}" width="${S-1}" height="${S-1}" rx="1" stroke-width="0.5"/>`;
+  let s=`<svg viewBox="0 0 600 600" role="img" aria-label="40x40 矩阵乘法中一个 warp 的访存">`;
+  for(let r=0;r<N;r++)for(let q=0;q<N;q++){
+    s+=rect(AX+q*S,AY+r*S,aCls(r,q))+rect(BX+q*S,BY+r*S,bCls(r,q))+rect(CX+q*S,CY+r*S,cCls(r,q));
+  }
+  for(let q=8;q<N;q+=8){
+    s+=`<line class="sep" x1="${AX+q*S-.5}" y1="${AY-3}" x2="${AX+q*S-.5}" y2="${AY+N*S+3}"/>`;
+    s+=`<line class="sep" x1="${BX+q*S-.5}" y1="${BY-3}" x2="${BX+q*S-.5}" y2="${BY+N*S+3}"/>`;
+  }
+  for(let o=0;o<N;o+=bd){
+    s+=`<line x1="${CX+o*S-.5}" y1="${CY}" x2="${CX+o*S-.5}" y2="${CY+N*S}" stroke="var(--purple-s)" stroke-dasharray="3 2"/>`;
+    s+=`<line x1="${CX}" y1="${CY+o*S-.5}" x2="${CX+N*S}" y2="${CY+o*S-.5}" stroke="var(--purple-s)" stroke-dasharray="3 2"/>`;
+  }
+  s+=`<text class="h" x="${AX}" y="${AY-10}">A（读第 k 列）</text>`;
+  s+=`<text class="h" x="${BX-12}" y="${BY+N*S/2}" text-anchor="end">B（读第 k 行）</text>`;
+  s+=`<text class="h" x="${CX}" y="${CY+N*S+20}">C（虚线 = block 边界）</text>`;
+  s+=`<text class="m" x="${AX}" y="${BY+20}">粗竖线 = 32B sector 边界</text>`;
+  s+=`<text class="m" x="${AX}" y="${BY+38}">（每 8 个 float 一个）</text>`;
+  s+='</svg>';
+  $('fig').innerHTML=s;
+  $('stat').innerHTML=`warp ${w}：线程 ${32*w}–${32*w+31}，覆盖 C 的 <b>${uR.length} 行 × ${uC.length} 列</b>（row ${uR.join(', ')}；col ${uC[0]}–${uC[uC.length-1]}）。<br>第 k=${k} 步：A 读 ${uR.length} 个不同地址 → <b>${uR.length} 个 sector</b>；B 读 ${uC.length} 个连续 float → <b>${bSec.size} 个 sector</b>；合计 <b>${uR.length+bSec.size} sectors</b> 换 32 次 FMA。`;
+}
+$('seg').addEventListener('click',e=>{const t=e.target.closest('button');if(!t)return;bd=+t.dataset.b;[...$('seg').children].forEach(x=>x.classList.toggle('on',x===t));const mx=bd*bd/32-1;$('w').max=mx;if(w>mx)w=0;$('w').value=w;$('wv').textContent=w;draw();});
+$('w').addEventListener('input',e=>{w=+e.target.value;$('wv').textContent=w;draw();});
+$('k').addEventListener('input',e=>{k=+e.target.value;$('kv').textContent=k;draw();});
+$('all').addEventListener('change',e=>{all=e.target.checked;draw();});
+draw();
+
+/* ---------- static sector comparison ---------- */
+(function(){
+  const X0=88,W=17,H=20;
+  const r=(x,y,c)=>`<rect class="${c}" x="${x}" y="${y}" width="${W-1}" height="${H}" rx="2"/>`;
+  const cells=(idx,y,c)=>idx.map(i=>r(X0+W*i,y,c)).join('');
+  const range=(a,b)=>Array.from({length:b-a},(_,i)=>a+i);
+  const sector=(cx,y)=>{const x0=cx-68;return range(0,8).map(i=>r(x0+W*i,y,i===4?'coral':'gray')).join('');};
+  const t=(x,y,s,c='',a='middle')=>`<text class="${c}" x="${x}" y="${y}" text-anchor="${a}">${s}</text>`;
+  const ar=(x1,y1,x2,y2)=>`<line class="arr" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#ah)"/>`;
+  const seps=y=>[224,360,496].map(x=>`<line class="sep" x1="${x}" y1="${y-4}" x2="${x}" y2="${y+H+4}"/>`).join('');
+  function panel(o,big){
+    let s=t(40,o+24,big?'32×32 block：一个 warp = 1 行 × 32 列':'16×16 block：一个 warp = 2 行 × 16 列','h','start');
+    s+=t(40,o+70,'A','h','start')+t(40,o+124,'warp','h','start')+t(40,o+200,'B','h','start');
+    if(big){
+      s+=t(360,o+48,'A[R][k]','m')+sector(360,o+56)+ar(360,o+108,360,o+80);
+      s+=cells(range(0,32),o+110,'purple')+t(360,o+146,'线程 0–31：全部 row R','m');
+      s+=ar(360,o+152,360,o+180)+cells(range(0,32),o+184,'coral');
+    }else{
+      s+=t(224,o+48,'A[R][k]','m')+t(496,o+48,'A[R+1][k]','m')+sector(224,o+56)+sector(496,o+56)+t(360,o+70,'相隔 16KB','m');
+      s+=ar(224,o+108,224,o+80)+ar(496,o+108,496,o+80);
+      s+=cells(range(0,16),o+110,'purple')+cells(range(16,32),o+110,'teal');
+      s+=t(224,o+146,'线程 0–15：row R','m')+t(496,o+146,'线程 16–31：row R+1','m');
+      s+=ar(224,o+152,224,o+180)+ar(496,o+152,250,o+180);
+      s+=cells(range(0,16),o+184,'coral')+cells(range(16,32),o+184,'cell');
+    }
+    s+=seps(o+184);
+    [156,292,428,564].forEach((cx,i)=>s+=t(cx,o+224,`sector ${i} (32B)`,'m'));
+    s+=t(40,o+252,big?'合计：A 1 个 sector + B 4 个 sector = 5 sectors / 32 次 FMA':'合计：A 2 个 sector + B 2 个 sector = 4 sectors / 32 次 FMA','h','start');
+    return s;
+  }
+  let s=`<svg viewBox="0 0 680 600" role="img" aria-label="16x16 与 32x32 block 下一个 warp 的 sector 访问"><defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5"/></marker></defs>`;
+  s+=panel(0,false)+`<line x1="40" y1="276" x2="640" y2="276" stroke="var(--border)"/>`+panel(290,true);
+  s+=r(40,566,'coral')+t(64,581,'实际用到的 float','m','start')+r(200,566,'gray')+t(224,581,'随 sector 一起取回、没用到','m','start')+r(420,566,'cell')+t(444,581,'没有被取','m','start');
+  s+='</svg>';
+  $('sectors').innerHTML=s;
+})();
+</script>
+</body>
+</html>
