@@ -75,10 +75,16 @@ svg text.m{fill:var(--muted)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;color:var(--muted);margin:6px 0}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{display:inline-block;width:12px;height:12px;border-radius:2px;border:1px solid}
+.nav{display:flex;justify-content:space-between;gap:12px;font-size:14px;margin:0 0 20px;padding:8px 0;border-bottom:1px solid var(--border)}
+.nav.bottom{margin:40px 0 0;border-bottom:0;border-top:1px solid var(--border)}
+.nav a{color:var(--accent);text-decoration:none}
+.nav a:hover{text-decoration:underline}
+.nav .off{color:var(--muted)}
 </style>
 </head>
 <body>
 <main>
+<nav class="nav"><span class="off">← 这是第一级</span><a href="matmul_coalesced.html">下一级：coalesced →</a></nav>
 <h1>Naive 访存可视化</h1>
 <p class="sub">~/code/kernels/matmul · <code>matmul_naive.cu</code>（commit 9b2fb4d 之后的版本：真正 uncoalesced）· H100 · FP32</p>
 
@@ -136,7 +142,17 @@ if (row &lt; N &amp;&amp; col &lt; N) {
 <div class="note">按单个 warp 的一次 load 计算，naive 要多取约 6.6 倍的 sector。实际差距还取决于 L1 能留住多少 A 的 sector（见上面第 3 步）。</div>
 
 <h2>4. 实测结果</h2>
-<p id="perf">新 naive 的测速正由另一个 session 进行（10 轮 ABAB 交替，N=4096），结果出来后会补进这里。对照数据（旧 naive 映射，job 221866）：naive 16×16 5.281T，naive 32×32 6.118T，coalesced 5.699T。</p>
+<p id="perf">Slurm job 221870（gcp5-h100-0-35），N=4096，10 轮 ABAB 交替（偶数轮反序），每次 = 10 次 warmup + 100 次平均。<code>--verify</code> 在 N=1024 时 -b 16 / -b 32 均 PASS。</p>
+<table>
+<tr><th>kernel</th><th>平均 GFLOPS</th><th>sd</th><th>coalesced 是它的几倍</th></tr>
+<tr><td>新 naive，16×16 block</td><td>965.3</td><td>0.17</td><td>5.90×</td></tr>
+<tr><td>新 naive，32×32 block</td><td>498.2</td><td>0.01</td><td>11.44×</td></tr>
+<tr><td>coalesced（对照）</td><td>5698.8</td><td>0.55</td><td>1×</td></tr>
+</table>
+<p>和旧 naive 相反：现在 16×16 比 32×32 <b>快 1.94 倍</b>。原因：32×32 时一个 warp 是 32 行 × 1 列，A 要碰 32 条不同的 cache line，B 1 条，一共 33；16×16 时一个 warp 是 16 行 × 2 列，A 只碰 16 条，B 1 条，一共 17。33 / 17 = 1.94，实测 1.93。</p>
+<p>ncu（pod GPU 0）显示瓶颈不在 DRAM：L2 和 DRAM 流量跟旧 naive 在同样 block 大小时<b>完全一样</b>，L1 命中率还升到 99.2%（b32）/ 97.0%（b16），因为一个 A sector 装着 8 个连续的 k，同一个 lane 接下来 7 步都会命中。真正满载的是 <b>L1 数据通路</b>：lsu wavefront 用到峰值的 98%，而 L2 只有 1.4%、DRAM 0.7%。头号 stall 是 <code>lg_throttle</code>（LSU 队列满了排不进去）。</p>
+<p>结论：在 H100 上，uncoalesced 的代价是 L1 每个 cycle 只能处理有限条 cache line（wavefront），一条 load 指令碰的行越多，排队越久；不是 HBM 带宽不够。（wavefront 计数指标本身返回 NA，"每条不同 cache line 一个 wavefront"这个模型是从比例推出来的。）</p>
+<nav class="nav bottom"><span class="off">← 这是第一级</span><a href="matmul_coalesced.html">下一级：coalesced →</a></nav>
 </main>
 <script>
 const $=id=>document.getElementById(id);
