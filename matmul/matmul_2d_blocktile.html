@@ -259,6 +259,7 @@ for (i..8) for (j..8)                                       // 写回：每人 6
 <ul>
 <li>As 和 Bs 都被合并成 <code>LDS.128</code>：每 thread 每 dotIdx 只有 4 条 smem 读，不是 16 条。As 能合并，是因为 dotIdx 循环完全展开后，<code>As[r][0..7]</code> 在 smem 里连续。Simon 在 A6000 上的 SASS 里 As 还是 32 位 LDS，我们的 build 不一样。</li>
 <li>上表"48 个 wavefront → smem 是瓶颈 → 上限约 22T"的推理<b>不成立</b>：4 条 <code>LDS.128</code> 就算每条 4 个 wavefront 也只有 16 个，和 64 条 FFMA 的 16 拍持平。22T 的"吻合"是巧合。1D 的 As 也被合并成了 <code>LDS.128</code>，这解释了同一模型为什么低估 1D。</li>
+<li><b>ncu 实测（同日，pod GPU 0）</b>：2D 每条 smem 读平均 5.00 个 wavefront、2.00 个 bank conflict；1D 是 1.67 和 ≈0。用 1D 校准可知 <code>LDS.128</code> 按半个 warp 一组处理，broadcast 也要 2 个 wavefront。拆开看：As 无冲突（2 个 wavefront），Bs 有真冲突（8 个，理想 4 个）。但 2D 的 smem stall 几乎为 0（mio_throttle 0.0001，1D 是 3.23），冲突不是瓶颈。实际驻留 warp：2D 8 个/SM（12.5%），1D 31.5 个。</li>
 <li>新嫌疑（推测，未测）：寄存器 162 个 → 每个 SM 只有 1 个 block，搬运（LDG 几百拍延迟）和计算被两个 <code>__syncthreads</code> 串起来，搬运时没有别的 block 能顶上。要用 ncu 看 occupancy 和 stall 原因才能确认。</li>
 </ul>
 

@@ -4,7 +4,7 @@
 
 源码：`matmul_2d_blocktile.cu` / `matmul_2d_blocktile.h` · H100 · FP32 · N=4096
 
-状态（2026-10-03）：三块内容都讲完了。SASS 已实测（第 5.4 节），**推翻了第 4.3–5.2 节"按源码字面算"的几个结论**：编译器把 As、Bs 都合并成了 `LDS.128`，寄存器 162 个、每 SM 只放 1 个 block。第 4.3–5.2 节保留原样作为"按源码推理"的记录，读的时候以第 5.4 节为准。ncu 还没做。
+状态（2026-10-03）：三块内容都讲完了。SASS 和 ncu 已实测（第 5.4、5.5 节），**推翻了第 4.3–5.2 节"按源码字面算"的几个结论**：编译器把 As、Bs 都合并成了 `LDS.128`，寄存器 162 个、每 SM 只放 1 个 block。第 4.3–5.2 节保留原样作为"按源码推理"的记录，读的时候以第 5.4 节为准。ncu 结论：As 无冲突，Bs 有真冲突（2 倍 wavefront）但不是瓶颈；每 SM 只有 8 个 warp，occupancy 是更明显的问题。
 
 ---
 
@@ -359,6 +359,31 @@ bank:       0   8  16  24 | 0   8  16  24  | 0  ...  | 0  ...  24
 
 **教训**：源码字面 ≠ 实际指令，别人的 SASS ≠ 我们的 SASS。分析访存之前先看自己 build 的 SASS。
 
+### 5.5 ncu 实测（2026-10-03，pod GPU 0，N=4096）
+
+来源：kernel op session，`~/reports/blocktile-sass-2026-10-03.md` 第 7 节。
+
+| 指标 | 2D | 1D |
+|---|---:|---:|
+| smem 读指令（warp 级） | 134.2M | 805.3M |
+| smem 读 wavefront / 指令 | **5.00** | 1.67 |
+| smem 读 bank conflict / 指令 | **2.00** | ≈0 |
+| 寄存器 / thread | 162 | 56 |
+| 实际驻留 warp / SM | **8.0（12.5%）** | 31.5（49%） |
+| stall：mio_throttle（smem 队列满） | 0.0001 | **3.23** |
+| stall：short_scoreboard（等 smem 数据） | 0.74 | 2.43 |
+
+- 指令数和 SASS 完全对得上：2D = 1024 block × 8 warp × 512 tile × 32；1D = 4096 × 16 × 512 × 24。
+- **`LDS.128` 按半个 warp（16 个 lane）一组处理**：用 1D 校准，1D 的 Bs 是 32 位连续读（1 个 wavefront），设 As 的 broadcast `LDS.128` 每条 x 个，(16x + 8) / 24 = 1.67 → x = 2。也就是说，一条 `LDS.128` 就算是 broadcast 也要 2 个 wavefront（每半个 warp 1 个）。这是从数据反推的模型，NVIDIA 没有完整公开。
+- **2D 拆开看**：
+  - As 的 `LDS.128`：每半个 warp 都是同一个地址（broadcast）→ 2 个 wavefront，**无冲突**。
+  - Bs 的 `LDS.128`：每半个 warp 16 个 threadCol，相邻相差 32B，跨度 512B → 每组 bank 被碰 4 次 → 每半个 warp 4 个、整条 8 个 wavefront，理想是 4 个 → **真的有冲突，耗时是理想的 2 倍**。
+  - 平均 (2 + 8) / 2 = 5 wavefront、(0 + 4) / 2 = 2 conflict，和实测完全一致。
+  - 另外：lane 16–31 读的地址和 lane 0–15 一样，但分在另一个半 warp，硬件不会合并，所以重复读了一遍。
+- **这个冲突要不要紧？目前看不要紧**：2D 的 smem 相关 stall 几乎为 0（mio_throttle 0.0001）。按 wavefront 算，每 warp 每 dotIdx 20 个 wavefront 对 64 条 FFMA（16 拍），smem 的天花板约 16/20 × 67 ≈ 54T（推测），远高于实测 22T。
+- **对比 1D**：1D 的 mio_throttle 是 3.23，说明 1D 确实被 smem 卡着。2D 把这个压力去掉了，这正是 2D 比 1D 快的原因之一。
+- **2D 更明显的问题是 occupancy**：每个 SM 只有 8 个 warp（12.5%），1D 有 31.5 个。2D 主要卡在哪个 stall（比如 `long_scoreboard` 或 `barrier`），报告里还没给出，要再看一眼 ncu 报告的 stall 分布。
+
 ### 5.3 global / L2 / HBM（跨 block 复用）
 
 **block 内部**：
@@ -532,6 +557,7 @@ A：三把工具：
 - **第一个内嵌交互图的标签写错**：写成 `Bs[d][16·tc+j]`，应为 `Bs[d][8·tc+j]`。正式页面 `matmul_2d_blocktile.html` 里是对的。
 - **我自己的上限模型不自洽**：按"标量 LDS + bank 冲突"算 2D 得 22T，和实测吻合；但同一个模型算 1D 得 14.9T，比实测 17.56T 还低。所以 2D 的吻合不能当证据，已在第 5.2 节标明。
 - **（2026-10-03 SASS 推翻）As 2-way、Bs 4-way、smem 是 2D 主要瓶颈**：这些都建立在"编译器照源码发 32 位 `LDS`"上，没先看 SASS。实际 As、Bs 都是 `LDS.128`（第 5.4 节）。我对 As 2-way 说"比较有把握"，过于自信。
+- **（2026-10-03 ncu 修正）"smem 很可能不是瓶颈"是对的，但"Bs 有没有冲突不确定"的那部分**：ncu 证实 Bs 有真冲突（每条 8 个 wavefront，理想 4 个），只是不影响速度。kernel op 一开始按"每 1/4 个 warp 一组"推测，实际是"每半个 warp 一组"。
 - **（2026-10-03 SASS 推翻）寄存器 100–128、每 SM 2 个 block**：实际 162 个、每 SM 1 个 block。第 5.3 节的 HBM 估算因此要改（结论不变）。
 - **68.7% 的出处说错了**：我说是"siboehm 在 A100 上自动调参后的数字"，实际是他的 Kernel 5 在 A6000、未调参时的结果。
 
@@ -558,8 +584,10 @@ A：三把工具：
 ### 待验证
 
 - ✅ SASS：`LDS` / `LDS.128` / `FFMA` 数量、寄存器数（2026-10-03，第 5.4 节）。
-- ⬜ ncu：1D、2D 的 smem bank conflict 数（`l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum`）和 wavefront 数，确认 `LDS.128` 实际有没有冲突；
-- ⬜ ncu：occupancy 和 stall 原因（`long_scoreboard`、`barrier`），检验"每 SM 只有 1 个 block，搬运延迟没被盖住"这个新嫌疑；
+- ✅ ncu：bank conflict 和 wavefront（第 5.5 节）：As 0、Bs 每条 4 个 conflict（2 倍 wavefront）；1D 无冲突。
+- ✅ ncu：occupancy：2D 实际 8 warp/SM（12.5%）。
+- ⬜ ncu：2D 的主要 stall 是哪个（`long_scoreboard`、`barrier`？），检验"搬运延迟没被盖住"；
+- ⬜ padding / 换布局消掉 Bs 冲突，看会不会变快（预计影响很小，未测）；
 - ⬜ ncu：`dram__bytes_read.sum`（推测约 0.6GB）和 L2 读流量（推测约 4.3GB）。
 
 ## 10. 要点 / 自测题

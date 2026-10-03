@@ -62,9 +62,9 @@
 | 来自 | 推测 | 怎么验证 | 状态 |
 |---|---|---|---|
 | 第 4 课 | 1D 的 As 读被编译器合并成 `LDS.128` | SASS | ✅ 对：16 条 LDS.128（2026-10-03） |
-| 第 5 课 | 2D 计算阶段 As 读 2-way、Bs 读 4-way bank conflict | SASS + ncu | ❌ 前提被 SASS 推翻：As、Bs 都是 LDS.128；LDS.128 有没有冲突还要 ncu |
+| 第 5 课 | 2D 计算阶段 As 读 2-way、Bs 读 4-way bank conflict | SASS + ncu | 部分对：As 无冲突（LDS.128 broadcast）；Bs 有真冲突（2 倍 wavefront），但 smem stall ≈0，不是瓶颈 |
 | 第 5 课 | 2D 用 100–128 个寄存器、每 SM 2 个 block | SASS `-res-usage` | ❌ 实际 162 个、每 SM 1 个 block |
-| 第 5 课 | 新嫌疑：每 SM 只有 1 个 block，搬运延迟没被盖住 | ncu occupancy + stall 原因 | 没做 |
+| 第 5 课 | 新嫌疑：每 SM 只有 1 个 block，搬运延迟没被盖住 | ncu occupancy + stall 原因 | occupancy ✅ 实测 8 warp/SM（12.5%）；主要 stall 是哪个还没看 |
 | 第 5 课 | HBM 只读约 0.6GB，L2 服务约 4.3GB | ncu `dram__bytes_read.sum` 和 L2 流量 | 没做 |
 | 第 5 课 | 2D 瓶颈：smem 读（我，已基本推翻）vs GMEM 指令数（worklog）vs occupancy（新嫌疑） | 上面几项一起看 | 没做 |
 
@@ -86,7 +86,7 @@
 - **2026-10-02**：
   - 第 3 课 smem tiling、第 4 课 1D blocktile（第 4 课另有一轮很长的问答）。
   - 第 5 课 2D blocktile：第一次讲得太密，又是凌晨 2 点，没读懂。之后改成一次只讲一小块：8×8 外积 → L2 / HBM 复用 → 搬运循环 → bank conflict。bank conflict 还在消化。
-- **2026-10-03**：核实第 5 课的 bank conflict。Simon 的博客没讲 2D 的 bank conflict。让 kernel op 跑了 SASS：As、Bs 都被合并成 `LDS.128`，寄存器 162 个、每 SM 1 个 block。按源码字面的 2-way / 4-way 分析不适用于实际指令；新嫌疑是 occupancy。
+- **2026-10-03**：核实第 5 课的 bank conflict。Simon 的博客没讲 2D 的 bank conflict。让 kernel op 跑了 SASS：As、Bs 都被合并成 `LDS.128`，寄存器 162 个、每 SM 1 个 block。按源码字面的 2-way / 4-way 分析不适用于实际指令；新嫌疑是 occupancy。同日 ncu：As 无冲突、Bs 有真冲突但 smem stall ≈0；2D 只有 8 warp/SM。学到 `LDS.128` 按半个 warp 一组处理。
 
 ## 学习方法（对我有用的）
 
