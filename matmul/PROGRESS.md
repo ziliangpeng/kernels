@@ -29,7 +29,7 @@
 | 3 | smem tiling | `matmul_smem.cu` | [html](matmul_smem.html) | [notes](matmul_smem.notes.md) | ✅ | 2026-10-02 | 8.99 | block 共用 smem tile；两个 `__syncthreads` 防 RAW / WAR；瓶颈转到 smem |
 | 4 | 1D blocktile | `matmul_1d_blocktile.cu` | [html](matmul_1d_blocktile.html) | [notes](matmul_1d_blocktile.notes.md) | ✅ | 2026-10-02 | 17.56 | register tiling：B 读一次用 8 次；寄存器是 thread 私有的 |
 | 5 | 2D blocktile | `matmul_2d_blocktile.cu` | [html](matmul_2d_blocktile.html) | [notes](matmul_2d_blocktile.notes.md) | ✅ 阶段一 | 2026-10-02 ~ 10-03 | 22.21 | 外积：A、B 都进寄存器；SASS 显示编译器把 smem 读合并成 LDS.128，源码字面 ≠ 实际指令 |
-| 6 | vectorized | `matmul_vectorized.cu` | — | — | ⬜ | | 32.73 | |
+| 6 | vectorized | `matmul_vectorized.cu` | — | [notes](matmul_vectorized.notes.md) | 🟡 进行中 | 2026-10-03 ~ | 32.73 | |
 | 10 | warptile | `matmul_warptile.cu` | — | — | ⬜ | | 28.13 | |
 | 12 | warptile + 双缓冲 | `matmul_warptile_dbuf.cu` | — | — | ⬜ | | 37.60（调参） | |
 | 9a | WMMA（第一个 Tensor Core） | `matmul_wmma.cu` | — | — | ⬜ | | FP16 27.55 | |
@@ -220,6 +220,7 @@
 - **2026-10-02**：
   - 第 3 课 smem tiling、第 4 课 1D blocktile（第 4 课另有一轮很长的问答）。
   - 第 5 课 2D blocktile：第一次讲得太密，又是凌晨 2 点，没读懂。之后改成一次只讲一小块：8×8 外积 → L2 / HBM 复用 → 搬运循环 → bank conflict。bank conflict 还在消化。
+- **2026-10-03（第 6 课开始）**：讲了 float4 读 A；讨论为什么转置 As、2D 没转置为什么也有 `LDS.128`（沿 dotIdx 方向连续）。确认 22.21 → 32.71T 是同 session 同节点的数；LDG 只占指令约 1.4%，省指令解释不了 +47%。最大嫌疑：寄存器 / occupancy（推测，待 SASS）。
 - **2026-10-03**：核实第 5 课的 bank conflict。Simon 的博客没讲 2D 的 bank conflict。让 kernel op 跑了 SASS：As、Bs 都被合并成 `LDS.128`，寄存器 162 个、每 SM 1 个 block。按源码字面的 2-way / 4-way 分析不适用于实际指令；新嫌疑是 occupancy。同日 ncu：As 无冲突、Bs 有真冲突但 smem stall ≈0；2D 只有 8 warp/SM。学到 `LDS.128` 按半个 warp 一组处理。第 5 课阶段一收尾，阶段二清单记在笔记里。
 
 ## 学习方法（对我有用的）
