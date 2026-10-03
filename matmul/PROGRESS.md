@@ -20,7 +20,7 @@
 
 ## 进度表
 
-状态：✅ 学完 · 🟡 讲完、还在消化 · ⬜ 没开始
+状态：✅ 学完（"阶段一" = 这一轮够深了，以后还会回来深入）· 🟡 讲完、还在消化 · ⬜ 没开始
 
 | # | 课 | kernel | 页面 | 笔记 | 状态 | 日期 | FP32 TFLOPS（N=4096） | 一句话收获 |
 |---|---|---|---|---|---|---|---:|---|
@@ -28,7 +28,7 @@
 | 2 | coalesced | `matmul_coalesced.cu` | [html](matmul_coalesced.html) | [notes](matmul_coalesced.notes.md) | ✅ | 2026-10-01 | 5.73 | coalescing 看 32 个 lane 的地址；访存相同不等于性能相同（codegen 差 ~7%） |
 | 3 | smem tiling | `matmul_smem.cu` | [html](matmul_smem.html) | [notes](matmul_smem.notes.md) | ✅ | 2026-10-02 | 8.99 | block 共用 smem tile；两个 `__syncthreads` 防 RAW / WAR；瓶颈转到 smem |
 | 4 | 1D blocktile | `matmul_1d_blocktile.cu` | [html](matmul_1d_blocktile.html) | [notes](matmul_1d_blocktile.notes.md) | ✅ | 2026-10-02 | 17.56 | register tiling：B 读一次用 8 次；寄存器是 thread 私有的 |
-| 5 | 2D blocktile | `matmul_2d_blocktile.cu` | [html](matmul_2d_blocktile.html) | [notes](matmul_2d_blocktile.notes.md) | 🟡 | 2026-10-02 | 22.21 | 外积：A、B 都进寄存器；SASS 显示编译器把 smem 读合并成 LDS.128，源码字面 ≠ 实际指令 |
+| 5 | 2D blocktile | `matmul_2d_blocktile.cu` | [html](matmul_2d_blocktile.html) | [notes](matmul_2d_blocktile.notes.md) | ✅ 阶段一 | 2026-10-02 ~ 10-03 | 22.21 | 外积：A、B 都进寄存器；SASS 显示编译器把 smem 读合并成 LDS.128，源码字面 ≠ 实际指令 |
 | 6 | vectorized | `matmul_vectorized.cu` | — | — | ⬜ | | 32.73 | |
 | 10 | warptile | `matmul_warptile.cu` | — | — | ⬜ | | 28.13 | |
 | 12 | warptile + 双缓冲 | `matmul_warptile_dbuf.cu` | — | — | ⬜ | | 37.60（调参） | |
@@ -86,7 +86,7 @@
 - **2026-10-02**：
   - 第 3 课 smem tiling、第 4 课 1D blocktile（第 4 课另有一轮很长的问答）。
   - 第 5 课 2D blocktile：第一次讲得太密，又是凌晨 2 点，没读懂。之后改成一次只讲一小块：8×8 外积 → L2 / HBM 复用 → 搬运循环 → bank conflict。bank conflict 还在消化。
-- **2026-10-03**：核实第 5 课的 bank conflict。Simon 的博客没讲 2D 的 bank conflict。让 kernel op 跑了 SASS：As、Bs 都被合并成 `LDS.128`，寄存器 162 个、每 SM 1 个 block。按源码字面的 2-way / 4-way 分析不适用于实际指令；新嫌疑是 occupancy。同日 ncu：As 无冲突、Bs 有真冲突但 smem stall ≈0；2D 只有 8 warp/SM。学到 `LDS.128` 按半个 warp 一组处理。
+- **2026-10-03**：核实第 5 课的 bank conflict。Simon 的博客没讲 2D 的 bank conflict。让 kernel op 跑了 SASS：As、Bs 都被合并成 `LDS.128`，寄存器 162 个、每 SM 1 个 block。按源码字面的 2-way / 4-way 分析不适用于实际指令；新嫌疑是 occupancy。同日 ncu：As 无冲突、Bs 有真冲突但 smem stall ≈0；2D 只有 8 warp/SM。学到 `LDS.128` 按半个 warp 一组处理。第 5 课阶段一收尾，阶段二清单记在笔记里。
 
 ## 学习方法（对我有用的）
 
@@ -97,6 +97,5 @@
 
 ## 下一步
 
-1. 消化第 5 课：bank 的数法（笔记第 4.3 节）+ SASS 推翻了什么（笔记第 5.4 节、自测 8）。
-2. 决定要不要让 kernel op 跑 ncu（occupancy、stall 原因、LDS.128 的冲突）。
-3. 第 6 课 vectorized：转置 As + `float4`，看它怎么修第 5 课的 bank conflict（22T → 32.7T）。
+1. 第 6 课 vectorized：先看 SASS。我们的 build 在第 5 课已经把 As 编成 `LDS.128`，所以 22T → 32.7T 的提升从哪来要实测（推测：global 读改 `float4`，或寄存器 / occupancy 变化）。
+2. 第 5 课阶段二（以后）：清单见 `matmul_2d_blocktile.notes.md` 第 7 节末尾。
