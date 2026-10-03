@@ -2,7 +2,7 @@
 
 目标：从 naive kernel 一路学到 `wgmma_v9_x`（约 cuBLAS 的 96%），真正理解每一步为什么快。这是长期计划，不赶进度。
 
-最后更新：2026-10-02
+最后更新：2026-10-03
 
 ---
 
@@ -28,7 +28,7 @@
 | 2 | coalesced | `matmul_coalesced.cu` | [html](matmul_coalesced.html) | [notes](matmul_coalesced.notes.md) | ✅ | 2026-10-01 | 5.73 | coalescing 看 32 个 lane 的地址；访存相同不等于性能相同（codegen 差 ~7%） |
 | 3 | smem tiling | `matmul_smem.cu` | [html](matmul_smem.html) | [notes](matmul_smem.notes.md) | ✅ | 2026-10-02 | 8.99 | block 共用 smem tile；两个 `__syncthreads` 防 RAW / WAR；瓶颈转到 smem |
 | 4 | 1D blocktile | `matmul_1d_blocktile.cu` | [html](matmul_1d_blocktile.html) | [notes](matmul_1d_blocktile.notes.md) | ✅ | 2026-10-02 | 17.56 | register tiling：B 读一次用 8 次；寄存器是 thread 私有的 |
-| 5 | 2D blocktile | `matmul_2d_blocktile.cu` | [html](matmul_2d_blocktile.html) | [notes](matmul_2d_blocktile.notes.md) | 🟡 | 2026-10-02 | 22.21 | 外积：A、B 都进寄存器；代价是 warp 内地址变稀疏 → bank conflict |
+| 5 | 2D blocktile | `matmul_2d_blocktile.cu` | [html](matmul_2d_blocktile.html) | [notes](matmul_2d_blocktile.notes.md) | 🟡 | 2026-10-02 | 22.21 | 外积：A、B 都进寄存器；SASS 显示编译器把 smem 读合并成 LDS.128，源码字面 ≠ 实际指令 |
 | 6 | vectorized | `matmul_vectorized.cu` | — | — | ⬜ | | 32.73 | |
 | 10 | warptile | `matmul_warptile.cu` | — | — | ⬜ | | 28.13 | |
 | 12 | warptile + 双缓冲 | `matmul_warptile_dbuf.cu` | — | — | ⬜ | | 37.60（调参） | |
@@ -54,17 +54,19 @@
 - [x] 跨 block 复用、L2 吸收重复读、block tile 大小和 global 流量的关系（第 5 课）
 - [ ] smem bank conflict 的分析：已讲，还在消化（第 5 课）
 - [ ] wavefront 计数 vs 指令计数；用它估上限：已讲，还在消化（第 5 课）
-- [ ] 自己动手：改参数、看 SASS、跑 ncu、验证推测（还没亲手做过）
+- [x] 第一次用 SASS 检验推测：发现编译器把 As/Bs 合并成 `LDS.128`，推翻了按源码字面的 bank conflict 分析（第 5 课，2026-10-03）
+- [ ] 自己动手：改参数、看 SASS、跑 ncu、验证推测（SASS 是 kernel op 代跑的，还没亲手做过）
 
 ## 待验证的推测（需要交给 ops session 实测）
 
 | 来自 | 推测 | 怎么验证 | 状态 |
 |---|---|---|---|
-| 第 4 课 | 1D 的 As 读被编译器合并成 `LDS.128` | SASS 数 LDS / LDS.128 | 没做 |
-| 第 5 课 | 2D 计算阶段 As 读 2-way、Bs 读 4-way bank conflict | ncu bank conflict 指标 + SASS | 没做，还没决定 |
-| 第 5 课 | 2D 用 100–128 个寄存器、每 SM 2 个 block | `-Xptxas -v` | 没做 |
-| 第 5 课 | HBM 只读约 0.3GB，L2 服务约 4.3GB | ncu `dram__bytes_read.sum` 和 L2 流量 | 没做 |
-| 第 5 课 | 2D 瓶颈是 smem 读（我）vs GMEM 指令数（worklog） | 上面几项一起看 | 没做 |
+| 第 4 课 | 1D 的 As 读被编译器合并成 `LDS.128` | SASS | ✅ 对：16 条 LDS.128（2026-10-03） |
+| 第 5 课 | 2D 计算阶段 As 读 2-way、Bs 读 4-way bank conflict | SASS + ncu | ❌ 前提被 SASS 推翻：As、Bs 都是 LDS.128；LDS.128 有没有冲突还要 ncu |
+| 第 5 课 | 2D 用 100–128 个寄存器、每 SM 2 个 block | SASS `-res-usage` | ❌ 实际 162 个、每 SM 1 个 block |
+| 第 5 课 | 新嫌疑：每 SM 只有 1 个 block，搬运延迟没被盖住 | ncu occupancy + stall 原因 | 没做 |
+| 第 5 课 | HBM 只读约 0.6GB，L2 服务约 4.3GB | ncu `dram__bytes_read.sum` 和 L2 流量 | 没做 |
+| 第 5 课 | 2D 瓶颈：smem 读（我，已基本推翻）vs GMEM 指令数（worklog）vs occupancy（新嫌疑） | 上面几项一起看 | 没做 |
 
 ## 仓库文档里发现的问题
 
@@ -76,7 +78,7 @@
 | 2 coalesced | 见笔记 | `matmul_coalesced.notes.md` 第 8 节 |
 | 3 smem | 见笔记 | `matmul_smem.notes.md` |
 | 4 1D | 6 | `matmul_1d_blocktile.notes.md` 第 10 节 |
-| 5 2D | 10 | `matmul_2d_blocktile.notes.md` 第 9 节 |
+| 5 2D | 11 | `matmul_2d_blocktile.notes.md` 第 9 节 |
 
 ## 学习日志
 
@@ -84,6 +86,7 @@
 - **2026-10-02**：
   - 第 3 课 smem tiling、第 4 课 1D blocktile（第 4 课另有一轮很长的问答）。
   - 第 5 课 2D blocktile：第一次讲得太密，又是凌晨 2 点，没读懂。之后改成一次只讲一小块：8×8 外积 → L2 / HBM 复用 → 搬运循环 → bank conflict。bank conflict 还在消化。
+- **2026-10-03**：核实第 5 课的 bank conflict。Simon 的博客没讲 2D 的 bank conflict。让 kernel op 跑了 SASS：As、Bs 都被合并成 `LDS.128`，寄存器 162 个、每 SM 1 个 block。按源码字面的 2-way / 4-way 分析不适用于实际指令；新嫌疑是 occupancy。
 
 ## 学习方法（对我有用的）
 
@@ -94,6 +97,6 @@
 
 ## 下一步
 
-1. 消化第 5 课 bank conflict：用 `matmul_2d_blocktile.html` 第 5 节切"整个 warp"，和 1D 页面对比；做笔记里的自测 4–6。
-2. 决定要不要让 ops session 跑上面的待验证测量。
+1. 消化第 5 课：bank 的数法（笔记第 4.3 节）+ SASS 推翻了什么（笔记第 5.4 节、自测 8）。
+2. 决定要不要让 kernel op 跑 ncu（occupancy、stall 原因、LDS.128 的冲突）。
 3. 第 6 课 vectorized：转置 As + `float4`，看它怎么修第 5 课的 bank conflict（22T → 32.7T）。

@@ -4,7 +4,7 @@
 
 源码：`matmul_2d_blocktile.cu` / `matmul_2d_blocktile.h` · H100 · FP32 · N=4096
 
-状态（2026-10-02）：三块内容都讲完了；bank conflict 那块还在消化。ncu / SASS 验证还没做，见第 9 节末尾的"待验证"。
+状态（2026-10-03）：三块内容都讲完了。SASS 已实测（第 5.4 节），**推翻了第 4.3–5.2 节"按源码字面算"的几个结论**：编译器把 As、Bs 都合并成了 `LDS.128`，寄存器 162 个、每 SM 只放 1 个 block。第 4.3–5.2 节保留原样作为"按源码推理"的记录，读的时候以第 5.4 节为准。ncu 还没做。
 
 ---
 
@@ -63,8 +63,8 @@
 | | 值 |
 |---|---|
 | smem | As[128][8] + Bs[8][128] = (1024 + 1024) × 4B = 8KB，没有 padding |
-| 寄存器（源码层） | 64 个累加器 + 8 个 regA + 8 个 regB = 80 个 float，再加地址和下标。实际多少没测（`ptxas -v`）；推测 100–128 个 |
-| occupancy（推测） | 如果 ≤128 个寄存器：256 × 128 = 32K，每个 SM（64K）放 2 个 block = 16 个 warp。限制来自寄存器，不是 smem |
+| 寄存器 | 源码层 64 + 8 + 8 = 80 个 float；**SASS 实测 162 个、无 spill**（我原来推测 100–128，错了） |
+| occupancy | 162 × 256 ≈ 41.5K > 32K → **每个 SM 只放得下 1 个 block = 8 个 warp**（按寄存器算出来的，没用 ncu 测）。我原来推测 2 个，错了 |
 
 ## 2. 基础概念
 
@@ -269,7 +269,9 @@ C[(threadRow * TM_2D + i) * N + threadCol * TN_2D + j] = threadResults[i][j];
 
 每个值只搬一次，复用发生在计算阶段。A 一次请求碰 4 条 line，但每个 sector 都用满了，不算浪费。（worklog 说"warp 读 A 的同一行"，是错的，见第 9 节。）
 
-### 4.3 warp 视角：计算阶段（问题在这里）
+### 4.3 warp 视角：计算阶段（按源码字面推理；已被 SASS 部分推翻，见第 5.4 节）
+
+> 下面的分析假设每个 `As[...]`、`Bs[...]` 都是一条 32 位 `LDS`。SASS 显示实际是 `LDS.128`，所以 2-way / 4-way 的结论**在我们的 build 里不成立**。保留下来，是因为"按 32 位读取怎么数 bank"这套方法本身是对的，下一课也会用到。
 
 **读 A：`As[threadRow*8 + i][dotIdx]`**，As 是 [128][8]，word 地址 = 行 × 8 + 列。取 i = 0、dotIdx = 0：
 
@@ -328,6 +330,35 @@ bank:       0   8  16  24 | 0   8  16  24  | 0  ...  | 0  ...  24
 - **但不可靠**：同一个模型套在 1D 上得 2/9 × 67 ≈ 14.9T，比 1D 实测 17.56T 还低。说明编译器至少在 1D 里做了源码以外的事，比如把 As 合并成 LDS.128。2D 的"吻合"可能是巧合。方向（smem 读是瓶颈）比较有把握，数字要靠 SASS / ncu 定。
 - 另一种说法：`worklog.md` 认为 2D 的主要瓶颈是 "GMEM instruction count"，同样没测过。两种说法都待验证。
 
+### 5.4 SASS 实测（2026-10-03，推翻了上面的几个结论）
+
+来源：kernel op session，报告 `~/reports/blocktile-sass-2026-10-03.md`。二进制和 job 221866/221870 是同一个（`build_matmul.sh`，nvcc `-O3 --use_fast_math`，sm_90）。
+
+**每个 thread、每轮 K-tile（8 个 dotIdx）**：
+
+| | LDG | STS | BAR | LDS（32 位） | LDS.128 | FFMA |
+|---|---:|---:|---:|---:|---:|---:|
+| 2D | 8 | 8 | 2 | 0 | **32** | 512 |
+| 1D | 2 | 2 | 2 | 8 | 16 | 64 |
+
+- **2D 的 As**：16 条 `LDS.128`，**不是** 64 条 32 位 `LDS`。dotIdx 循环完全展开后，`As[r][0..7]` 这一行在 smem 里是连续的 8 个 float，编译器一条 `LDS.128` 拿 4 个 dotIdx 的值（`As[r][0..3]`），每行 2 条 × 8 行 = 16 条。Simon 在 A6000 上的 SASS 里 As 还是 32 位 `LDS`，我们的 H100 build 不一样，原因没查。
+- **2D 的 Bs**：16 条 `LDS.128`（每个 dotIdx 2 条，各拿连续 4 个），和 Simon 的一样。
+- **1D 的 As** 也被合并成了 16 条 `LDS.128`。这解释了为什么我的模型套在 1D 上会低估（第 5.2 节）。
+- **寄存器 162 个**、无 spill → 每个 SM 只放 1 个 block。
+
+**这推翻了什么**
+
+| 原来的说法 | 实测后 |
+|---|---|
+| 每 thread 每 dotIdx 16 条 smem 读 | 4 条 `LDS.128`（2 As + 2 Bs） |
+| As 读 2-way、Bs 读 4-way（按 32 位） | 不适用。`LDS.128` 的 bank 规则 NVIDIA 没完整公开。kernel op 按"quarter-warp 分组处理"推测：As 是 broadcast，无冲突；Bs 可能 2-way。**未用 ncu 验证** |
+| 每 warp 每 dotIdx 48 个 wavefront → smem 是瓶颈 → 上限约 22T | 4 条 `LDS.128`，就算每条要 4 个 wavefront 也只有 16 个，和 64 条 FFMA 的 16 拍持平。**smem 很可能不是主要瓶颈**，"22T 吻合"是巧合 |
+| 寄存器 100–128，每 SM 2 个 block | 162 个，每 SM 1 个 block（8 个 warp，每个调度器只有 2 个 warp） |
+
+**新的嫌疑（推测，未测）**：每个 SM 只有 1 个 block，而这个 block 每轮都是"搬运（LDG，几百拍延迟）→ sync → 计算 → sync"串行进行。搬运等数据时，SM 上没有别的 block 能顶上来计算。要验证需要 ncu 看 occupancy 和 stall 原因（`long_scoreboard`、`barrier`）。这正是后面双缓冲（rung 12）要解决的问题。
+
+**教训**：源码字面 ≠ 实际指令，别人的 SASS ≠ 我们的 SASS。分析访存之前先看自己 build 的 SASS。
+
 ### 5.3 global / L2 / HBM（跨 block 复用）
 
 **block 内部**：
@@ -346,7 +377,7 @@ A + B 本身   = 64MB + 64MB = 128MB
 
 **HBM 实际流量（推测）**：
 
-- blockIdx.x 变得最快，所以同一时刻在跑的约 264 个 block（132 SM × 推测 2 个）≈ C 的前 8 行多一点；
+- blockIdx.x 变得最快，所以同一时刻在跑的约 264 个 block（132 SM × 推测 2 个）≈ C 的前 8 行多一点；（2026-10-03 更正：SASS 显示每 SM 只能放 1 个 block，所以同时只有约 132 个 block，约 8 波；B 的 HBM 流量变成约 64MB × 8 ≈ 0.5GB，合计约 0.6GB、约 3% 的时间，结论"HBM 不是瓶颈"不变）
 - 它们大致齐步沿 K 走，在任一 K 步合起来只碰 A 的 9 片 + B 的 32 片 ≈ 164KB，L2（50MB）轻松装下；
 - 1024 / 264 ≈ 4 波：A 每条只在一波里用（共 64MB），B 每波要整个（64MB × 4）→ HBM ≈ 0.3GB。
 
@@ -462,13 +493,47 @@ A：**没有。仓库里从没用 ncu 测过 2D 的 bank conflict。**
 
 **Q：1D 有没有 bank conflict？为什么只有 2D 有？**
 
-A：1D 没有。原因是 warp 形状，也就是相邻 lane 的地址差多少（第 4.4 节）。1D 相邻 lane 差 0（A，broadcast）或 1（B，连续）；2D 差 64（A）和 8（B）。
+A：1D 没有。原因是 warp 形状，也就是相邻 lane 的地址差多少（第 4.4 节）。1D 相邻 lane 差 0（A，broadcast）或 1（B，连续）；2D 差 64（A）和 8（B）。（这是按 32 位读取算的；2026-10-03 SASS 显示 2D 实际是 `LDS.128`，见第 5.4 节。）
+
+### 2026-10-03 第三轮（核实 bank conflict）
+
+**Q：Simon 的博客有没有讲这个 kernel 的 bank conflict？**
+
+A：没有。读了原文（siboehm.com/articles/22/CUDA-MMM）：
+
+- Kernel 5（2D）一节完全没提 bank conflict。他看到的现象是"指令大多是 load、stall 很多"。
+- 他在 Kernel 6 转置 As，是为了让 As 也能用 `LDS.128`，不是为了消除冲突。
+- Kernel 6 之后他提到"遇到了 smem bank conflict"，专门写了 Kernel 7、8 去消除。冲突是消掉了，但整体反而更慢，所以没写进正文。
+- 全文没有 ncu 的 bank conflict 数据。
+- 他贴的 Kernel 5 SASS（A6000）：Bs 是 `LDS.128`，As 是 32 位 `LDS`。
+- 68.7% 是他的 Kernel 5 在 **A6000、未调参** 时的结果（15.97T）；Kernel 6 是 18.24T（78.4%）。
+
+**Q：你确定有 bank conflict 吗？**
+
+A：当时的回答：As 2-way 理论上比较有把握但没测过；Bs 4-way 不确定（Bs 可能是 `LDS.128`）；冲突是不是主因也不确定。
+
+后来 SASS 证明，连 As 也是 `LDS.128`，"As 2-way" 在我们的 build 里也不成立（第 5.4 节）。我对 As 的"比较有把握"过于自信了，因为它依赖"编译器照源码字面发 32 位读"这个没验证的前提。
+
+**Q：怎么才能确定？**
+
+A：三把工具：
+
+| 工具 | 回答什么 |
+|---|---|
+| SASS（`cuobjdump -sass`） | 编译器实际发了什么指令，不需要 GPU |
+| ncu | 硬件实际用了多少 wavefront、有没有冲突 |
+| padding 对照实验（`As[128][9]`） | 冲突要不要紧（消掉后会不会变快） |
+
+做法：先写预测，再测，看哪个假设被推翻。用 1D 当对照组，校准指标。你选了先做 SASS，交给 kernel op session（结果见第 5.4 节）。
 
 ## 8. 我说错过 / 纠正过的地方
 
 - **第一轮讲得太密**：一条回复塞了整课，还在凌晨 2 点。之后改成分块讲。这不是知识错误，但影响学习，记下来以后避免。
 - **第一个内嵌交互图的标签写错**：写成 `Bs[d][16·tc+j]`，应为 `Bs[d][8·tc+j]`。正式页面 `matmul_2d_blocktile.html` 里是对的。
 - **我自己的上限模型不自洽**：按"标量 LDS + bank 冲突"算 2D 得 22T，和实测吻合；但同一个模型算 1D 得 14.9T，比实测 17.56T 还低。所以 2D 的吻合不能当证据，已在第 5.2 节标明。
+- **（2026-10-03 SASS 推翻）As 2-way、Bs 4-way、smem 是 2D 主要瓶颈**：这些都建立在"编译器照源码发 32 位 `LDS`"上，没先看 SASS。实际 As、Bs 都是 `LDS.128`（第 5.4 节）。我对 As 2-way 说"比较有把握"，过于自信。
+- **（2026-10-03 SASS 推翻）寄存器 100–128、每 SM 2 个 block**：实际 162 个、每 SM 1 个 block。第 5.3 节的 HBM 估算因此要改（结论不变）。
+- **68.7% 的出处说错了**：我说是"siboehm 在 A100 上自动调参后的数字"，实际是他的 Kernel 5 在 A6000、未调参时的结果。
 
 ### 学习时理解偏、已纠正的地方
 
@@ -478,23 +543,24 @@ A：1D 没有。原因是 warp 形状，也就是相邻 lane 的地址差多少�
 
 ## 9. 仓库文档里的问题（未修改）
 
-- `matmul_2d_blocktile.h:22`："Expected ~68.7% of cuBLAS (1.9x over 1D)" 是 siboehm 在 A100 上自动调参后的数字；本机实测 42.8%、1.26×。
+- `matmul_2d_blocktile.h:22`："Expected ~68.7% of cuBLAS (1.9x over 1D)" 是 siboehm 的 Kernel 5 在 A6000（未调参）上的数字；本机实测 42.8%、1.26×。
+- `worklog.md` 2D 自动调参一节把 68.7% 称作 "Simon's autotuned A100"，GPU 和"调参"都不对（原文是 A6000、未调参的 Kernel 5）。
 - `RESULTS.md:82`：说 `As[BM][BK+1]` padding "built INTO 2D/vectorized"。实际 `matmul_2d_blocktile*.cu` 和 `matmul_vectorized.cu` 都没有 padding，只有 `matmul_vectorized_auto.cu:33` 有。
 - `worklog.md` Step 5 "Why the load phase…"：说搬 A 时 "32 threads of a warp all read the same row… coalesced 128B"。BK = 8 时一个 warp 读的是 4 行 × 8 个 float，只有 B 是同一行。
 - `worklog.md` Step 5："16 SMEM reads → 64 madds" 只数指令、没算冲突；"total reuse factor = 8 × 8 = 64" 混了概念（每个值复用 8 次，64 是 FMA 数）；"4× 1D" 实际是 4.00 / 0.89 ≈ 4.5×。
 - `worklog.md` Step 5：说自动调参类 "see matmul_2d_blocktile.cu"，实际在 `matmul_2d_blocktile_auto.cu`。
 - `worklog.md` 自动调参 Lesson 2：用 "likely spilling" 解释 TM/TN 不对称，没验证。另一种推测：TN = 16 时一个 warp 跨 4 个 threadRow，As 读变成 4-way 冲突。
-- `worklog.md:676-690`：只分析了 A 的 2-way，没提 B 的 4-way；说 2D 的主要瓶颈是 "GMEM instruction count"，没测过。
+- `worklog.md:676-690`：说 2D 的 A 读是 2-way 冲突。这是按 32 位读取推理的；我们 build 的 SASS 里 As 是 `LDS.128`（broadcast），这个结论不适用。还说 2D 的主要瓶颈是 "GMEM instruction count"，没测过。
 - `autotune.md:521-534`：padding 前后对比用了不同节点（共享 `-16` vs 独占 `-27`），提升幅度和节点差异混在一起；"winner is register/compute-bound" 也没测过。
 - `docs/ncu-profiling-2026-05-30.md`：抓了 2D kernel（launch 4）但表里没有 2D 列；MFU 分母用的是 TF32 峰值 495T，不是 FP32 的约 67T。
 - `matmul_2d_blocktile_tuned.cu:128,131`：BK = 24 的配置不满足 `NUM_THREADS % BK == 0`，会写出 smem 边界（已知问题）。
 
-### 待验证（交给 ops session，还没决定是否做）
+### 待验证
 
-- ncu：1D、2D 的 smem bank conflict 数（`l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum`）和 wavefront 数；
-- SASS：1D、2D 里 `LDS` / `LDS.128` / `FFMA` 的数量；
-- `-Xptxas -v`：2D 实际用的寄存器数、有无 spill；
-- ncu：`dram__bytes_read.sum`（推测约 0.3GB）和 L2 读流量（推测约 4.3GB）。
+- ✅ SASS：`LDS` / `LDS.128` / `FFMA` 数量、寄存器数（2026-10-03，第 5.4 节）。
+- ⬜ ncu：1D、2D 的 smem bank conflict 数（`l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum`）和 wavefront 数，确认 `LDS.128` 实际有没有冲突；
+- ⬜ ncu：occupancy 和 stall 原因（`long_scoreboard`、`barrier`），检验"每 SM 只有 1 个 block，搬运延迟没被盖住"这个新嫌疑；
+- ⬜ ncu：`dram__bytes_read.sum`（推测约 0.6GB）和 L2 读流量（推测约 4.3GB）。
 
 ## 10. 要点 / 自测题
 
@@ -502,7 +568,8 @@ A：1D 没有。原因是 warp 形状，也就是相邻 lane 的地址差多少�
 - 一个 thread 算 8×8；一个 warp 是 C 里 16 行 × 128 列的一条；一个 block 是 8 条叠成 128×128。
 - 64 个部分和一直在寄存器里，最后一次性写回。
 - block 内部流式处理，每个元素只从 global 读一次；跨 block 的重复（每字节约 32 次）由 L2 吸收，HBM 不是瓶颈（推测）。
-- 搬运阶段是干净的；问题在计算阶段的 smem 读：A 2-way、B 4-way（理论）。
+- 搬运阶段是干净的。计算阶段按源码字面算会有 bank conflict（A 2-way、B 4-way），但 SASS 显示编译器把读取合并成了 `LDS.128`，每 thread 每 dotIdx 只有 4 条 smem 读。smem 很可能不是主要瓶颈；新嫌疑是寄存器 162 个 → 每 SM 只有 1 个 block（推测）。
+- 先看自己 build 的 SASS，再分析访存：源码字面 ≠ 实际指令，别人的 SASS ≠ 我们的 SASS。
 - 判断 bank 冲突：同一条指令里，相邻 lane 的地址差几个 word。差 0 或 1 没问题，差 8、64 会撞。
 - "读几次"不等于"花几拍"：要数 wavefront，不能只数指令。
 - 同一条原则用了第三次：HBM → smem（第 3 课）、smem → 寄存器只复用 B（第 4 课）、A 和 B 都复用（本课）。
@@ -528,7 +595,7 @@ warp 3 = tid 96..127 → threadRow 6、7 → C 块第 48..63 行，全部 128 �
 word 地址 = dotIdx × 128 + threadRow × 8 + i：threadRow 0 → word 0（bank 0），threadRow 1 → word 8（bank 8）。2 个不同地址在 2 个不同 bank，各自 broadcast 给 16 个 lane → 无冲突，1 个 wavefront（原来是 2-way）。这就是第 6 课转置 As 的原因。
 </details>
 
-<details><summary>自测 5：autotune 冠军 BM = BN = 128、BK = 16、TM = 16、TN = 8（128 thread）。一个 warp 里 threadRow 有几种？A 读几-way？每 dotIdx 的 FFMA / wavefront 是多少，比 (8,8) 好还是差？</summary>
+<details><summary>自测 5（按 32 位读取的假设）：autotune 冠军 BM = BN = 128、BK = 16、TM = 16、TN = 8（128 thread）。一个 warp 里 threadRow 有几种？A 读几-way？每 dotIdx 的 FFMA / wavefront 是多少，比 (8,8) 好还是差？</summary>
 
 threadCol = tid % (128/8) = tid % 16，threadRow = tid / 16 → warp 里 2 种 threadRow。
 
@@ -537,7 +604,7 @@ As 是 [128][16]，地址 = (16 × threadRow + i) × 16 + d → 两组相差 256
 每 dotIdx：FFMA 16 × 8 = 128 条；wavefront = 16 条 A 读 × 2 + 8 条 B 读 × 4 = 64 → 0.5 wavefront / FFMA，比 (8,8) 的 0.75 好。这和它更快一致（推测，没测）。
 </details>
 
-<details><summary>自测 6：为什么 1D 没有 bank conflict，2D 有？</summary>
+<details><summary>自测 6（按 32 位读取的假设）：为什么 1D 没有 bank conflict，2D 有？</summary>
 
 1D 的 warp 里 threadRow 全相同（A 同地址 broadcast）、threadCol 连续（B 相邻差 1 个 word）。2D 每个 thread 拿 8×8，warp 里有 2 种 threadRow（A 两组相差 64 word → 同 bank），每人连续 8 个（B 相邻差 8 word → 只用 4 个 bank）。
 </details>
@@ -546,3 +613,9 @@ As 是 [128][16]，地址 = (16 × threadRow + i) × 16 + d → 两组相差 256
 
 N³ × 4B × (1/BM + 1/BN) = 4096³ × 4 × (2/128) ≈ 4.3GB。同时在跑的约 264 个 block 大致齐步沿 K 走，当前工作集只有约 164KB，每片从 HBM 来一次后被很多 block 从 L2 读走，推测 HBM 只约 0.3GB。
 </details>
+
+<details><summary>自测 8：为什么编译器能把 <code>As[threadRow*8 + i][dotIdx]</code> 合并成 <code>LDS.128</code>？源码里一个 dotIdx 内的 8 个 As 明明不连续。</summary>
+
+dotIdx 循环被完全展开了。展开后，同一行 r 在 dotIdx 0..7 上的 `As[r][0..7]` 是 smem 里连续的 8 个 float。编译器把读取顺序重排：一条 `LDS.128` 一次拿 `As[r][0..3]`，供 dotIdx 0–3 使用。每行 2 条 × 8 行 = 16 条。代价是这些值要提前放进寄存器，这也是寄存器用到 162 个的原因之一（推测）。
+</details>
+

@@ -130,7 +130,7 @@ canvas{display:block;max-width:100%;height:auto;margin:8px 0}
 <tr><td><code>TM × TN</code></td><td>8 × 8</td><td>每个 thread 算 64 个输出</td></tr>
 <tr><td>thread 数</td><td>(128/8) × (128/8) = 256</td><td>排成 16 × 16 的 thread 网格</td></tr>
 <tr><td>smem</td><td>(1024 + 1024) × 4B = 8KB</td><td>As[128][8] + Bs[8][128]，没有 padding</td></tr>
-<tr><td>寄存器（源码层）</td><td>64 + 8 + 8 = 80 个 float</td><td>GPU 寄存器是 32 位、不分类型；一个 float 占 1 个。再加地址、下标，实际数要看 <code>ptxas -v</code>（未测）</td></tr>
+<tr><td>寄存器</td><td>源码层 80 个；<b>SASS 实测 162 个</b>，无 spill</td><td>GPU 寄存器是 32 位、不分类型；一个 float 占 1 个。162 × 256 ≈ 41.5K &gt; 32K → 每个 SM 只放得下 1 个 block（8 个 warp，按寄存器算，未用 ncu 测）</td></tr>
 </table>
 
 <h2>3. warp 和 block 在 C 里的形状</h2>
@@ -195,10 +195,12 @@ for (int tileIdx = 0; tileIdx &lt; N; tileIdx += 8) {
     for (int dotIdx = 0; dotIdx &lt; 8; dotIdx++) {
         for (int i = 0; i &lt; 8; i++) regA[i] = As[threadRow * 8 + i][dotIdx];
         // 单 thread：As 的一列，相邻相差 8 个 word
-        // warp：2 个不同地址，相差 64 word → 同一个 bank → 2-way 冲突（理论）
+        // warp：2 个不同地址，相差 64 word → 同一个 bank → 2-way 冲突（按 32 位读取推理）
+        // SASS 实测：dotIdx 展开后编译器改成 LDS.128，一次读 As[r][0..3]（4 个 dotIdx），每 tile 16 条
         for (int j = 0; j &lt; 8; j++) regB[j] = Bs[dotIdx][threadCol * 8 + j];
-        // 单 thread：连续 8 个 float（可能被编成 2 条 LDS.128，未看 SASS）
-        // warp：16 个不同地址，相邻相差 8 word → 只落在 4 个 bank → 4-way（按标量 LDS 算）
+        // 单 thread：连续 8 个 float
+        // warp：16 个不同地址，相邻相差 8 word → 只落在 4 个 bank → 4-way（按 32 位读取推理）
+        // SASS 实测：每个 dotIdx 2 条 LDS.128，每 tile 16 条
         for (int i = 0; i &lt; 8; i++)
             for (int j = 0; j &lt; 8; j++)
                 threadResults[i][j] += regA[i] * regB[j];  // 64 次 FFMA，全在寄存器
@@ -210,6 +212,7 @@ for (i..8) for (j..8)                                       // 写回：每人 6
     // warp：32 个 lane 落在 32 个不同 sector，每个只写 4B——差，但只发生一次</code></pre>
 
 <h2>5. 交互图</h2>
+<p class="note">2026-10-03 更正：下面的 bank 分布是按"每个 <code>As</code>、<code>Bs</code> 都是一条 32 位 LDS"画的，也就是源码字面的样子。SASS 实测显示我们的 build 把 As、Bs 都编成了 <code>LDS.128</code>，所以图里的 2-way / 4-way 在实际指令里不成立。保留这张图，是因为"按 32 位读取怎么数 bank"的方法本身是对的。详见第 6 节末尾。</p>
 <p>左边 As[128][8]，上边 Bs[8][128]，右下是 C 的 128×128 block tile（细线 = 每个 thread 的 8×8，粗线 = 每个 warp 的 16 行）。下面是这个 thread 的寄存器，以及当前这条 smem 指令在 32 个 bank 上的分布（数字 = 落到该 bank 的<b>不同地址</b>个数）。</p>
 <div class="ctl">
  <label>阶段 <select id="ph"><option value="c">计算阶段</option><option value="l">搬运阶段（global → smem）</option></select></label>
@@ -246,6 +249,18 @@ for (i..8) for (j..8)                                       // 写回：每人 6
 <p>只数指令，2D 比 1D 好 4.5 倍；但算上 bank 冲突，按 wavefront 只好 1.5 倍，和实测的 1.26× 量级接近。<b>这是推测：没看过 SASS，也没用 ncu 量 bank conflict。</b>编译器可能把 B 的 8 个连续读合并成 <code>LDS.128</code>，那样 wavefront 会更少。</p>
 <p>粗略上限（推测）：H100 每个 SM 每拍能发 4 条 warp-FFMA、处理 1 个 smem wavefront。按上表，64 条 FFMA 要 16 拍，48 个 wavefront 要 48 拍 → smem 是瓶颈，上限约 16/48 × 67T ≈ 22T，和实测 22.21T 很接近。但同一个模型套在 1D 上得 14.9T，比 1D 实测 17.56T 还低，说明编译器至少在 1D 里做了源码以外的事。所以这个"吻合"可能是巧合。</p>
 <p>global 访问不是瓶颈（推测）：总流量约 4.3GB，按 6.2ms 算约 0.7TB/s，远低于 HBM 和 L2 的带宽。</p>
+<h3 style="font-size:16px;font-weight:600;margin:20px 0 6px">SASS 实测（2026-10-03）：上面的 smem 账要改</h3>
+<p class="note">来源：<code>~/reports/blocktile-sass-2026-10-03.md</code>（kernel op session）。和 bench 同一个二进制，nvcc <code>-O3 --use_fast_math</code>，sm_90。只看了 SASS，没跑 ncu。</p>
+<table>
+<tr><th>每 thread 每 K-tile</th><th class="n">LDG</th><th class="n">STS</th><th class="n">BAR</th><th class="n">LDS（32 位）</th><th class="n">LDS.128</th><th class="n">FFMA</th><th class="n">寄存器</th></tr>
+<tr><td>2D</td><td class="n">8</td><td class="n">8</td><td class="n">2</td><td class="n">0</td><td class="n">32</td><td class="n">512</td><td class="n">162</td></tr>
+<tr><td>1D</td><td class="n">2</td><td class="n">2</td><td class="n">2</td><td class="n">8</td><td class="n">16</td><td class="n">64</td><td class="n">56</td></tr>
+</table>
+<ul>
+<li>As 和 Bs 都被合并成 <code>LDS.128</code>：每 thread 每 dotIdx 只有 4 条 smem 读，不是 16 条。As 能合并，是因为 dotIdx 循环完全展开后，<code>As[r][0..7]</code> 在 smem 里连续。Simon 在 A6000 上的 SASS 里 As 还是 32 位 LDS，我们的 build 不一样。</li>
+<li>上表"48 个 wavefront → smem 是瓶颈 → 上限约 22T"的推理<b>不成立</b>：4 条 <code>LDS.128</code> 就算每条 4 个 wavefront 也只有 16 个，和 64 条 FFMA 的 16 拍持平。22T 的"吻合"是巧合。1D 的 As 也被合并成了 <code>LDS.128</code>，这解释了同一模型为什么低估 1D。</li>
+<li>新嫌疑（推测，未测）：寄存器 162 个 → 每个 SM 只有 1 个 block，搬运（LDG 几百拍延迟）和计算被两个 <code>__syncthreads</code> 串起来，搬运时没有别的 block 能顶上。要用 ncu 看 occupancy 和 stall 原因才能确认。</li>
+</ul>
 
 <h2>7. 实测</h2>
 <table>
@@ -259,7 +274,7 @@ for (i..8) for (j..8)                                       // 写回：每人 6
 
 <h2>8. 仓库文档里的问题（未修改）</h2>
 <ul>
-<li><code>matmul_2d_blocktile.h:22</code> 的 "Expected ~68.7% of cuBLAS (1.9x over 1D)" 是 siboehm 在 A100 上自动调参后的数字；本机是 42.8%、1.26×。</li>
+<li><code>matmul_2d_blocktile.h:22</code> 的 "Expected ~68.7% of cuBLAS (1.9x over 1D)" 是 siboehm 的 Kernel 5 在 A6000（未调参）上的数字；本机是 42.8%、1.26×。（2026-10-03 更正：之前这里写成"A100 上自动调参"，是我说错了。）</li>
 <li><code>RESULTS.md:82</code> 说 <code>As[BM][BK+1]</code> padding "built INTO 2D/vectorized"。实际上 <code>matmul_2d_blocktile*.cu</code> 和 <code>matmul_vectorized.cu</code> 都没有 padding，只有 <code>matmul_vectorized_auto.cu</code> 有。</li>
 <li><code>worklog.md</code> Step 5 说搬 A 时 "32 threads of a warp all read the same row… coalesced 128B"。BK = 8 时一个 warp 读的是 4 行 × 8 个 float，只有 B 是同一行。</li>
 <li>worklog 的 "16 SMEM reads → 64 madds" 只数了指令，没算 bank 冲突；"total reuse factor = 8 × 8 = 64" 混了概念（每个值复用 8 次，64 是 FMA 数）；"4× 1D" 实际是 4.00 / 0.89 ≈ 4.5×。</li>
@@ -272,8 +287,9 @@ for (i..8) for (j..8)                                       // 写回：每人 6
 <ul>
 <li>2D = 寄存器这一层两边都复用：16 次 smem 读换 64 次 FFMA，每个值用 8 次。</li>
 <li>一个 warp 在 C 里是 16 行 × 128 列的一条，一个 block 是 8 条叠起来。</li>
-<li>"读几次"不等于"花几拍"：同一条指令里 32 个 lane 的地址如果挤在少数几个 bank，就要拆成多个 wavefront。2D 的 As 读是 2-way、Bs 读是 4-way（理论）。</li>
-<li>搬运阶段是干净的：A 每 warp 4 个用满的 sector，B 一条 128B line，写 smem 无冲突。问题在计算阶段的读。</li>
+<li>"读几次"不等于"花几拍"：同一条指令里 32 个 lane 的地址如果挤在少数几个 bank，就要拆成多个 wavefront。按源码字面（32 位读取），2D 的 As 读是 2-way、Bs 读是 4-way。</li>
+<li>但先看 SASS：我们的 build 把 As、Bs 都编成了 <code>LDS.128</code>，smem 很可能不是主要瓶颈；新嫌疑是 162 个寄存器 → 每 SM 只有 1 个 block（推测）。源码字面 ≠ 实际指令。</li>
+<li>搬运阶段是干净的：A 每 warp 4 个用满的 sector，B 一条 128B line，写 smem 无冲突。</li>
 <li>同一条原则用了第三次：HBM→smem（第 3 课）、smem→寄存器只复用 B（第 4 课）、smem→寄存器 A 和 B 都复用（本课）。</li>
 </ul>
 <nav class="nav bottom"><a href="matmul_1d_blocktile.html">← 上一级：1D blocktile</a><a href="matmul_vectorized.html">下一级：vectorized →</a></nav>
